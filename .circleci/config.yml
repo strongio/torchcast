@@ -18,7 +18,7 @@ jobs:
           name: install torchcast
           command: |
             . venv/bin/activate
-            pip install .[tests]
+            pip install .[test]
 
       - run:
           name: run tests
