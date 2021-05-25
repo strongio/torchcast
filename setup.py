@@ -5,10 +5,6 @@ from torchcast import __version__
 setup(
     name='torchcast',
     version=__version__,
-    description='Forecasting in PyTorch',
-    url='http://github.com/strongio/torchcast',
-    author='Jacob Dink',
-    author_email='jacob.dink@strong.io',
     license='MIT',
     packages=find_packages(include='torchcast.*'),
     zip_safe=False,

@@ -13,6 +13,8 @@ torchcast
 
 .. include:: macros.hrst
 
+.. image:: examples_air_quality_6_2.png
+
 Getting Started
 ---------------
 
