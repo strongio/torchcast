@@ -3,6 +3,8 @@ torchcast
 
 ``torchcast`` is a Python package for forecasting built on top of `PyTorch <http://pytorch.org>`_. Its focus is on training and forecasting with *batches* of time-series, rather than training separate models for one time-series at a time. In addition, it provides robust support for *multivariate* time-series, where multiple correlated measures are being forecasted.
 
+.. image:: docs/examples_air_quality_6_2.png
+
 Getting Started
 ---------------
 
