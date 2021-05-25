@@ -54,8 +54,8 @@ html_static_path = ['_static']
 
 #
 intersphinx_mapping = {
-    'python': ('https://docs.python.org/', None),
-    'PyTorch': ('http://pytorch.org/docs/master/', None),
+    'python': ('https://docs.python.org/3/', None),
+    'PyTorch': ('https://pytorch.org/docs/stable/', None),
 }
 
 nbsphinx_custom_formats = {

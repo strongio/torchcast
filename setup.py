@@ -18,6 +18,15 @@ setup(
     ],
     extras_require={
         'test': ['parameterized>=0.7', 'filterpy>=1.4', 'pandas>=1.0'],
-        'docs': ['jupytext>=1.11', 'plotnine>=0.8', 'nbsphinx>=0.8.2', 'ipykernel>=5.3.4', 'tqdm>=4.59']
+        'docs': [
+            'jupytext>=1.11',
+            'plotnine>=0.8',
+            'nbsphinx>=0.8.2',
+            'ipykernel>=5.3.4',
+            'tqdm>=4.59',
+            'ipywidgets>=7.6.3',
+            'sphinx_rtd_theme>=0.5.2',
+            'pandoc>=1.0.2'
+        ]
     }
 )
