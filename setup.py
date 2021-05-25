@@ -18,6 +18,6 @@ setup(
     ],
     extras_require={
         'test': ['parameterized>=0.7', 'filterpy>=1.4', 'pandas>=1.0'],
-        'docs': ['jupytext>=1.11', 'plotnine>=0.8', 'nbsphinx>=0.8.2']
+        'docs': ['jupytext>=1.11', 'plotnine>=0.8', 'nbsphinx>=0.8.2', 'ipykernel>=5.3.4']
     }
 )
