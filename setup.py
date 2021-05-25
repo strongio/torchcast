@@ -17,6 +17,7 @@ setup(
         'numpy>=1.4'
     ],
     extras_require={
-        'test': ['parameterized>=0.7', 'filterpy>=1.4', 'pandas>=1.0']
+        'test': ['parameterized>=0.7', 'filterpy>=1.4', 'pandas>=1.0'],
+        'docs': ['jupytext>=1.11', 'plotnine>=0.8', 'nbsphinx>=0.8.2']
     }
 )
