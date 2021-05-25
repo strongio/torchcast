@@ -530,7 +530,7 @@ withtest_batches = TimeSeriesDataLoader.from_dataframe(
     df_elec,
     group_colname='group', 
     **dataset_kwargs,
-    batch_size=20
+    batch_size=5
 )
 df_pred_nn = []
 with torch.no_grad():
