@@ -134,7 +134,7 @@ df_univariate_error.groupby('validation')['error'].agg(['mean','std'])
 
 # ### Multivariate Forecasts
 #
-# Can we improve our moodel by splitting the pollutant we are forecasting into its two types (2.5 and 10), and modeling them in a multivariate manner?
+# Can we improve our model by splitting the pollutant we are forecasting into its two types (2.5 and 10), and modeling them in a multivariate manner?
 
 # +
 # create a dataset:
