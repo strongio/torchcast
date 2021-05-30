@@ -5,6 +5,8 @@ The :class:`.KalmanFilter` is a :class:`torch.nn.Module` which generates forecas
 (:func:`~torchcast.state_space.Predictions.to_dataframe()`) or visualization
 (:func:`~torchcast.state_space.Predictions.plot()`).
 
+This class inherits most of its methods from :class:`torchcast.state_space.StateSpaceModel`.
+
 ----------
 """
 

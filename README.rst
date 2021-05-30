@@ -3,6 +3,9 @@ torchcast
 
 ``torchcast`` is a Python package for forecasting with state-space models built on top of `PyTorch <http://pytorch.org>`_. Its focus is training and forecasting with *batches* of time-series, rather than training separate models for one time-series at a time. In addition, it provides robust support for *multivariate* time-series, where multiple correlated measures are being forecasted.
 
+Currently the focus of ``torchcast`` is building models that are hybrids: they are classic state-space models with the twist that every part of these models is differentiable and can take advantage of PyTorch's flexibility. For `example <https://torchcast.readthedocs.io/en/latest/examples/electricity.html#Training-our-Hybrid-Forecasting-Model>`_, we can use arbitrary PyTorch :class:`torch.nn.Modules` to predict the variance of forecasts or even to generate the underlying states themselves.
+
+
 .. image:: docs/examples_air_quality_6_2.png
 
 Getting Started
