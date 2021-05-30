@@ -1,6 +1,7 @@
 import torch
 from torch import Tensor
-from torchcast.kalman_filter.predictions import Predictions
+
+from torchcast.state_space.predictions import Predictions
 
 
 class Simulations(Predictions):

@@ -1,20 +1,20 @@
 from collections import defaultdict
-from typing import Tuple, List, Optional, Sequence, Dict, Iterable, Callable, Union
+from typing import Tuple, List, Optional, Sequence, Dict, Iterable, Callable, Union, Type
 from warnings import warn
 
 import torch
 from torch import nn, Tensor
 
 from torchcast.covariance import Covariance
-from torchcast.kalman_filter.gaussian import GaussianStep
-from torchcast.kalman_filter.predictions import Predictions
-from torchcast.kalman_filter.simulations import Simulations
+from torchcast.state_space.predictions import Predictions
+from torchcast.state_space.simulations import Simulations
+from torchcast.state_space.ss_step import StateSpaceStep
 from torchcast.process.regression import Process
 
 
-class KalmanFilter(nn.Module):
+class StateSpaceModel(nn.Module):
     """
-    The KalmanFilter is a :class:`torch.nn.Module` which generates predictions/forecasts using a state-space model.
+    The StateSpaceModel is a :class:`torch.nn.Module` which generates predictions/forecasts using a state-space model.
 
     :param processes: A list of :class:`.Process` modules.
     :param measures: A list of strings specifying the names of the dimensions of the time-series being measured.
@@ -22,7 +22,7 @@ class KalmanFilter(nn.Module):
     :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
     :param initial_covariance: A module created with ``Covariance.from_processes(processes, cov_type='initial')``.
     """
-    kf_step_cls = GaussianStep
+    ss_step_cls: Type[StateSpaceStep]
 
     def __init__(self,
                  processes: Sequence[Process],
@@ -30,27 +30,18 @@ class KalmanFilter(nn.Module):
                  process_covariance: Optional[Covariance] = None,
                  measure_covariance: Optional[Covariance] = None,
                  initial_covariance: Optional[Covariance] = None):
-        super(KalmanFilter, self).__init__()
+        super().__init__()
 
         if isinstance(measures, str):
             measures = [measures]
             warn(f"`measures` should be a list of strings not a string; interpreted as `{measures}`.")
         self._validate(processes, measures)
 
-        # covariances:
-        if process_covariance is None:
-            process_covariance = Covariance.for_processes(processes, cov_type='process')
         self.process_covariance = process_covariance.set_id('process_covariance')
-
-        if measure_covariance is None:
-            measure_covariance = Covariance.for_measures(measures)
         self.measure_covariance = measure_covariance.set_id('measure_covariance')
-
-        if initial_covariance is None:
-            initial_covariance = Covariance.for_processes(processes, cov_type='initial')
         self.initial_covariance = initial_covariance.set_id('initial_covariance')
 
-        self.kf_step = self.kf_step_cls()
+        self.ss_step = self.ss_step_cls()
 
         # measures:
         self.measures = measures
@@ -415,8 +406,8 @@ class KalmanFilter(nn.Module):
             tu = ts - n_step
             if tu >= 0:
                 if tu < len(inputs):
-                    mean1step, cov1step = self.kf_step.update(inputs[tu], mean1step, cov1step, H=Hs[tu], R=Rs[tu])
-                mean1step, cov1step = self.kf_step.predict(mean1step, cov1step, F=Fs[tu], Q=Qs[tu])
+                    mean1step, cov1step = self.ss_step.update(inputs[tu], mean1step, cov1step, H=Hs[tu], R=Rs[tu])
+                mean1step, cov1step = self.ss_step.predict(mean1step, cov1step, F=Fs[tu], Q=Qs[tu])
             # - if n_step=1, append to output immediately, and exit the loop
             # - if n_step>1 & every_step, wait to append to output until h reaches n_step
             # - if n_step>1 & !every_step, only append every 24th iter; but when we do, append for each h
@@ -424,7 +415,7 @@ class KalmanFilter(nn.Module):
                 mean, cov = mean1step, cov1step
                 for h in range(n_step):
                     if h > 0:
-                        mean, cov = self.kf_step.predict(mean, cov, F=Fs[tu + h], Q=Qs[tu + h])
+                        mean, cov = self.ss_step.predict(mean, cov, F=Fs[tu + h], Q=Qs[tu + h])
                     if not every_step or h == (n_step - 1):
                         means += [mean]
                         covs += [cov]
@@ -571,12 +562,12 @@ class KalmanFilter(nn.Module):
 
         Fs, Hs, Qs, Rs = self.build_design_mats(num_groups=num_sims, out_timesteps=out_timesteps, **design_kwargs)
 
-        dist_cls = self.kf_step.get_distribution()
+        dist_cls = self.ss_step.get_distribution()
 
         means: List[Tensor] = []
         for t in times:
             mean = dist_cls(mean, cov).rsample()
-            mean, cov = self.kf_step.predict(mean, .0001 * torch.eye(mean.shape[-1]), F=Fs[t], Q=Qs[t])
+            mean, cov = self.ss_step.predict(mean, .0001 * torch.eye(mean.shape[-1]), F=Fs[t], Q=Qs[t])
             means.append(mean)
 
         return Simulations(torch.stack(means, 1), H=torch.stack(Hs, 1), R=torch.stack(Rs, 1), kalman_filter=self)

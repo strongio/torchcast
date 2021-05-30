@@ -1,7 +1,7 @@
 torchcast
 =====================================
 
-``torchcast`` is a Python package for forecasting built on top of |PyTorch|. Its focus is on training and forecasting with *batches* of time-serieses, rather than training separate models for one time-series at a time. In addition, it provides robust support for *multivariate* time-series, where multiple correlated measures are being forecasted.
+``torchcast`` is a Python package for forecasting with state-space models built on top of |PyTorch|. Its focus is training and forecasting with *batches* of time-series, rather than training separate models for one time-series at a time. In addition, it provides robust support for *multivariate* time-series, where multiple correlated measures are being forecasted.
 
 
 .. toctree::

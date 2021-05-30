@@ -40,7 +40,7 @@ class Predictions(nn.Module):
                 for state_element in process.state_elements:
                     all_state_elements.append((process_name, state_element))
             kalman_filter = {
-                'distribution_cls': kalman_filter.kf_step.get_distribution(),
+                'distribution_cls': kalman_filter.ss_step.get_distribution(),
                 'measures': kalman_filter.measures,
                 'all_state_elements': all_state_elements
             }
