@@ -390,7 +390,7 @@ class StateSpaceModel(nn.Module):
             if out_timesteps is None:
                 out_timesteps = len(inputs)
 
-        Fs, Hs, Qs, Rs = self.build_design_mats(
+        predict_kwargs, update_kwargs = self.build_design_mats(
             static_kwargs=static_kwargs,
             time_varying_kwargs=time_varying_kwargs,
             num_groups=num_groups,
@@ -401,13 +401,23 @@ class StateSpaceModel(nn.Module):
         means: List[Tensor] = []
         covs: List[Tensor] = []
         for ts in range(out_timesteps):
+
             # ts: the time of the state
             # tu: the time of the update
             tu = ts - n_step
             if tu >= 0:
                 if tu < len(inputs):
-                    mean1step, cov1step = self.ss_step.update(inputs[tu], mean1step, cov1step, H=Hs[tu], R=Rs[tu])
-                mean1step, cov1step = self.ss_step.predict(mean1step, cov1step, F=Fs[tu], Q=Qs[tu])
+                    mean1step, cov1step = self.ss_step.update(
+                        inputs[tu],
+                        mean1step,
+                        cov1step,
+                        {k: v[tu] for k, v in predict_kwargs.items()}
+                    )
+                mean1step, cov1step = self.ss_step.predict(
+                    mean1step,
+                    cov1step,
+                    {k: v[tu] for k, v in update_kwargs.items()}
+                )
             # - if n_step=1, append to output immediately, and exit the loop
             # - if n_step>1 & every_step, wait to append to output until h reaches n_step
             # - if n_step>1 & !every_step, only append every 24th iter; but when we do, append for each h
@@ -415,7 +425,7 @@ class StateSpaceModel(nn.Module):
                 mean, cov = mean1step, cov1step
                 for h in range(n_step):
                     if h > 0:
-                        mean, cov = self.ss_step.predict(mean, cov, F=Fs[tu + h], Q=Qs[tu + h])
+                        mean, cov = self.ss_step.predict(mean, cov, {k: v[tu + h] for k, v in predict_kwargs.items()})
                     if not every_step or h == (n_step - 1):
                         means += [mean]
                         covs += [cov]
@@ -423,13 +433,18 @@ class StateSpaceModel(nn.Module):
         means = means[:out_timesteps]
         covs = covs[:out_timesteps]
 
-        return torch.stack(means, 1), torch.stack(covs, 1), torch.stack(Rs, 1), torch.stack(Hs, 1)
+        return (
+            torch.stack(means, 1),
+            torch.stack(covs, 1),
+            torch.stack(update_kwargs['R'], 1),
+            torch.stack(update_kwargs['H'], 1)
+        )
 
     def build_design_mats(self,
                           static_kwargs: Dict[str, Dict[str, Tensor]],
                           time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
                           num_groups: int,
-                          out_timesteps: int) -> Tuple[List[Tensor], List[Tensor], List[Tensor], List[Tensor]]:
+                          out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
         # measure scaling
         measure_scaling = torch.diag_embed(self._get_measure_scaling())
 
@@ -519,7 +534,10 @@ class StateSpaceModel(nn.Module):
                     Ft[:, _process_slice2, _process_slice2] = pf
             Fs.append(Ft)
             Hs.append(Ht)
-        return Fs, Hs, Qs, Rs
+
+        predict_kwargs = {'F': Fs, 'Q': Qs}
+        update_kwargs = {'H': Hs, 'R': Rs}
+        return predict_kwargs, update_kwargs
 
     @torch.no_grad()
     @torch.jit.ignore()
@@ -560,14 +578,16 @@ class StateSpaceModel(nn.Module):
                     progress = lambda x: x
             times = progress(times)
 
-        Fs, Hs, Qs, Rs = self.build_design_mats(num_groups=num_sims, out_timesteps=out_timesteps, **design_kwargs)
+        predict_kwargs, update_kwargs = self.build_design_mats(
+            num_groups=num_sims, out_timesteps=out_timesteps, **design_kwargs
+        )
 
         dist_cls = self.ss_step.get_distribution()
 
         means: List[Tensor] = []
         for t in times:
             mean = dist_cls(mean, cov).rsample()
-            mean, cov = self.ss_step.predict(mean, .0001 * torch.eye(mean.shape[-1]), F=Fs[t], Q=Qs[t])
+            mean, cov = self.ss_step.predict(mean, .0001 * torch.eye(mean.shape[-1]), predict_kwargs)
             means.append(mean)
 
         return Simulations(torch.stack(means, 1), H=torch.stack(Hs, 1), R=torch.stack(Rs, 1), kalman_filter=self)

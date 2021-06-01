@@ -1,4 +1,4 @@
-from typing import Type, Tuple
+from typing import Type, Tuple, Dict
 
 import torch
 from torch import Tensor
@@ -20,17 +20,16 @@ class StateSpaceStep(torch.nn.Module):
                 input: Tensor,
                 mean: Tensor,
                 cov: Tensor,
-                H: Tensor,
-                R: Tensor,
-                F: Tensor,
-                Q: Tensor) -> Tuple[Tensor, Tensor]:
-        mean, cov = self.update(input, mean, cov, H=H, R=R)
-        return self.predict(mean, cov, F=F, Q=Q)
+                predict_kwargs: Dict[str, Tensor],
+                update_kwargs: Dict[str, Tensor],
+                ) -> Tuple[Tensor, Tensor]:
+        mean, cov = self.update(input, mean, cov, update_kwargs)
+        return self.predict(mean, cov, predict_kwargs)
 
-    def predict(self, mean: Tensor, cov: Tensor, F: Tensor, Q: Tensor) -> Tuple[Tensor, Tensor]:
+    def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         raise NotImplementedError
 
-    def update(self, input: Tensor, mean: Tensor, cov: Tensor, H: Tensor, R: Tensor) -> Tuple[Tensor, Tensor]:
+    def update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         assert len(input.shape) > 1
         if len(input.shape) != 2:
             raise NotImplementedError
@@ -42,6 +41,9 @@ class StateSpaceStep(torch.nn.Module):
         if cov.shape[0] != num_groups:
             assert cov.shape[0] == 1
             cov = cov.expand(num_groups, -1, -1)
+
+        H = kwargs['H']
+        R = kwargs['R']
 
         isnan = torch.isnan(input)
         if isnan.all():

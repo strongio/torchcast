@@ -36,7 +36,9 @@ class GaussianStep(StateSpaceStep):
     def get_distribution(self) -> Type[torch.distributions.Distribution]:
         return torch.distributions.MultivariateNormal
 
-    def predict(self, mean: Tensor, cov: Tensor, F: Tensor, Q: Tensor) -> Tuple[Tensor, Tensor]:
+    def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        F = kwargs['F']
+        Q = kwargs['Q']
         mean = (F @ mean.unsqueeze(-1)).squeeze(-1)
         cov = F @ cov @ F.permute(0, 2, 1) + Q
         return mean, cov
