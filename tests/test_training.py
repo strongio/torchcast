@@ -22,7 +22,7 @@ class TestTraining(unittest.TestCase):
             processes=[LocalLevel(id=f'lm{i}', measure=str(i)) for i in range(ndim)],
             measures=[str(i) for i in range(ndim)]
         )
-        dist = kf.kf_step.get_distribution()
+        dist = kf.ss_step.get_distribution()
         pred = kf(data)
         log_lik1 = dist(*pred).log_prob(data)
         from torch.distributions import MultivariateNormal
@@ -46,7 +46,7 @@ class TestTraining(unittest.TestCase):
         lp_method1 = pred.log_prob(data)
         lp_method1_sum = lp_method1.sum().item()
 
-        dist = kf.kf_step.get_distribution()
+        dist = kf.ss_step.get_distribution()
 
         lp_method2_sum = 0
         for g in range(num_groups):

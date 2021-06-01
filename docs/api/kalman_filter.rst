@@ -2,7 +2,8 @@ Kalman Filter
 =============
 
 .. automodule:: torchcast.kalman_filter
-   :members: KalmanFilter, Predictions
-   :exclude-members: kf_step_cls, script_cls
+   :members: KalmanFilter
+   :exclude-members: ss_step_cls
+   :show-inheritance:
 
 .. include:: ../macros.hrst

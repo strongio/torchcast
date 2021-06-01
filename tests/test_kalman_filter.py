@@ -73,7 +73,7 @@ class TestKalmanFilter(TestCase):
 
     @torch.no_grad()
     def test_jit(self):
-        from torchcast.kalman_filter.predictions import Predictions
+        from torchcast.state_space import Predictions
 
         # compile-able:
         h_module = SingleOutput()
