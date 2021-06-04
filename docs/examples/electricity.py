@@ -207,7 +207,7 @@ except FileNotFoundError:
 # Despite this being the 'standard' approach, we are still using some nonstandard tricks here:
 #
 # - We are using the `n_step` argument to train our model on one-week ahead forecasts, instead of one step (i.e. hour) ahead. This improves the efficiency of training by 'encouraging' the model to 'care about' longer range forecasts vs. over-focusing on the easier problem of forecasting the next hour.
-# - We are splitting our single series into multiple groups. This is helpful since pytorch has a non-trivial overhead for separate tensors -- i.e., it scales well with an increasing batch-size (fewer, but bigger, tensors), but poorly with an increasing time-seriees length (smaller, but more, tensors).
+# - We are splitting our single series into multiple groups. This is helpful since pytorch has a non-trivial overhead for separate tensors -- i.e., it scales well with an increasing batch-size (fewer, but bigger, tensors), but poorly with an increasing time-series length (smaller, but more, tensors).
 
 # ### Model-Evaluation
 #
@@ -572,7 +572,10 @@ plt.tight_layout()
 # + nbsphinx="hidden"
 """
 - MT_029 -- need (way) higher K for annual season?
-- MT_018, MT_024 -- still systematic bias in certain parts of the day. why?
+- MT_018, MT_024, MT_047 -- still systematic bias in certain parts of the day. why? 
+    - when we split day into 12/12 hours, don't really see it. so seems like just having trouble with *exact* shape.
+- MT_045/MT_036/MT_013 -- seems like LocalLevel should be *much* more responsive. 
+    - OTOH it's clearly just xmas, maybe exs like that are incredibly rare otherwise so training doesn't prioritze
 """;
 # -
 
