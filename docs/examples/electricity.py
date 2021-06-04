@@ -460,7 +460,7 @@ except FileNotFoundError:
     from IPython import display
     train_batches = TimeSeriesDataLoader.from_dataframe(
         df_elec.query("dataset == 'train'"), 
-        group_colname='subgroup', 
+        group_colname='gym', 
         **dataset_kwargs, 
         batch_size=100,
         shuffle=True
