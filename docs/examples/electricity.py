@@ -6,7 +6,11 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.6.0
+#       jupytext_version: 1.11.0
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
 # ---
 
 # + nbsphinx="hidden"
@@ -193,7 +197,7 @@ train_MT_052
 kf.to(DEVICE)
 
 try:
-    kf.load_state_dict(torch.load(os.path.join(BASE_DIR, "kf_standard.pt"), map_location=DEVICE))
+    kf.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", "kf_standard.pt"), map_location=DEVICE))
 except FileNotFoundError:
     kf.fit(
         train_MT_052.tensors[0],
@@ -201,7 +205,7 @@ except FileNotFoundError:
         n_step=int(24 * 7),
         every_step=False
     )
-    torch.save(kf.state_dict(), os.path.join(BASE_DIR, "kf_standard.pt"))
+    torch.save(kf.state_dict(), os.path.join(BASE_DIR, "electricity_models", "kf_standard.pt"))
 # -
 
 # Despite this being the 'standard' approach, we are still using some nonstandard tricks here:
@@ -357,7 +361,7 @@ per_group_nn = PerGroupNN(
 per_group_nn.to(DEVICE)
 
 try:
-    per_group_nn.load_state_dict(torch.load(os.path.join(BASE_DIR, "per_group_nn.pt"), map_location=DEVICE))
+    per_group_nn.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", "per_group_nn.pt"), map_location=DEVICE))
 except FileNotFoundError:
     from IPython import display
     per_group_nn.optimizer = torch.optim.Adam(per_group_nn.parameters())
@@ -398,6 +402,7 @@ except FileNotFoundError:
             pd.Series(per_group_nn.loss_history[10:]).plot(ax=axes[0], logy=True)
             pd.Series(per_group_nn.val_history[10:]).plot(ax=axes[1], logy=True)
             display.display(plt.gcf())
+    torch.save(per_group_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", "per_group_nn.pt"))
 # -
 
 # ### Training our Hybrid Forecasting Model
@@ -450,7 +455,7 @@ kf_nn.to(DEVICE)
 # -
 
 try:
-    kf_nn.load_state_dict(torch.load(os.path.join(BASE_DIR,"kf_nn.pt"), map_location=DEVICE))
+    kf_nn.load_state_dict(torch.load(os.path.join(BASE_DIR,"electricity_models", "kf_nn.pt"), map_location=DEVICE))
 except FileNotFoundError:
     from IPython import display
     train_batches = TimeSeriesDataLoader.from_dataframe(
@@ -519,7 +524,7 @@ except FileNotFoundError:
             pd.Series(kf_nn.loss_history[2:]).plot(ax=axes[0])
             pd.Series(kf_nn.val_history[2:]).plot(ax=axes[1])
             display.display(plt.gcf())
-        torch.save(kf_nn.state_dict(), os.path.join(BASE_DIR,"kf_nn.pt"))
+        torch.save(kf_nn.state_dict(), os.path.join(BASE_DIR,"electricity_models", "kf_nn.pt"))
 
 # ### Model Evaluation
 #
