@@ -9,7 +9,7 @@ setup(
     packages=find_packages(include='torchcast.*'),
     zip_safe=False,
     install_requires=[
-        'torch>=1.7',
+        'torch>=1.8',
         'numpy>=1.4'
     ],
     extras_require={
