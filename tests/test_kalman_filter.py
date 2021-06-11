@@ -160,7 +160,6 @@ class TestKalmanFilter(TestCase):
         Q = predict_kwargs['Q'][0]
         H = update_kwargs['H'][0]
         R = update_kwargs['R'][0]
-        #F, H, Q, R = (_[0] for _ in {**predict_kwargs, **update_kwargs}.values())
         assert torch.isclose(expectedF, F).all()
         assert torch.isclose(expectedH, H).all()
 

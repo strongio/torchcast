@@ -304,6 +304,13 @@ class StateSpaceModel(nn.Module):
             out_timesteps=out_timesteps,
             **self._parse_design_kwargs(input=input, out_timesteps=out_timesteps or input.shape[1], **kwargs)
         )
+        return self._generate_predictions(means, covs, R, H)
+
+    @torch.jit.ignore
+    def _generate_predictions(self, means: Tensor, covs: Tensor, R: Tensor, H: Tensor) -> 'Predictions':
+        """
+        StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
+        """
         return Predictions(state_means=means, state_covs=covs, R=R, H=H, kalman_filter=self)
 
     @torch.jit.ignore
@@ -411,12 +418,12 @@ class StateSpaceModel(nn.Module):
                         inputs[tu],
                         mean1step,
                         cov1step,
-                        {k: v[tu] for k, v in predict_kwargs.items()}
+                        {k: v[tu] for k, v in update_kwargs.items()}
                     )
                 mean1step, cov1step = self.ss_step.predict(
                     mean1step,
                     cov1step,
-                    {k: v[tu] for k, v in update_kwargs.items()}
+                    {k: v[tu] for k, v in predict_kwargs.items()}
                 )
             # - if n_step=1, append to output immediately, and exit the loop
             # - if n_step>1 & every_step, wait to append to output until h reaches n_step
@@ -445,53 +452,37 @@ class StateSpaceModel(nn.Module):
                           time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
                           num_groups: int,
                           out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
-        # measure scaling
-        measure_scaling = torch.diag_embed(self._get_measure_scaling())
 
-        # process-variance:
-        if 'process_covariance' in time_varying_kwargs and \
-                self.process_covariance.expected_kwarg in time_varying_kwargs['process_covariance']:
-            pvar_inputs = time_varying_kwargs['process_covariance'][self.process_covariance.expected_kwarg]
-            Qs: List[Tensor] = []
-            for t in range(out_timesteps):
-                Qs.append(measure_scaling @ self.process_covariance(pvar_inputs[t]) @ measure_scaling)
-        else:
-            pvar_input: Optional[Tensor] = None
-            if 'process_covariance' in static_kwargs and \
-                    self.process_covariance.expected_kwarg in static_kwargs['process_covariance']:
-                pvar_input = static_kwargs['process_covariance'].get(self.process_covariance.expected_kwarg)
-            Q = measure_scaling @ self.process_covariance(pvar_input) @ measure_scaling
-            if len(Q.shape) == 2:
-                Q = Q.expand(num_groups, -1, -1)
-            Qs = [Q] * out_timesteps
+        Rs, Qs = self._build_var_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
+        Fs, Hs = self._build_transition_and_measure_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
 
-        # measure-variance:
-        if 'measure_covariance' in time_varying_kwargs and \
-                self.measure_covariance.expected_kwarg in time_varying_kwargs['measure_covariance']:
-            mvar_inputs = time_varying_kwargs['measure_covariance'][self.measure_covariance.expected_kwarg]
-            Rs: List[Tensor] = []
-            for t in range(out_timesteps):
-                Rs.append(self.measure_covariance(mvar_inputs[t]))
-        else:
-            mvar_input: Optional[Tensor] = None
-            if 'measure_covariance' in static_kwargs and \
-                    self.measure_covariance.expected_kwarg in static_kwargs['measure_covariance']:
-                mvar_input = static_kwargs['measure_covariance'].get(self.measure_covariance.expected_kwarg)
-            R = self.measure_covariance(mvar_input)
-            if len(R.shape) == 2:
-                R = R.expand(num_groups, -1, -1)
-            Rs = [R] * out_timesteps
+        predict_kwargs = {'F': Fs, 'Q': Qs}
+        update_kwargs = {'H': Hs, 'R': Rs}
+        return predict_kwargs, update_kwargs
 
-        # Transition and Measurement Mats:
+    def _build_var_mats(self,
+                        static_kwargs: Dict[str, Dict[str, Tensor]],
+                        time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                        num_groups: int,
+                        out_timesteps: int) -> Tuple[List[Tensor], List[Tensor]]:
+        raise NotImplementedError
+
+    def _build_transition_and_measure_mats(self,
+                                           static_kwargs: Dict[str, Dict[str, Tensor]],
+                                           time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                                           num_groups: int,
+                                           out_timesteps: int) -> Tuple[List[Tensor], List[Tensor]]:
+        ms = self._get_measure_scaling()
+
         base_F = torch.zeros(
             (num_groups, self.state_rank, self.state_rank),
-            dtype=measure_scaling.dtype,
-            device=measure_scaling.device
+            dtype=ms.dtype,
+            device=ms.device
         )
         base_H = torch.zeros(
             (num_groups, len(self.measures), self.state_rank),
-            dtype=measure_scaling.dtype,
-            device=measure_scaling.device
+            dtype=ms.dtype,
+            device=ms.device
         )
         for pid, process1 in self.processes.items():
             p_tv_kwargs = time_varying_kwargs.get(pid)
@@ -534,10 +525,7 @@ class StateSpaceModel(nn.Module):
                     Ft[:, _process_slice2, _process_slice2] = pf
             Fs.append(Ft)
             Hs.append(Ht)
-
-        predict_kwargs = {'F': Fs, 'Q': Qs}
-        update_kwargs = {'H': Hs, 'R': Rs}
-        return predict_kwargs, update_kwargs
+        return Fs, Hs
 
     @torch.no_grad()
     @torch.jit.ignore()
@@ -587,10 +575,17 @@ class StateSpaceModel(nn.Module):
         means: List[Tensor] = []
         for t in times:
             mean = dist_cls(mean, cov).rsample()
-            mean, cov = self.ss_step.predict(mean, .0001 * torch.eye(mean.shape[-1]), predict_kwargs)
+            mean, cov = self.ss_step.predict(
+                mean=mean, cov=.0001 * torch.eye(mean.shape[-1]), kwargs={k: v[t] for k, v in predict_kwargs.items()}
+            )
             means.append(mean)
 
-        return Simulations(torch.stack(means, 1), H=torch.stack(Hs, 1), R=torch.stack(Rs, 1), kalman_filter=self)
+        return Simulations(
+            torch.stack(means, 1),
+            H=torch.stack(update_kwargs['H'], 1),
+            R=torch.stack(update_kwargs['R'], 1),
+            kalman_filter=self
+        )
 
     @torch.jit.ignore()
     def _parse_design_kwargs(self, input: Optional[Tensor], out_timesteps: int, **kwargs) -> Dict[str, dict]:

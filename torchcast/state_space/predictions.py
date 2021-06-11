@@ -14,7 +14,7 @@ from torchcast.utils.data import TimeSeriesDataset
 
 class Predictions(nn.Module):
     """
-    The output of the :class:`.KalmanFilter` forward pass, containing the underlying state means and covariances, as
+    The output of the :class:`.StateSpaceModel` forward pass, containing the underlying state means and covariances, as
     well as the predicted observations and covariances.
     """
 

@@ -5,6 +5,8 @@ torchcast
 
 Currently the focus of ``torchcast`` is building models that are hybrids: they are classic state-space models with the twist that every part of these models is differentiable and can take advantage of PyTorch's flexibility. For :doc:`example <examples/electricity>`, we can use arbitrary PyTorch :class:`torch.nn.Modules` to predict the variance of forecasts or even to generate the underlying states themselves.
 
+This repository is the work of `Strong Analytics <https://www.strong.io/>`_.
+
 .. toctree::
    :maxdepth: 1
 

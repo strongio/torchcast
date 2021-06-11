@@ -154,13 +154,19 @@ class Covariance(nn.Module):
             empty_idx = [self.rank + 1]  # jit doesn't seem to like empty lists
         self.empty_idx = empty_idx
 
-        #
+        self.param_rank = len([i for i in range(self.rank) if i not in self.empty_idx])
+        self.method = method
+        self._set_params(init_diag_multi)
+
+        self.var_predict_module = predict_variance
+
+        self.expected_kwarg = '' if self.var_predict_module is None else 'X'
+
+    def _set_params(self, init_diag_multi: float):
         self.cholesky_log_diag: Optional[nn.Parameter] = None
         self.cholesky_off_diag: Optional[nn.Parameter] = None
         self.lr_mat: Optional[nn.Parameter] = None
         self.log_std_devs: Optional[nn.Parameter] = None
-        self.param_rank = len([i for i in range(self.rank) if i not in self.empty_idx])
-        self.method = method
         if self.method == 'log_cholesky':
             self.cholesky_log_diag = nn.Parameter(.1 * torch.randn(self.param_rank) + math.log(init_diag_multi))
             self.cholesky_off_diag = nn.Parameter(.1 * torch.randn(num_off_diag(self.param_rank)))
@@ -169,11 +175,7 @@ class Covariance(nn.Module):
             self.lr_mat = nn.Parameter(data=.01 * torch.randn(self.param_rank, low_rank))
             self.log_std_devs = nn.Parameter(data=.1 * torch.randn(self.param_rank) + math.log(init_diag_multi))
         else:
-            raise NotImplementedError(method)
-
-        self.var_predict_module = predict_variance
-
-        self.expected_kwarg = '' if self.var_predict_module is None else 'X'
+            raise NotImplementedError(self.method)
 
     @jit.ignore
     def set_id(self, id: str) -> 'Covariance':

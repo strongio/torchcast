@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.abspath('../torchcast'))
 # -- Project information -----------------------------------------------------
 
 project = 'torchcast'
-copyright = '2021, Jacob Dink'
+copyright = '2021, Strong Analytics'
 author = 'Jacob Dink'
 
 # -- General configuration ---------------------------------------------------
