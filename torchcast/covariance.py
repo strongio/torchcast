@@ -252,6 +252,15 @@ class Covariance(nn.Module):
         return pad_covariance(mini_cov, [int(i not in self.empty_idx) for i in range(self.rank)])
 
 
+class DiagCovariance(Covariance):
+    """
+
+    """
+    def forward(self, input: Optional[Tensor] = None, _ignore_input: bool = False) -> Tensor:
+        # main difference is we return a diagonal, not a covariance
+        raise NotImplementedError("TODO")
+
+
 def pad_covariance(unpadded_cov: Tensor, mask_1d: List[int]) -> Tensor:
     rank = len(mask_1d)
     padded_to_unpadded: Dict[int, int] = {}
