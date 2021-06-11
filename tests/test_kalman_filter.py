@@ -127,8 +127,8 @@ class TestKalmanFilter(TestCase):
         _kwargs = torch_kf._parse_design_kwargs(
             input=data, out_timesteps=num_times, X=torch.randn(1, num_times, 3)
         )
-        Fs, *_ = torch_kf.build_design_mats(**_kwargs, num_groups=1, out_timesteps=num_times)
-        F = Fs[0][0]
+        predict_kwargs, update_kwargs = torch_kf.build_design_mats(**_kwargs, num_groups=1, out_timesteps=num_times)
+        F = predict_kwargs['F'][0][0]
 
         self.assertTrue((torch.diag(F) > .95).all())
         self.assertTrue((torch.diag(F) < 1.00).all())
@@ -155,7 +155,11 @@ class TestKalmanFilter(TestCase):
         expectedF = torch.tensor([[1., 1.], [0., 1.]])
         expectedH = torch.tensor([[1., 0.]])
         _kwargs = torch_kf._parse_design_kwargs(input=data, out_timesteps=num_times)
-        F, H, Q, R = (_[0] for _ in torch_kf.build_design_mats(**_kwargs, num_groups=1, out_timesteps=num_times))
+        predict_kwargs, update_kwargs = torch_kf.build_design_mats(**_kwargs, num_groups=1, out_timesteps=num_times)
+        F = predict_kwargs['F'][0]
+        Q = predict_kwargs['Q'][0]
+        H = update_kwargs['H'][0]
+        R = update_kwargs['R'][0]
         assert torch.isclose(expectedF, F).all()
         assert torch.isclose(expectedH, H).all()
 

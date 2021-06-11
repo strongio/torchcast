@@ -10,7 +10,7 @@ This class inherits most of its methods from :class:`torchcast.state_space.State
 ----------
 """
 
-from typing import Sequence
+from typing import Sequence, Dict, List
 
 from torchcast.covariance import Covariance
 from torchcast.process import Process
@@ -36,7 +36,9 @@ class GaussianStep(StateSpaceStep):
     def get_distribution(self) -> Type[torch.distributions.Distribution]:
         return torch.distributions.MultivariateNormal
 
-    def predict(self, mean: Tensor, cov: Tensor, F: Tensor, Q: Tensor) -> Tuple[Tensor, Tensor]:
+    def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        F = kwargs['F']
+        Q = kwargs['Q']
         mean = (F @ mean.unsqueeze(-1)).squeeze(-1)
         cov = F @ cov @ F.permute(0, 2, 1) + Q
         return mean, cov
@@ -78,15 +80,15 @@ class KalmanFilter(StateSpaceModel):
                  processes: Sequence[Process],
                  measures: Optional[Sequence[str]] = None,
                  process_covariance: Optional[Covariance] = None,
-                 measure_covariance: Optional[Covariance] = None,
-                 initial_covariance: Optional[Covariance] = None):
+                 measure_covariance: Optional[Covariance] = None):
 
         if process_covariance is None:
             process_covariance = Covariance.for_processes(processes, cov_type='process')
         if measure_covariance is None:
             measure_covariance = Covariance.for_measures(measures)
-        if initial_covariance is None:
-            initial_covariance = Covariance.for_processes(processes, cov_type='initial')
+
+        initial_covariance = Covariance.for_processes(processes, cov_type='initial')
+
         super().__init__(
             processes=processes,
             measures=measures,
@@ -94,3 +96,46 @@ class KalmanFilter(StateSpaceModel):
             measure_covariance=measure_covariance,
             initial_covariance=initial_covariance
         )
+
+    def _build_var_mats(self,
+                        static_kwargs: Dict[str, Dict[str, Tensor]],
+                        time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                        num_groups: int,
+                        out_timesteps: int) -> Tuple[List[Tensor], List[Tensor]]:
+
+        # process-variance:
+        measure_scaling = torch.diag_embed(self._get_measure_scaling())
+        if 'process_covariance' in time_varying_kwargs and \
+                self.process_covariance.expected_kwarg in time_varying_kwargs['process_covariance']:
+            pvar_inputs = time_varying_kwargs['process_covariance'][self.process_covariance.expected_kwarg]
+            Qs: List[Tensor] = []
+            for t in range(out_timesteps):
+                Qs.append(measure_scaling @ self.process_covariance(pvar_inputs[t]) @ measure_scaling)
+        else:
+            pvar_input: Optional[Tensor] = None
+            if 'process_covariance' in static_kwargs and \
+                    self.process_covariance.expected_kwarg in static_kwargs['process_covariance']:
+                pvar_input = static_kwargs['process_covariance'].get(self.process_covariance.expected_kwarg)
+            Q = measure_scaling @ self.process_covariance(pvar_input) @ measure_scaling
+            if len(Q.shape) == 2:
+                Q = Q.expand(num_groups, -1, -1)
+            Qs = [Q] * out_timesteps
+
+        # measure-variance:
+        if 'measure_covariance' in time_varying_kwargs and \
+                self.measure_covariance.expected_kwarg in time_varying_kwargs['measure_covariance']:
+            mvar_inputs = time_varying_kwargs['measure_covariance'][self.measure_covariance.expected_kwarg]
+            Rs: List[Tensor] = []
+            for t in range(out_timesteps):
+                Rs.append(self.measure_covariance(mvar_inputs[t]))
+        else:
+            mvar_input: Optional[Tensor] = None
+            if 'measure_covariance' in static_kwargs and \
+                    self.measure_covariance.expected_kwarg in static_kwargs['measure_covariance']:
+                mvar_input = static_kwargs['measure_covariance'].get(self.measure_covariance.expected_kwarg)
+            R = self.measure_covariance(mvar_input)
+            if len(R.shape) == 2:
+                R = R.expand(num_groups, -1, -1)
+            Rs = [R] * out_timesteps
+
+        return Rs, Qs
