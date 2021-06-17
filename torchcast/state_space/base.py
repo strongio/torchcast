@@ -497,7 +497,7 @@ class StateSpaceModel(nn.Module):
 
             # static F:
             if p_tv_kwargs is None or process1.f_kwarg not in p_tv_kwargs:
-                f_input = None if p_static_kwargs is None else p_static_kwargs.get(process1.h_kwarg)
+                f_input = None if p_static_kwargs is None else p_static_kwargs.get(process1.f_kwarg)
                 pf = process1.f_forward(f_input)
                 base_F[:, _process_slice1, _process_slice1] = pf
 
