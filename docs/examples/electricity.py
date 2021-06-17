@@ -433,14 +433,14 @@ mvar_nn = torch.nn.Embedding(
 )
 pvar_nn = torch.nn.Embedding(
     len(group_id_mapping),
-    embedding_dim=Covariance.for_processes(processes).param_rank,
+    embedding_dim=Covariance.from_processes(processes).param_rank,
 )
 
 kf_nn = KalmanFilter(
     measures=['kW_sqrt'], 
     processes=processes,
-    measure_covariance=Covariance.for_measures(['kW_sqrt'], predict_variance=mvar_nn),
-    process_covariance=Covariance.for_processes(processes, predict_variance=pvar_nn)
+    measure_covariance=Covariance.from_measures(['kW_sqrt'], predict_variance=mvar_nn),
+    process_covariance=Covariance.from_processes(processes, predict_variance=pvar_nn)
 )
 
 kf_nn.initial_state_nn = torch.nn.Embedding(

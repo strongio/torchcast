@@ -121,7 +121,7 @@ class TestKalmanFilter(TestCase):
 
         # make torch kf:
         torch_kf = KalmanFilter(
-            processes=[LinearModel(id='lm', predictors=['x1', 'x2', 'x3'], process_variance=True, decay=(.95, 1.))],
+            processes=[LinearModel(id='lm', predictors=['x1', 'x2', 'x3'], fixed=False, decay=(.95, 1.))],
             measures=['y']
         )
         _kwargs = torch_kf._parse_design_kwargs(

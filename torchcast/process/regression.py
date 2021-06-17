@@ -49,9 +49,9 @@ class LinearModel(_RegressionBase):
     :param id: Unique identifier for the process
     :param predictors: A sequence of strings with predictor-names.
     :param measure: The name of the measure for this process.
-    :param process_variance: By default, the regression-coefficients are assumed to be fixed: we are initially
+    :param fixed: By default, the regression-coefficients are assumed to be fixed: we are initially
      uncertain about their value at the start of each series, but we gradually grow more confident. If
-     ``process_variance=True`` then we continue to inject uncertainty at each timestep so that uncertainty asymptotes
+     ``fixed=False`` then we continue to inject uncertainty at each timestep so that uncertainty asymptotes
      at some nonzero value. This amounts to dynamic-regression where the coefficients evolve over-time.
     :param decay: By default, the seasonal structure will remain as the forecast horizon increases. An alternative is
      to allow this structure to decay (i.e. pass ``True``). If you'd like more fine-grained control over this decay,
@@ -62,14 +62,14 @@ class LinearModel(_RegressionBase):
                  id: str,
                  predictors: Sequence[str],
                  measure: Optional[str] = None,
-                 process_variance: bool = False,
+                 fixed: bool = True,
                  decay: Optional[Tuple[float, float]] = None):
         super().__init__(
             id=id,
             predictors=predictors,
             measure=measure,
             h_module=Identity(),
-            process_variance=process_variance,
+            fixed=fixed,
             decay=decay
         )
 
@@ -84,9 +84,9 @@ class NN(_RegressionBase):
     :param nn: A `nn.Module` that takes inputs from a model-matrix and tranlates them into entries in the
      observation matrix H.
     :param measure: The name of the measure for this process.
-    :param process_variance: By default, the state of each output is assumed to be fixed: we are initially
+    :param fixed: By default, the state of each output is assumed to be fixed: we are initially
      uncertain about their value at the start of each series, but we gradually grow more confident. If
-     ``process_variance=True`` then we continue to inject uncertainty at each timestep so that uncertainty asymptotes
+     ``fixed=False`` then we continue to inject uncertainty at each timestep so that uncertainty asymptotes
      at some nonzero value.
     :param decay: By default, the seasonal structure will remain as the forecast horizon increases. An alternative is
      to allow this structure to decay (i.e. pass ``True``). If you'd like more fine-grained control over this decay,
@@ -97,7 +97,7 @@ class NN(_RegressionBase):
                  id: str,
                  nn: torch.nn.Module,
                  measure: Optional[str] = None,
-                 process_variance: bool = False,
+                 fixed: bool = True,
                  decay: Optional[Tuple[float, float]] = None):
         num_outputs = self._infer_num_outputs(nn)
         super().__init__(
@@ -105,7 +105,7 @@ class NN(_RegressionBase):
             predictors=[f'nn{i}' for i in range(num_outputs)],
             h_module=nn,
             measure=measure,
-            process_variance=process_variance,
+            fixed=fixed,
             decay=decay
         )
 
