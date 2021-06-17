@@ -8,7 +8,7 @@ from torchcast.internals.utils import get_nan_groups
 
 class StateSpaceStep(torch.nn.Module):
     """
-    Used internally by `StateSpaceModel` to apply the predict/update steps.
+    Base-class for modules that handle predict/update within a state-space model.
     """
 
     # this would ideally be a class-attribute but torch.jit.trace strips them

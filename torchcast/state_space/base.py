@@ -13,7 +13,7 @@ from torchcast.process.regression import Process
 
 class StateSpaceModel(nn.Module):
     """
-    The StateSpaceModel is a :class:`torch.nn.Module` which generates predictions/forecasts using a state-space model.
+    Base-class for any :class:`torch.nn.Module` which generates predictions/forecasts using a state-space model.
 
     :param processes: A list of :class:`.Process` modules.
     :param measures: A list of strings specifying the names of the dimensions of the time-series being measured.
@@ -158,7 +158,8 @@ class StateSpaceModel(nn.Module):
         assert len(self.measures) == y.shape[-1]
 
         hits = {m: [] for m in self.measures}
-        for process in self.processes:
+        for pid in self.processes:
+            process = self.processes[pid]
             # have to use the name since `jit.script()` strips the class
             if (getattr(process, 'original_name', None) or type(process).__name__) in ('LocalLevel', 'LocalTrend'):
                 if 'position->position' in (process.f_modules or {}):
@@ -213,6 +214,7 @@ class StateSpaceModel(nn.Module):
     def design_modules(self) -> Iterable[Tuple[str, nn.Module]]:
         for pid in self.processes:
             yield pid, self.processes[pid]
+        yield 'measure_covariance', self.measure_covariance
 
     @torch.jit.ignore()
     def forward(self,

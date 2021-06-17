@@ -25,9 +25,9 @@ from torch import nn, Tensor
 from typing_extensions import Final
 
 
-class GaussianStep(StateSpaceStep):
+class KalmanStep(StateSpaceStep):
     """
-    Used internally by `KalmanFilter` to apply the kalman-filtering algorithm. Subclasses can implement additional
+    Used internally by ``KalmanFilter`` to apply the kalman-filtering algorithm. Subclasses can implement additional
     logic such as outlier-rejection, censoring, etc.
     """
     use_stable_cov_update: Final[bool] = True
@@ -94,7 +94,7 @@ class KalmanFilter(StateSpaceModel):
     """
     Uses the full kalman-filtering algorithm for generating forecasts.
     """
-    ss_step_cls = GaussianStep
+    ss_step_cls = KalmanStep
 
     def __init__(self,
                  processes: Sequence[Process],
