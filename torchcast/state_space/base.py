@@ -7,7 +7,6 @@ from torch import nn, Tensor
 
 from torchcast.covariance import Covariance
 from torchcast.state_space.predictions import Predictions
-from torchcast.state_space.simulations import Simulations
 from torchcast.state_space.ss_step import StateSpaceStep
 from torchcast.process.regression import Process
 
@@ -18,18 +17,14 @@ class StateSpaceModel(nn.Module):
 
     :param processes: A list of :class:`.Process` modules.
     :param measures: A list of strings specifying the names of the dimensions of the time-series being measured.
-    :param process_covariance: A module created with ``Covariance.from_processes(processes, cov_type='process')``.
     :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
-    :param initial_covariance: A module created with ``Covariance.from_processes(processes, cov_type='initial')``.
     """
     ss_step_cls: Type[StateSpaceStep]
 
     def __init__(self,
                  processes: Sequence[Process],
                  measures: Optional[Sequence[str]] = None,
-                 process_covariance: Optional[Covariance] = None,
-                 measure_covariance: Optional[Covariance] = None,
-                 initial_covariance: Optional[Covariance] = None):
+                 measure_covariance: Optional[Covariance] = None):
         super().__init__()
 
         if isinstance(measures, str):
@@ -37,9 +32,7 @@ class StateSpaceModel(nn.Module):
             warn(f"`measures` should be a list of strings not a string; interpreted as `{measures}`.")
         self._validate(processes, measures)
 
-        self.process_covariance = process_covariance.set_id('process_covariance')
         self.measure_covariance = measure_covariance.set_id('measure_covariance')
-        self.initial_covariance = initial_covariance.set_id('initial_covariance')
 
         self.ss_step = self.ss_step_cls()
 
@@ -165,14 +158,14 @@ class StateSpaceModel(nn.Module):
         assert len(self.measures) == y.shape[-1]
 
         hits = {m: [] for m in self.measures}
-        for pid, process in self.named_processes():
+        for process in self.processes:
             # have to use the name since `jit.script()` strips the class
             if (getattr(process, 'original_name', None) or type(process).__name__) in ('LocalLevel', 'LocalTrend'):
                 if 'position->position' in (process.f_modules or {}):
                     continue
                 assert process.measure
 
-                hits[process.measure].append(pid)
+                hits[process.measure].append(process.id)
                 measure_idx = list(self.measures).index(process.measure)
                 with torch.no_grad():
                     t0 = y[:, 0, measure_idx]
@@ -217,17 +210,9 @@ class StateSpaceModel(nn.Module):
                 p.measure = measures[0]
 
     @torch.jit.ignore()
-    def named_processes(self) -> Iterable[Tuple[str, Process]]:
+    def design_modules(self) -> Iterable[Tuple[str, nn.Module]]:
         for pid in self.processes:
             yield pid, self.processes[pid]
-
-    @torch.jit.ignore()
-    def named_covariances(self) -> Iterable[Tuple[str, Covariance]]:
-        return [
-            ('process_covariance', self.process_covariance),
-            ('measure_covariance', self.measure_covariance),
-            ('initial_covariance', self.initial_covariance),
-        ]
 
     @torch.jit.ignore()
     def forward(self,
@@ -251,10 +236,9 @@ class StateSpaceModel(nn.Module):
         :param out_timesteps: The number of timesteps to produce in the output. This is useful when passing a tensor
          of predictors that goes later in time than the `input` tensor -- you can specify ``out_timesteps=X.shape[1]``
          to get forecasts into this later time horizon.
-        :param initial_state: The initial prediction for the state of the system: a tuple of tensors representing the
-         initial mean and covariance. Default is ``self.initial_mean, self.initial_covariance()``. You can pass your
-         own for one or both of these, which can come from either a previous prediction or from a separate
-         :class:`torch.nn.Module` that predicts the initial state.
+        :param initial_state: The initial prediction for the state of the system. XXX (single tensor for mean always
+         supported. for kf child class, can pass (mean,cov) tuple. this is usually if you're feeding from a previous
+         output. for exp-smooth child class, latter isn't supported.
         :param every_step: By default, ``n_step`` ahead predictions will be generated at every timestep. If
          ``every_step=False``, then these predictions will only be generated every `n_step` timesteps. For example,
          with hourly data, ``n_step=24`` and ``every_step=True``, each timepoint would be a forecast generated with
@@ -318,34 +302,7 @@ class StateSpaceModel(nn.Module):
                                initial_state,
                                start_offsets: Optional[Sequence] = None,
                                num_groups: Optional[int] = None) -> Tuple[Tensor, Tensor]:
-        init_mean, init_cov = initial_state
-        if init_mean is None:
-            init_mean = self.initial_mean[None, :]
-        assert len(init_mean.shape) == 2
-
-        if init_cov is None:
-            # TODO: what about predicting with kwargs?
-            init_cov = self.initial_covariance()[None, :]
-
-        if num_groups is None and start_offsets is not None:
-            num_groups = len(start_offsets)
-
-        if num_groups is not None:
-            assert init_mean.shape[0] in (num_groups, 1)
-            init_mean = init_mean.expand(num_groups, -1)
-            init_cov = init_cov.expand(num_groups, -1, -1)
-
-        measure_scaling = torch.diag_embed(self._get_measure_scaling())
-        init_cov = measure_scaling @ init_cov @ measure_scaling
-
-        # seasonal processes need to offset the initial mean:
-        init_mean_offset = []
-        for pid, p in self.named_processes():
-            _process_slice = slice(*self.process_to_slice[pid])
-            init_mean_offset.append(p.offset_initial_state(init_mean[:, _process_slice], start_offsets))
-        init_mean_offset = torch.cat(init_mean_offset, 1)
-
-        return init_mean_offset, init_cov
+        raise NotImplementedError
 
     @torch.jit.export
     def _script_forward(self,
@@ -452,19 +409,20 @@ class StateSpaceModel(nn.Module):
                           time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
                           num_groups: int,
                           out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
+        """
+        Build the design matrices. Implemented by subclasses (partially implemented by
+        ``_build_transition_and_measure_mats()`` and ``_build_measure_var_mats()``, but torchscript
+        doesn't currently support ``super()``).
 
-        Rs, Qs = self._build_var_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
-        Fs, Hs = self._build_transition_and_measure_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
-
-        predict_kwargs = {'F': Fs, 'Q': Qs}
-        update_kwargs = {'H': Hs, 'R': Rs}
-        return predict_kwargs, update_kwargs
-
-    def _build_var_mats(self,
-                        static_kwargs: Dict[str, Dict[str, Tensor]],
-                        time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
-                        num_groups: int,
-                        out_timesteps: int) -> Tuple[List[Tensor], List[Tensor]]:
+        :param static_kwargs: Keys are ids of ``design_modules()``, values are dictionaries of kwargs that only need
+         to be passed once.
+        :param time_varying_kwargs: Keys are ids of ``design_modules()``, values are dictionaries of kwargs, whose
+         values are lists (passed for each timestep).
+        :param num_groups: Number of groups.
+        :param out_timesteps: Number of timesteps.
+        :return: Two dictionaries: ``predict_kwargs`` (passed to ``ss_step.predict()``) and
+         ``update_kwargs`` (passed to ``ss_step.update()``).
+        """
         raise NotImplementedError
 
     def _build_transition_and_measure_mats(self,
@@ -527,6 +485,68 @@ class StateSpaceModel(nn.Module):
             Hs.append(Ht)
         return Fs, Hs
 
+    def _build_measure_var_mats(self,
+                                static_kwargs: Dict[str, Dict[str, Tensor]],
+                                time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                                num_groups: int,
+                                out_timesteps: int) -> List[Tensor]:
+        if 'measure_covariance' in time_varying_kwargs and \
+                self.measure_covariance.expected_kwarg in time_varying_kwargs['measure_covariance']:
+            mvar_inputs = time_varying_kwargs['measure_covariance'][self.measure_covariance.expected_kwarg]
+            Rs: List[Tensor] = []
+            for t in range(out_timesteps):
+                Rs.append(self.measure_covariance(mvar_inputs[t]))
+        else:
+            mvar_input: Optional[Tensor] = None
+            if 'measure_covariance' in static_kwargs and \
+                    self.measure_covariance.expected_kwarg in static_kwargs['measure_covariance']:
+                mvar_input = static_kwargs['measure_covariance'].get(self.measure_covariance.expected_kwarg)
+            R = self.measure_covariance(mvar_input)
+            if len(R.shape) == 2:
+                R = R.expand(num_groups, -1, -1)
+            Rs = [R] * out_timesteps
+
+        return Rs
+
+    @torch.jit.ignore()
+    def _parse_design_kwargs(self, input: Optional[Tensor], out_timesteps: int, **kwargs) -> Dict[str, dict]:
+        static_kwargs = defaultdict(dict)
+        time_varying_kwargs = defaultdict(dict)
+        unused = set(kwargs)
+        kwargs.update(input=input, current_timestep=torch.tensor(list(range(out_timesteps))).view(1, -1, 1))
+        for submodule_nm, submodule in self.design_modules():
+            for found_key, key_name, value in submodule.get_kwargs(kwargs):
+                unused.discard(found_key)
+                if value is not None and len(value.shape) == 3:
+                    time_varying_kwargs[submodule_nm][key_name] = value.unbind(1)
+                elif value is not None:
+                    assert len(value.shape) <= 2, f"'{found_key}' has unexpected ndim {len(value.shape)}, expected <= 3"
+                    static_kwargs[submodule_nm][key_name] = value
+
+        if unused:
+            warn(f"There are unused keyword arguments:\n{unused}")
+        return {
+            'static_kwargs': dict(static_kwargs),
+            'time_varying_kwargs': dict(time_varying_kwargs)
+        }
+
+    def _get_measure_scaling(self) -> Tensor:
+        mcov = self.measure_covariance(None, _ignore_input=True)
+        if self._scale_by_measure_var:
+            measure_var = mcov.diagonal(dim1=-2, dim2=-1)
+            multi = torch.zeros(mcov.shape[0:-2] + (self.state_rank,), dtype=mcov.dtype, device=mcov.device)
+            for pid, process in self.processes.items():
+                pidx = self.process_to_slice[pid]
+                multi[..., slice(*pidx)] = measure_var[..., self.measure_to_idx[process.measure]].sqrt().unsqueeze(-1)
+            assert (multi > 0).all()
+        else:
+            multi = torch.ones((self.state_rank,), dtype=mcov.dtype, device=mcov.device)
+        return multi
+
+    def __repr__(self) -> str:
+        return f'{type(self).__name__}' \
+               f'(processes={repr(list(self.processes.values()))}, measures={repr(list(self.measures))})'
+
     @torch.no_grad()
     @torch.jit.ignore()
     def simulate(self,
@@ -580,48 +600,11 @@ class StateSpaceModel(nn.Module):
             )
             means.append(mean)
 
-        return Simulations(
-            torch.stack(means, 1),
+        smeans = torch.stack(means, 1)
+        num_groups, num_times, sdim = smeans.shape
+        return self._generate_predictions(
+            means=smeans,
+            covs=torch.zeros((num_groups, num_times, sdim, sdim), dtype=smeans.dtype, device=smeans.device),
             H=torch.stack(update_kwargs['H'], 1),
-            R=torch.stack(update_kwargs['R'], 1),
-            kalman_filter=self
+            R=torch.stack(update_kwargs['R'], 1)
         )
-
-    @torch.jit.ignore()
-    def _parse_design_kwargs(self, input: Optional[Tensor], out_timesteps: int, **kwargs) -> Dict[str, dict]:
-        static_kwargs = defaultdict(dict)
-        time_varying_kwargs = defaultdict(dict)
-        unused = set(kwargs)
-        kwargs.update(input=input, current_timestep=torch.tensor(list(range(out_timesteps))).view(1, -1, 1))
-        for submodule_nm, submodule in list(self.named_processes()) + list(self.named_covariances()):
-            for found_key, key_name, value in submodule.get_kwargs(kwargs):
-                unused.discard(found_key)
-                if value is not None and len(value.shape) == 3:
-                    time_varying_kwargs[submodule_nm][key_name] = value.unbind(1)
-                elif value is not None:
-                    assert len(value.shape) <= 2, f"'{found_key}' has unexpected ndim {len(value.shape)}, expected <= 3"
-                    static_kwargs[submodule_nm][key_name] = value
-
-        if unused:
-            warn(f"There are unused keyword arguments:\n{unused}")
-        return {
-            'static_kwargs': dict(static_kwargs),
-            'time_varying_kwargs': dict(time_varying_kwargs)
-        }
-
-    def _get_measure_scaling(self) -> Tensor:
-        mcov = self.measure_covariance(None, _ignore_input=True)
-        if self._scale_by_measure_var:
-            measure_var = mcov.diagonal(dim1=-2, dim2=-1)
-            multi = torch.zeros(mcov.shape[0:-2] + (self.state_rank,), dtype=mcov.dtype, device=mcov.device)
-            for pid, process in self.processes.items():
-                pidx = self.process_to_slice[pid]
-                multi[..., slice(*pidx)] = measure_var[..., self.measure_to_idx[process.measure]].sqrt().unsqueeze(-1)
-            assert (multi > 0).all()
-        else:
-            multi = torch.ones((self.state_rank,), dtype=mcov.dtype, device=mcov.device)
-        return multi
-
-    def __repr__(self) -> str:
-        return f'{type(self).__name__}' \
-               f'(processes={repr(list(self.processes.values()))}, measures={repr(list(self.measures))})'

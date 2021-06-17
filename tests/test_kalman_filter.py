@@ -324,7 +324,7 @@ class TestKalmanFilter(TestCase):
         expected = {'lm1': torch.zeros(1), 'lm2': torch.zeros(1)}
         # share input:
         kf = _make_kf()
-        for nm, proc in kf.named_processes():
+        for nm, proc in kf.processes.items():
             proc.h_forward = check_input(proc.h_forward, expected[nm])
         kf(data, X=_predictors * 0.)
 
@@ -332,7 +332,7 @@ class TestKalmanFilter(TestCase):
         expected['lm2'] = torch.ones(1)
         # individual input:
         kf = _make_kf()
-        for nm, proc in kf.named_processes():
+        for nm, proc in kf.processes.items():
             proc.h_forward = check_input(proc.h_forward, expected[nm])
         kf(data, lm1__X=_predictors * 0., lm2__X=_predictors)
 

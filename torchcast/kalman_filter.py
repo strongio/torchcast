@@ -10,7 +10,7 @@ This class inherits most of its methods from :class:`torchcast.state_space.State
 ----------
 """
 
-from typing import Sequence, Dict, List
+from typing import Sequence, Dict, List, Iterable
 
 from torchcast.covariance import Covariance
 from torchcast.process import Process
@@ -82,26 +82,40 @@ class KalmanFilter(StateSpaceModel):
                  process_covariance: Optional[Covariance] = None,
                  measure_covariance: Optional[Covariance] = None):
 
+        initial_covariance = Covariance.for_processes(processes, cov_type='initial')
+
         if process_covariance is None:
             process_covariance = Covariance.for_processes(processes, cov_type='process')
+
         if measure_covariance is None:
             measure_covariance = Covariance.for_measures(measures)
-
-        initial_covariance = Covariance.for_processes(processes, cov_type='initial')
 
         super().__init__(
             processes=processes,
             measures=measures,
-            process_covariance=process_covariance,
             measure_covariance=measure_covariance,
-            initial_covariance=initial_covariance
         )
+        self.process_covariance = process_covariance.set_id('process_covariance')
+        self.initial_covariance = initial_covariance.set_id('initial_covariance')
 
-    def _build_var_mats(self,
-                        static_kwargs: Dict[str, Dict[str, Tensor]],
-                        time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
-                        num_groups: int,
-                        out_timesteps: int) -> Tuple[List[Tensor], List[Tensor]]:
+    @torch.jit.ignore()
+    def design_modules(self) -> Iterable[Tuple[str, nn.Module]]:
+        # torchscript doesn't support super, see: https://github.com/pytorch/pytorch/issues/42885
+        for pid in self.processes:
+            yield pid, self.processes[pid]
+        yield 'process_covariance', self.process_covariance
+        yield 'measure_covariance', self.measure_covariance
+        yield 'initial_covariance', self.initial_covariance
+
+    def build_design_mats(self,
+                          static_kwargs: Dict[str, Dict[str, Tensor]],
+                          time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                          num_groups: int,
+                          out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
+        Fs, Hs = self._build_transition_and_measure_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
+
+        # measure-variance:
+        Rs = self._build_measure_var_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
 
         # process-variance:
         measure_scaling = torch.diag_embed(self._get_measure_scaling())
@@ -121,21 +135,40 @@ class KalmanFilter(StateSpaceModel):
                 Q = Q.expand(num_groups, -1, -1)
             Qs = [Q] * out_timesteps
 
-        # measure-variance:
-        if 'measure_covariance' in time_varying_kwargs and \
-                self.measure_covariance.expected_kwarg in time_varying_kwargs['measure_covariance']:
-            mvar_inputs = time_varying_kwargs['measure_covariance'][self.measure_covariance.expected_kwarg]
-            Rs: List[Tensor] = []
-            for t in range(out_timesteps):
-                Rs.append(self.measure_covariance(mvar_inputs[t]))
-        else:
-            mvar_input: Optional[Tensor] = None
-            if 'measure_covariance' in static_kwargs and \
-                    self.measure_covariance.expected_kwarg in static_kwargs['measure_covariance']:
-                mvar_input = static_kwargs['measure_covariance'].get(self.measure_covariance.expected_kwarg)
-            R = self.measure_covariance(mvar_input)
-            if len(R.shape) == 2:
-                R = R.expand(num_groups, -1, -1)
-            Rs = [R] * out_timesteps
+        predict_kwargs = {'F': Fs, 'Q': Qs}
+        update_kwargs = {'H': Hs, 'R': Rs}
+        return predict_kwargs, update_kwargs
 
-        return Rs, Qs
+    @torch.jit.ignore
+    def _prepare_initial_state(self,
+                               initial_state: Tuple[Optional[Tensor], Optional[Tensor]],
+                               start_offsets: Optional[Sequence] = None,
+                               num_groups: Optional[int] = None) -> Tuple[Tensor, Tensor]:
+        init_mean, init_cov = initial_state
+        if init_mean is None:
+            init_mean = self.initial_mean[None, :]
+        assert len(init_mean.shape) == 2
+
+        if init_cov is None:
+            init_cov = self.initial_covariance()[None, :]
+
+        if num_groups is None and start_offsets is not None:
+            num_groups = len(start_offsets)
+
+        if num_groups is not None:
+            assert init_mean.shape[0] in (num_groups, 1)
+            init_mean = init_mean.expand(num_groups, -1)
+            init_cov = init_cov.expand(num_groups, -1, -1)
+
+        measure_scaling = torch.diag_embed(self._get_measure_scaling())
+        init_cov = measure_scaling @ init_cov @ measure_scaling
+
+        # seasonal processes need to offset the initial mean:
+        init_mean_offset = []
+        for pid in self.processes:
+            p = self.processes[pid]
+            _process_slice = slice(*self.process_to_slice[pid])
+            init_mean_offset.append(p.offset_initial_state(init_mean[:, _process_slice], start_offsets))
+        init_mean_offset = torch.cat(init_mean_offset, 1)
+
+        return init_mean_offset, init_cov
