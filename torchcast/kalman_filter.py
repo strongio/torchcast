@@ -12,6 +12,7 @@ This class inherits most of its methods from :class:`torchcast.state_space.State
 
 from typing import Sequence, Dict, List, Iterable
 
+from torchcast.internals.utils import get_nan_groups
 from torchcast.covariance import Covariance
 from torchcast.process import Process
 from torchcast.state_space.base import StateSpaceModel
@@ -43,7 +44,26 @@ class GaussianStep(StateSpaceStep):
         cov = F @ cov @ F.permute(0, 2, 1) + Q
         return mean, cov
 
-    def _update(self, input: Tensor, mean: Tensor, cov: Tensor, H: Tensor, R: Tensor) -> Tuple[Tensor, Tensor]:
+    def _mask_mats(self,
+                   groups: Tensor,
+                   val_idx: Optional[Tensor],
+                   input: Tensor,
+                   kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Dict[str, Tensor]]:
+        if val_idx is None:
+            return input[groups], {k: v[groups] for k, v in kwargs.items()}
+        else:
+            m1d = torch.meshgrid(groups, val_idx)
+            m2d = torch.meshgrid(groups, val_idx, val_idx)
+            masked_input = input[m1d[0], m1d[1]]
+            masked_kwargs = {
+                'H': kwargs['H'][m1d[0], m1d[1]],
+                'R': kwargs['R'][m2d[0], m2d[1], m2d[2]]
+            }
+            return masked_input, masked_kwargs
+
+    def _update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        H = kwargs['H']
+        R = kwargs['R']
         K = self.kalman_gain(cov=cov, H=H, R=R)
         measured_mean = (H @ mean.unsqueeze(-1)).squeeze(-1)
         resid = input - measured_mean

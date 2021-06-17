@@ -3,13 +3,49 @@ from typing import Sequence, Optional, Type, Tuple, List, Dict
 import torch
 from torch import Tensor
 
-from torchcast.internals.utils import get_nan_groups
 from torchcast.state_space import Predictions
-from torchcast.covariance import Covariance, DiagCovariance
+from torchcast.covariance import Covariance
 from torchcast.process import Process
 from torchcast.state_space import StateSpaceModel
 from torchcast.state_space.ss_step import StateSpaceStep
 
+
+class ExpSmoothStep(StateSpaceStep):
+
+    # this would ideally be a class-attribute but torch.jit.trace strips them
+    @torch.jit.ignore()
+    def get_distribution(self) -> Type[torch.distributions.Distribution]:
+        return torch.distributions.MultivariateNormal
+
+    def _mask_mats(self,
+                   groups: Tensor,
+                   val_idx: Optional[Tensor],
+                   input: Tensor,
+                   kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Dict[str, Tensor]]:
+        # torchscript doesn't support super, see: https://github.com/pytorch/pytorch/issues/42885
+        if val_idx is None:
+            return input[groups], {k: v[groups] for k, v in kwargs.items()}
+        else:
+            m1d = torch.meshgrid(groups, val_idx)
+            m2d = torch.meshgrid(groups, val_idx, val_idx)
+            masked_input = input[m1d[0], m1d[1]]
+            masked_kwargs = {
+                'H': kwargs['H'][m1d[0], m1d[1]],
+                'R': kwargs['R'][m2d[0], m2d[1], m2d[2]],
+                'K': kwargs['K'][m1d[0], m1d[1]],
+            }
+            return masked_input, masked_kwargs
+
+    # noinspection PyMethodOverriding
+    def _update(self,
+                input: Tensor,
+                mean: Tensor,
+                cov: Tensor,
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        raise NotImplementedError("TODO")
+
+    def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        raise NotImplementedError("TODO")
 
 
 class ExpSmooth(StateSpaceModel):
@@ -63,9 +99,8 @@ class ExpSmooth(StateSpaceModel):
                 K = K.expand(num_groups, -1, -1)
             Ks = [K] * out_timesteps
 
-        raise NotImplementedError("TODO")
-        predict_kwargs = {'F': Fs}
-        update_kwargs = {'H': Hs, 'R': Rs}
+        predict_kwargs = {'F': Fs, 'K': Ks}
+        update_kwargs = {'H': Hs, 'R': Rs, 'K': Ks}
         return predict_kwargs, update_kwargs
 
     def _generate_predictions(self, means: Tensor, covs: Tensor, R: Tensor, H: Tensor) -> 'Predictions':
