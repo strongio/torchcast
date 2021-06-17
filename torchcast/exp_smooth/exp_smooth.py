@@ -1,4 +1,4 @@
-from typing import Sequence, Optional, Type, Tuple, List, Dict
+from typing import Sequence, Optional, Type, Tuple, List, Dict, Iterable
 
 import torch
 from torch import Tensor
@@ -49,6 +49,9 @@ class ExpSmoothStep(StateSpaceStep):
 
 
 class ExpSmooth(StateSpaceModel):
+    """
+    Uses exponential smoothing to generate forecasts.
+    """
     ss_step_cls = ExpSmoothStep
 
     def __init__(self,
@@ -67,6 +70,15 @@ class ExpSmooth(StateSpaceModel):
             measures=measures,
             measure_covariance=measure_covariance,
         )
+        self.innovation_matrix = innovation_matrix
+
+    @torch.jit.ignore()
+    def design_modules(self) -> Iterable[Tuple[str, torch.nn.Module]]:
+        # torchscript doesn't support super, see: https://github.com/pytorch/pytorch/issues/42885
+        for pid in self.processes:
+            yield pid, self.processes[pid]
+        yield 'measure_covariance', self.measure_covariance
+        yield 'innovation_matrix', self.innovation_matrix
 
     def _prepare_initial_state(self, initial_state, start_offsets: Optional[Sequence] = None,
                                num_groups: Optional[int] = None) -> Tuple[Tensor, Tensor]:

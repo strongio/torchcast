@@ -252,8 +252,6 @@ class Covariance(nn.Module):
         return pad_covariance(mini_cov, [int(i not in self.empty_idx) for i in range(self.rank)])
 
 
-
-
 def pad_covariance(unpadded_cov: Tensor, mask_1d: List[int]) -> Tensor:
     rank = len(mask_1d)
     padded_to_unpadded: Dict[int, int] = {}

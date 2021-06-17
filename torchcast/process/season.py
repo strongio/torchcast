@@ -148,7 +148,7 @@ class Season(_Season, Process):
                  dt_unit: Optional[str],
                  K: int,
                  measure: Optional[str] = None,
-                 process_variance: bool = True,
+                 fixed: bool = False,
                  decay: Optional[Union[nn.ModuleDict, Tuple[float, float]]] = None,
                  decay_kwarg: Optional[str] = None):
 
@@ -178,7 +178,7 @@ class Season(_Season, Process):
             f_modules=transitions if decay is not None else None,
             h_tensor=torch.tensor(h_tensor),
             measure=measure,
-            no_pcov_state_elements=[] if process_variance else state_elements,
+            fixed_state_elements=state_elements if fixed else [],
             f_kwarg=decay_kwarg
         )
 
@@ -269,7 +269,7 @@ class DiscreteSeason(Process):
                  num_seasons: int,
                  season_duration: int = 1,
                  measure: Optional[str] = None,
-                 process_variance: bool = False,
+                 fixed: bool = False,
                  decay: Optional[Tuple[float, float]] = None):
         if isinstance(decay, tuple) and (decay[0] ** (num_seasons * season_duration)) < .01:
             warn(
@@ -286,7 +286,7 @@ class DiscreteSeason(Process):
             h_tensor=torch.tensor([1.] + [0.] * (num_seasons - 1)),
             f_modules=f_modules,
             f_kwarg='current_timestep',
-            no_pcov_state_elements=[] if process_variance else state_elements
+            fixed_state_elements=state_elements if fixed else [],
         )
 
     def _make_f_modules(self,
