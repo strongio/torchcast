@@ -634,6 +634,6 @@ class StateSpaceModel(nn.Module):
         return self._generate_predictions(
             means=smeans,
             covs=torch.zeros((num_groups, num_times, sdim, sdim), dtype=smeans.dtype, device=smeans.device),
-            H=torch.stack(update_kwargs['H'], 1),
-            R=torch.stack(update_kwargs['R'], 1)
+            predict_kwargs=predict_kwargs,
+            update_kwargs=update_kwargs
         )
