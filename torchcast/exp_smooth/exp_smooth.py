@@ -47,10 +47,10 @@ class ExpSmoothStep(StateSpaceStep):
         F = kwargs['F']
         K = kwargs['K']
         R = kwargs['R']
-        mean = (F @ mean.unsqueeze(-1)).squeeze(-1)
+        new_mean = (F @ mean.unsqueeze(-1)).squeeze(-1)
         # TODO: cheaper to check cov!=0 before applying FCF'?
-        cov = F @ cov @ F.permute(0, 2, 1) + K @ R @ K.permute(0, 2, 1)
-        return mean, cov
+        new_cov = F @ cov @ F.permute(0, 2, 1) + K @ R @ K.permute(0, 2, 1)
+        return new_mean, new_cov
 
 
 class ExpSmooth(StateSpaceModel):
@@ -92,11 +92,12 @@ class ExpSmooth(StateSpaceModel):
             predict_module=predict_smoothing
         ).set_id('innovation_matrix')
 
+    @torch.jit.ignore
     def initial_covariance(self, *args, **kwargs) -> Tensor:
         ms = self._get_measure_scaling()
         return torch.eye(self.state_rank, dtype=ms.dtype, device=ms.device)
 
-    @torch.jit.ignore()
+    @torch.jit.ignore
     def design_modules(self) -> Iterable[Tuple[str, torch.nn.Module]]:
         # torchscript doesn't support super, see: https://github.com/pytorch/pytorch/issues/42885
         for pid in self.processes:

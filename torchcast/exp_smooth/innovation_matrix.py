@@ -30,7 +30,9 @@ class InnovationMatrix(torch.nn.Module):
                     continue
                 self.full_idx.append((r, c))
         self.id = id
-        self.unconstrained_params = torch.nn.Parameter(.1 * torch.randn(len(self.full_idx)))
+
+        # TODO: smart inits?
+        self.unconstrained_params = torch.nn.Parameter(.1 * torch.randn(len(self.full_idx)) - 10)
         self.predict_module = predict_module
 
         # TODO: allow user-defined?
