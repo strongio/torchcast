@@ -3,6 +3,7 @@ from typing import Sequence, Optional, Type, Tuple, List, Dict, Iterable
 import torch
 from torch import Tensor
 
+from exp_smooth.innovation_matrix import InnovationMatrix
 from torchcast.state_space import Predictions
 from torchcast.covariance import Covariance
 from torchcast.process import Process
@@ -11,11 +12,6 @@ from torchcast.state_space.ss_step import StateSpaceStep
 
 
 class ExpSmoothStep(StateSpaceStep):
-
-    # this would ideally be a class-attribute but torch.jit.trace strips them
-    @torch.jit.ignore()
-    def get_distribution(self) -> Type[torch.distributions.Distribution]:
-        return torch.distributions.MultivariateNormal
 
     def _mask_mats(self,
                    groups: Tensor,
@@ -36,16 +32,25 @@ class ExpSmoothStep(StateSpaceStep):
             }
             return masked_input, masked_kwargs
 
-    # noinspection PyMethodOverriding
     def _update(self,
                 input: Tensor,
                 mean: Tensor,
                 cov: Tensor,
                 kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        raise NotImplementedError("TODO")
+        measured_mean = (kwargs['H'] @ mean.unsqueeze(-1)).squeeze(-1)
+        resid = input - measured_mean
+        new_mean = mean + (kwargs['K'] @ resid.unsqueeze(-1)).squeeze(-1)
+        new_cov = torch.zeros_like(cov)
+        return new_mean, new_cov
 
     def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        raise NotImplementedError("TODO")
+        F = kwargs['F']
+        K = kwargs['K']
+        R = kwargs['R']
+        mean = (F @ mean.unsqueeze(-1)).squeeze(-1)
+        # TODO: cheaper to check cov!=0 before applying FCF'?
+        cov = F @ cov @ F.permute(0, 2, 1) + K @ R @ K.permute(0, 2, 1)
+        return mean, cov
 
 
 class ExpSmooth(StateSpaceModel):
@@ -57,20 +62,39 @@ class ExpSmooth(StateSpaceModel):
     def __init__(self,
                  processes: Sequence[Process],
                  measures: Optional[Sequence[str]] = None,
-                 innovation_matrix: Optional['InnovationMatrix'] = None,
-                 measure_covariance: Optional[Covariance] = None):
+                 measure_covariance: Optional[Covariance] = None,
+                 predict_smoothing: Optional[torch.nn.Module] = None):
 
         if measure_covariance is None:
             measure_covariance = Covariance.for_measures(measures)
-        if innovation_matrix is None:
-            raise NotImplementedError("TODO")
 
         super().__init__(
             processes=processes,
             measures=measures,
             measure_covariance=measure_covariance,
         )
-        self.innovation_matrix = innovation_matrix
+
+        state_rank = 0
+        fixed_idx = []
+        for p in processes:
+            midx = self.measures.index(p.measure)
+            fixed_els = p.fixed_state_elements or []
+            for i, se in enumerate(p.state_elements):
+                if se in fixed_els:
+                    fixed_idx.append((state_rank + i, midx))
+                # TODO: warn if time-varying H but some unfixed_els
+            state_rank += len(p.state_elements)
+
+        self.innovation_matrix = InnovationMatrix(
+            measure_rank=len(self.measures),
+            state_rank=state_rank,
+            empty_idx=fixed_idx,
+            predict_module=predict_smoothing
+        ).set_id('innovation_matrix')
+
+    def initial_covariance(self, *args, **kwargs) -> Tensor:
+        ms = self._get_measure_scaling()
+        return torch.eye(self.state_rank, dtype=ms.dtype, device=ms.device)
 
     @torch.jit.ignore()
     def design_modules(self) -> Iterable[Tuple[str, torch.nn.Module]]:
@@ -79,10 +103,6 @@ class ExpSmooth(StateSpaceModel):
             yield pid, self.processes[pid]
         yield 'measure_covariance', self.measure_covariance
         yield 'innovation_matrix', self.innovation_matrix
-
-    def _prepare_initial_state(self, initial_state, start_offsets: Optional[Sequence] = None,
-                               num_groups: Optional[int] = None) -> Tuple[Tensor, Tensor]:
-        raise NotImplementedError("TODO")
 
     def build_design_mats(self,
                           static_kwargs: Dict[str, Dict[str, Tensor]],
@@ -111,11 +131,6 @@ class ExpSmooth(StateSpaceModel):
                 K = K.expand(num_groups, -1, -1)
             Ks = [K] * out_timesteps
 
-        predict_kwargs = {'F': Fs, 'K': Ks}
-        update_kwargs = {'H': Hs, 'R': Rs, 'K': Ks}
+        predict_kwargs = {'F': Fs, 'K': Ks, 'R': Rs}
+        update_kwargs = {'H': Hs, 'K': Ks}
         return predict_kwargs, update_kwargs
-
-    def _generate_predictions(self, means: Tensor, covs: Tensor, R: Tensor, H: Tensor) -> 'Predictions':
-        return Predictions(
-            state_means=means, state_covs=covs, R=torch.diag_embed(R), H=torch.diag_embed(H), kalman_filter=self
-        )

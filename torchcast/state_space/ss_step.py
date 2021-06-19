@@ -14,7 +14,7 @@ class StateSpaceStep(torch.nn.Module):
     # this would ideally be a class-attribute but torch.jit.trace strips them
     @torch.jit.ignore()
     def get_distribution(self) -> Type[torch.distributions.Distribution]:
-        raise NotImplementedError
+        return torch.distributions.MultivariateNormal
 
     def forward(self,
                 input: Tensor,

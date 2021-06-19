@@ -57,7 +57,7 @@ class Covariance(nn.Module):
                        predict_variance: Optional[nn.Module] = None,
                        **kwargs) -> 'Covariance':
         """
-        :param processes: The ``processes`` used in your :class:`.KalmanFilter`.
+        :param processes: The ``processes`` used in your :class:`.StateSpaceModel`.
         :param cov_type: The type of covariance, either 'process' or 'initial' (default: 'process').
         :param predict_variance: A :class:`torch.nn.Module` that will predict a (log) multiplier for the variance.
          These should output real-values with shape ``(num_groups, self.param_rank)``; these values will then be

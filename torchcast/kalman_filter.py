@@ -12,13 +12,12 @@ This class inherits most of its methods from :class:`torchcast.state_space.State
 
 from typing import Sequence, Dict, List, Iterable
 
-from torchcast.internals.utils import get_nan_groups
 from torchcast.covariance import Covariance
 from torchcast.process import Process
 from torchcast.state_space.base import StateSpaceModel
 from torchcast.state_space.ss_step import StateSpaceStep
 
-from typing import Tuple, Type, Optional
+from typing import Tuple, Optional
 
 import torch
 from torch import nn, Tensor
@@ -31,11 +30,6 @@ class KalmanStep(StateSpaceStep):
     logic such as outlier-rejection, censoring, etc.
     """
     use_stable_cov_update: Final[bool] = True
-
-    # this would ideally be a class-attribute but torch.jit.trace strips them
-    @torch.jit.ignore()
-    def get_distribution(self) -> Type[torch.distributions.Distribution]:
-        return torch.distributions.MultivariateNormal
 
     def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         F = kwargs['F']
@@ -64,14 +58,14 @@ class KalmanStep(StateSpaceStep):
     def _update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         H = kwargs['H']
         R = kwargs['R']
-        K = self.kalman_gain(cov=cov, H=H, R=R)
+        K = self._kalman_gain(cov=cov, H=H, R=R)
         measured_mean = (H @ mean.unsqueeze(-1)).squeeze(-1)
         resid = input - measured_mean
         new_mean = mean + (K @ resid.unsqueeze(-1)).squeeze(-1)
-        new_cov = self.covariance_update(cov=cov, K=K, H=H, R=R)
+        new_cov = self._covariance_update(cov=cov, K=K, H=H, R=R)
         return new_mean, new_cov
 
-    def covariance_update(self, cov: Tensor, K: Tensor, H: Tensor, R: Tensor) -> Tensor:
+    def _covariance_update(self, cov: Tensor, K: Tensor, H: Tensor, R: Tensor) -> Tensor:
         I = torch.eye(cov.shape[1], dtype=cov.dtype, device=cov.device).unsqueeze(0)
         ikh = I - K @ H
         if self.use_stable_cov_update:
@@ -79,7 +73,8 @@ class KalmanStep(StateSpaceStep):
         else:
             return ikh @ cov
 
-    def kalman_gain(self, cov: Tensor, H: Tensor, R: Tensor) -> Tensor:
+    @staticmethod
+    def _kalman_gain(cov: Tensor, H: Tensor, R: Tensor) -> Tensor:
         Ht = H.permute(0, 2, 1)
         covs_measured = cov @ Ht
         system_covariance = torch.baddbmm(R, H @ cov, Ht)
@@ -158,37 +153,3 @@ class KalmanFilter(StateSpaceModel):
         predict_kwargs = {'F': Fs, 'Q': Qs}
         update_kwargs = {'H': Hs, 'R': Rs}
         return predict_kwargs, update_kwargs
-
-    @torch.jit.ignore
-    def _prepare_initial_state(self,
-                               initial_state: Tuple[Optional[Tensor], Optional[Tensor]],
-                               start_offsets: Optional[Sequence] = None,
-                               num_groups: Optional[int] = None) -> Tuple[Tensor, Tensor]:
-        init_mean, init_cov = initial_state
-        if init_mean is None:
-            init_mean = self.initial_mean[None, :]
-        assert len(init_mean.shape) == 2
-
-        if init_cov is None:
-            init_cov = self.initial_covariance()[None, :]
-
-        if num_groups is None and start_offsets is not None:
-            num_groups = len(start_offsets)
-
-        if num_groups is not None:
-            assert init_mean.shape[0] in (num_groups, 1)
-            init_mean = init_mean.expand(num_groups, -1)
-            init_cov = init_cov.expand(num_groups, -1, -1)
-
-        measure_scaling = torch.diag_embed(self._get_measure_scaling())
-        init_cov = measure_scaling @ init_cov @ measure_scaling
-
-        # seasonal processes need to offset the initial mean:
-        init_mean_offset = []
-        for pid in self.processes:
-            p = self.processes[pid]
-            _process_slice = slice(*self.process_to_slice[pid])
-            init_mean_offset.append(p.offset_initial_state(init_mean[:, _process_slice], start_offsets))
-        init_mean_offset = torch.cat(init_mean_offset, 1)
-
-        return init_mean_offset, init_cov

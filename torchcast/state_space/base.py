@@ -301,10 +301,37 @@ class StateSpaceModel(nn.Module):
 
     @torch.jit.ignore
     def _prepare_initial_state(self,
-                               initial_state,
+                               initial_state: Tuple[Optional[Tensor], Optional[Tensor]],
                                start_offsets: Optional[Sequence] = None,
                                num_groups: Optional[int] = None) -> Tuple[Tensor, Tensor]:
-        raise NotImplementedError
+        init_mean, init_cov = initial_state
+        if init_mean is None:
+            init_mean = self.initial_mean[None, :]
+        assert len(init_mean.shape) == 2
+
+        if init_cov is None:
+            init_cov = self.initial_covariance(None, _ignore_input=True)[None, :]
+
+        if num_groups is None and start_offsets is not None:
+            num_groups = len(start_offsets)
+
+        if num_groups is not None:
+            assert init_mean.shape[0] in (num_groups, 1)
+            init_mean = init_mean.expand(num_groups, -1)
+            init_cov = init_cov.expand(num_groups, -1, -1)
+
+        measure_scaling = torch.diag_embed(self._get_measure_scaling())
+        init_cov = measure_scaling @ init_cov @ measure_scaling
+
+        # seasonal processes need to offset the initial mean:
+        init_mean_offset = []
+        for pid in self.processes:
+            p = self.processes[pid]
+            _process_slice = slice(*self.process_to_slice[pid])
+            init_mean_offset.append(p.offset_initial_state(init_mean[:, _process_slice], start_offsets))
+        init_mean_offset = torch.cat(init_mean_offset, 1)
+
+        return init_mean_offset, init_cov
 
     @torch.jit.export
     def _script_forward(self,
