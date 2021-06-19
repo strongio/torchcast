@@ -26,15 +26,15 @@ class Covariance(nn.Module):
         kf = KalmanFilter(
             measures=measures,
             processes=processes,
-            measure_covariance=Covariance.for_measures(
+            measure_covariance=Covariance.from_measures(
                 measures,
                 predict_variance=torch.nn.Embedding(len(group_ids), len(measures), padding_idx=0)
             ),
-            process_covariance=Covariance.for_processes(
+            process_covariance=Covariance.from_processes(
                 processes,
                 predict_variance=torch.nn.Embedding(
                     len(group_ids),
-                    Covariance.for_processes(processes).param_rank,
+                    Covariance.from_processes(processes).param_rank,
                     padding_idx=0
                 )
             )
@@ -162,6 +162,7 @@ class Covariance(nn.Module):
 
         self.var_predict_module = predict_variance
 
+        # TODO: allow user-defined?
         self.expected_kwarg = '' if self.var_predict_module is None else 'X'
 
     def _set_params(self, init_diag_multi: float):
@@ -252,12 +253,6 @@ class Covariance(nn.Module):
             mini_cov = diag_multi @ mini_cov @ diag_multi
 
         return pad_covariance(mini_cov, [int(i not in self.empty_idx) for i in range(self.rank)])
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__()
-        # aliases:
-        cls.for_processes = cls.from_processes
-        cls.for_measures = cls.from_measures
 
 
 def pad_covariance(unpadded_cov: Tensor, mask_1d: List[int]) -> Tensor:

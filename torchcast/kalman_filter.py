@@ -12,6 +12,7 @@ This class inherits most of its methods from :class:`torchcast.state_space.State
 
 from typing import Sequence, Dict, List, Iterable
 
+from torchcast.state_space import Predictions
 from torchcast.covariance import Covariance
 from torchcast.process import Process
 from torchcast.state_space.base import StateSpaceModel
@@ -121,6 +122,23 @@ class KalmanFilter(StateSpaceModel):
         yield 'process_covariance', self.process_covariance
         yield 'measure_covariance', self.measure_covariance
         yield 'initial_covariance', self.initial_covariance
+
+    @torch.jit.ignore
+    def _generate_predictions(self,
+                              means: Tensor,
+                              covs: Tensor,
+                              predict_kwargs: Dict[str, List[Tensor]],
+                              update_kwargs: Dict[str, List[Tensor]]) -> 'Predictions':
+        """
+        StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
+        """
+        return Predictions(
+            state_means=means,
+            state_covs=covs,
+            R=torch.stack(update_kwargs['R'], 1),
+            H=torch.stack(update_kwargs['H'], 1),
+            kalman_filter=self
+        )
 
     def build_design_mats(self,
                           static_kwargs: Dict[str, Dict[str, Tensor]],

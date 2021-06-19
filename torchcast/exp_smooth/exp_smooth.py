@@ -1,10 +1,10 @@
-from typing import Sequence, Optional, Type, Tuple, List, Dict, Iterable
+from typing import Sequence, Optional, Tuple, List, Dict, Iterable
 
 import torch
 from torch import Tensor
 
-from exp_smooth.innovation_matrix import InnovationMatrix
 from torchcast.state_space import Predictions
+from torchcast.exp_smooth.innovation_matrix import InnovationMatrix
 from torchcast.covariance import Covariance
 from torchcast.process import Process
 from torchcast.state_space import StateSpaceModel
@@ -66,7 +66,7 @@ class ExpSmooth(StateSpaceModel):
                  predict_smoothing: Optional[torch.nn.Module] = None):
 
         if measure_covariance is None:
-            measure_covariance = Covariance.for_measures(measures)
+            measure_covariance = Covariance.from_measures(measures)
 
         super().__init__(
             processes=processes,
@@ -103,6 +103,23 @@ class ExpSmooth(StateSpaceModel):
             yield pid, self.processes[pid]
         yield 'measure_covariance', self.measure_covariance
         yield 'innovation_matrix', self.innovation_matrix
+
+    @torch.jit.ignore
+    def _generate_predictions(self,
+                              means: Tensor,
+                              covs: Tensor,
+                              predict_kwargs: Dict[str, List[Tensor]],
+                              update_kwargs: Dict[str, List[Tensor]]) -> 'Predictions':
+        """
+        StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
+        """
+        return Predictions(
+            state_means=means,
+            state_covs=covs,
+            R=torch.stack(predict_kwargs['R'], 1),
+            H=torch.stack(update_kwargs['H'], 1),
+            kalman_filter=self
+        )
 
     def build_design_mats(self,
                           static_kwargs: Dict[str, Dict[str, Tensor]],

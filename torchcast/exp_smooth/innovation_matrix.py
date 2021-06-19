@@ -33,6 +33,9 @@ class InnovationMatrix(torch.nn.Module):
         self.unconstrained_params = torch.nn.Parameter(.1 * torch.randn(len(self.full_idx)))
         self.predict_module = predict_module
 
+        # TODO: allow user-defined?
+        self.expected_kwarg = '' if self.predict_module is None else 'X'
+
     @property
     def param_rank(self) -> int:
         return len(self.unconstrained_params)
@@ -56,14 +59,13 @@ class InnovationMatrix(torch.nn.Module):
             pred = self.unconstrained_params
 
         out = torch.zeros(
-            pred.shape[0:1] + (self.state_rank, self.measure_rank),
+            pred.shape[:-1] + (self.state_rank, self.measure_rank),
             dtype=self.unconstrained_params.dtype,
             device=self.unconstrained_params.device
         )
-        import pdb
-        pdb.set_trace()
-        out[:, self.full_idx] = pred
-        return pred
+        for i, (r, c) in enumerate(self.full_idx):
+            out[..., r, c] = torch.sigmoid(pred[..., i])
+        return out
 
     @jit.ignore
     def set_id(self, id: str) -> 'InnovationMatrix':

@@ -282,7 +282,7 @@ class StateSpaceModel(nn.Module):
                 raise ValueError("`out_timesteps` must be an int.")
             out_timesteps = int(out_timesteps)
 
-        means, covs, R, H = self._script_forward(
+        means, covs, predict_kwargs, update_kwargs = self._script_forward(
             input=input,
             initial_state=initial_state,
             n_step=n_step,
@@ -290,14 +290,18 @@ class StateSpaceModel(nn.Module):
             out_timesteps=out_timesteps,
             **self._parse_design_kwargs(input=input, out_timesteps=out_timesteps or input.shape[1], **kwargs)
         )
-        return self._generate_predictions(means, covs, R, H)
+        return self._generate_predictions(means, covs, predict_kwargs, update_kwargs)
 
     @torch.jit.ignore
-    def _generate_predictions(self, means: Tensor, covs: Tensor, R: Tensor, H: Tensor) -> 'Predictions':
+    def _generate_predictions(self,
+                              means: Tensor,
+                              covs: Tensor,
+                              predict_kwargs: Dict[str, List[Tensor]],
+                              update_kwargs: Dict[str, List[Tensor]]) -> 'Predictions':
         """
         StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
         """
-        return Predictions(state_means=means, state_covs=covs, R=R, H=H, kalman_filter=self)
+        raise NotImplementedError
 
     @torch.jit.ignore
     def _prepare_initial_state(self,
@@ -341,7 +345,8 @@ class StateSpaceModel(nn.Module):
                         initial_state: Tuple[Tensor, Tensor],
                         n_step: int = 1,
                         out_timesteps: Optional[int] = None,
-                        every_step: bool = True) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+                        every_step: bool = True) -> Tuple[
+        Tensor, Tensor, Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
         """
         :param input: A (group X time X measures) tensor. Optional if `initial_state` is specified.
         :param static_kwargs: Keyword-arguments to the Processes which do not vary over time.
@@ -426,12 +431,7 @@ class StateSpaceModel(nn.Module):
         means = means[:out_timesteps]
         covs = covs[:out_timesteps]
 
-        return (
-            torch.stack(means, 1),
-            torch.stack(covs, 1),
-            torch.stack(update_kwargs['R'], 1),
-            torch.stack(update_kwargs['H'], 1)
-        )
+        return torch.stack(means, 1), torch.stack(covs, 1), predict_kwargs, update_kwargs
 
     def build_design_mats(self,
                           static_kwargs: Dict[str, Dict[str, Tensor]],
