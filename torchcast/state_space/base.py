@@ -388,7 +388,7 @@ class StateSpaceModel(nn.Module):
             if out_timesteps is None:
                 out_timesteps = len(inputs)
 
-        predict_kwargs, update_kwargs = self.build_design_mats(
+        predict_kwargs, update_kwargs = self._build_design_mats(
             static_kwargs=static_kwargs,
             time_varying_kwargs=time_varying_kwargs,
             num_groups=num_groups,
@@ -433,11 +433,11 @@ class StateSpaceModel(nn.Module):
 
         return torch.stack(means, 1), torch.stack(covs, 1), predict_kwargs, update_kwargs
 
-    def build_design_mats(self,
-                          static_kwargs: Dict[str, Dict[str, Tensor]],
-                          time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
-                          num_groups: int,
-                          out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
+    def _build_design_mats(self,
+                           static_kwargs: Dict[str, Dict[str, Tensor]],
+                           time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                           num_groups: int,
+                           out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
         """
         Build the design matrices. Implemented by subclasses (partially implemented by
         ``_build_transition_and_measure_mats()`` and ``_build_measure_var_mats()``, but torchscript
@@ -615,7 +615,7 @@ class StateSpaceModel(nn.Module):
                     progress = lambda x: x
             times = progress(times)
 
-        predict_kwargs, update_kwargs = self.build_design_mats(
+        predict_kwargs, update_kwargs = self._build_design_mats(
             num_groups=num_sims, out_timesteps=out_timesteps, **design_kwargs
         )
 

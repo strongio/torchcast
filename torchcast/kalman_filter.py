@@ -1,9 +1,6 @@
 """
-The :class:`.KalmanFilter` is a :class:`torch.nn.Module` which generates forecasts, in the form of
-:class:`torchcast.state_space.Predictions`, which can be used for training
-(:func:`~torchcast.state_space.Predictions.log_prob()`), evaluation
-(:func:`~torchcast.state_space.Predictions.to_dataframe()`) or visualization
-(:func:`~torchcast.state_space.Predictions.plot()`).
+The :class:`.KalmanFilter` is a :class:`torch.nn.Module` which generates forecasts using the full kalman-filtering
+algorithm.
 
 This class inherits most of its methods from :class:`torchcast.state_space.StateSpaceModel`.
 
@@ -140,11 +137,11 @@ class KalmanFilter(StateSpaceModel):
             kalman_filter=self
         )
 
-    def build_design_mats(self,
-                          static_kwargs: Dict[str, Dict[str, Tensor]],
-                          time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
-                          num_groups: int,
-                          out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
+    def _build_design_mats(self,
+                           static_kwargs: Dict[str, Dict[str, Tensor]],
+                           time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                           num_groups: int,
+                           out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
         Fs, Hs = self._build_transition_and_measure_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
 
         # measure-variance:

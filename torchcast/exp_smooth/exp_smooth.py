@@ -1,3 +1,10 @@
+"""
+The :class:`.ExpSmoother` is a :class:`torch.nn.Module` which generates forecasts using exponential smoothing.
+
+This class inherits most of its methods from :class:`torchcast.state_space.StateSpaceModel`.
+
+----------
+"""
 from typing import Sequence, Optional, Tuple, List, Dict, Iterable
 
 import torch
@@ -54,7 +61,7 @@ class ExpSmoothStep(StateSpaceStep):
         return new_mean, new_cov
 
 
-class ExpSmooth(StateSpaceModel):
+class ExpSmoother(StateSpaceModel):
     """
     Uses exponential smoothing to generate forecasts.
     """
@@ -123,11 +130,11 @@ class ExpSmooth(StateSpaceModel):
             kalman_filter=self
         )
 
-    def build_design_mats(self,
-                          static_kwargs: Dict[str, Dict[str, Tensor]],
-                          time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
-                          num_groups: int,
-                          out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
+    def _build_design_mats(self,
+                           static_kwargs: Dict[str, Dict[str, Tensor]],
+                           time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                           num_groups: int,
+                           out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
         Fs, Hs = self._build_transition_and_measure_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
 
         # measure-variance:
