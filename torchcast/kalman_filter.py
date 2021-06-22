@@ -86,6 +86,11 @@ class KalmanStep(StateSpaceStep):
 class KalmanFilter(StateSpaceModel):
     """
     Uses the full kalman-filtering algorithm for generating forecasts.
+
+    :param processes: A list of :class:`.Process` modules.
+    :param measures: A list of strings specifying the names of the dimensions of the time-series being measured.
+    :param process_covariance: A module created with ``Covariance.from_processes(processes)``.
+    :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
     """
     ss_step_cls = KalmanStep
 

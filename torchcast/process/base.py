@@ -14,7 +14,7 @@ class Process(nn.Module):
     :param id: Unique identifier for the process
     :param state_elements: List of strings with the state-element names
     :param measure: The name of the measure for this process.
-    :param h_module: A torch.nn.Module which, when called (default with no input; can be overridden in subclasses
+    :param h_module: A ``torch.nn.Module`` which, when called (default with no input; can be overridden in subclasses
      with self.h_kwarg), will produce the 'observation' matrix: a XXXX. Only one of h_module or h_tensor should be
      passed.
     :param h_tensor: A tensor that is the 'observation' matrix (see `h_module`). Only one of h_module or h_tensor

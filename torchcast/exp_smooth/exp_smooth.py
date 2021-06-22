@@ -64,6 +64,12 @@ class ExpSmoothStep(StateSpaceStep):
 class ExpSmoother(StateSpaceModel):
     """
     Uses exponential smoothing to generate forecasts.
+
+    :param processes: A list of :class:`.Process` modules.
+    :param measures: A list of strings specifying the names of the dimensions of the time-series being measured.
+    :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
+    :param predict_smoothing: A ``torch.nn.Module`` which predicts the smoothing parameters. The module should predict
+     these as real-values and they will be constrained to 0-1 internally.
     """
     ss_step_cls = ExpSmoothStep
 
