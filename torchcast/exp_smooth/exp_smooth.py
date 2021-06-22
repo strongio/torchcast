@@ -48,8 +48,9 @@ class ExpSmoothStep(StateSpaceStep):
         K = kwargs['K']
         R = kwargs['R']
         new_mean = (F @ mean.unsqueeze(-1)).squeeze(-1)
-        # TODO: cheaper to check cov!=0 before applying FCF'?
-        new_cov = F @ cov @ F.permute(0, 2, 1) + K @ R @ K.permute(0, 2, 1)
+        new_cov = K @ R @ K.permute(0, 2, 1)
+        if (cov != 0).any():
+            new_cov = new_cov + F @ cov @ F.permute(0, 2, 1)
         return new_mean, new_cov
 
 
