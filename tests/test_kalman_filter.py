@@ -121,13 +121,13 @@ class TestKalmanFilter(TestCase):
 
         # make torch kf:
         torch_kf = KalmanFilter(
-            processes=[LinearModel(id='lm', predictors=['x1', 'x2', 'x3'], process_variance=True, decay=(.95, 1.))],
+            processes=[LinearModel(id='lm', predictors=['x1', 'x2', 'x3'], fixed=False, decay=(.95, 1.))],
             measures=['y']
         )
         _kwargs = torch_kf._parse_design_kwargs(
             input=data, out_timesteps=num_times, X=torch.randn(1, num_times, 3)
         )
-        predict_kwargs, update_kwargs = torch_kf.build_design_mats(**_kwargs, num_groups=1, out_timesteps=num_times)
+        predict_kwargs, update_kwargs = torch_kf._build_design_mats(**_kwargs, num_groups=1, out_timesteps=num_times)
         F = predict_kwargs['F'][0][0]
 
         self.assertTrue((torch.diag(F) > .95).all())
@@ -155,7 +155,7 @@ class TestKalmanFilter(TestCase):
         expectedF = torch.tensor([[1., 1.], [0., 1.]])
         expectedH = torch.tensor([[1., 0.]])
         _kwargs = torch_kf._parse_design_kwargs(input=data, out_timesteps=num_times)
-        predict_kwargs, update_kwargs = torch_kf.build_design_mats(**_kwargs, num_groups=1, out_timesteps=num_times)
+        predict_kwargs, update_kwargs = torch_kf._build_design_mats(**_kwargs, num_groups=1, out_timesteps=num_times)
         F = predict_kwargs['F'][0]
         Q = predict_kwargs['Q'][0]
         H = update_kwargs['H'][0]
@@ -324,7 +324,7 @@ class TestKalmanFilter(TestCase):
         expected = {'lm1': torch.zeros(1), 'lm2': torch.zeros(1)}
         # share input:
         kf = _make_kf()
-        for nm, proc in kf.named_processes():
+        for nm, proc in kf.processes.items():
             proc.h_forward = check_input(proc.h_forward, expected[nm])
         kf(data, X=_predictors * 0.)
 
@@ -332,7 +332,7 @@ class TestKalmanFilter(TestCase):
         expected['lm2'] = torch.ones(1)
         # individual input:
         kf = _make_kf()
-        for nm, proc in kf.named_processes():
+        for nm, proc in kf.processes.items():
             proc.h_forward = check_input(proc.h_forward, expected[nm])
         kf(data, lm1__X=_predictors * 0., lm2__X=_predictors)
 

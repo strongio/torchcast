@@ -59,7 +59,7 @@ class FourierSeason(_Season, _RegressionBase):
                  period: Union[float, str],
                  K: int,
                  measure: Optional[str] = None,
-                 process_variance: bool = False,
+                 fixed: bool = True,
                  decay: Optional[Union[nn.Module, Tuple[float, float]]] = None):
         """
         :param id: A unique identifier for this process
@@ -71,7 +71,7 @@ class FourierSeason(_Season, _RegressionBase):
         will be converted to one).
         :param K: The number of the fourier components
         :param measure: The name of the measure for this process.
-        :param process_variance: TODO
+        :param fixed: TODO
         :param decay: TODO
         """
 
@@ -102,7 +102,7 @@ class FourierSeason(_Season, _RegressionBase):
             predictors=state_elements,
             measure=measure,
             h_module=TimesToFourier(K=K, seasonal_period=float(self.period)),
-            process_variance=process_variance,
+            fixed=fixed,
             decay=decay
         )
         self.h_kwarg = 'current_times'
@@ -132,8 +132,8 @@ class Season(_Season, Process):
      will be converted to one).
     :param K: The number of the fourier components.
     :param measure: The name of the measure for this process.
-    :param process_variance: Whether the seasonal-structure is allowed to evolve over time (default: True), or is
-     fixed. Setting this to ``False`` can be helpful for limiting the uncertainty of long-range forecasts.
+    :param fixed: Whether the seasonal-structure is allowed to evolve over time, or is fixed (default:
+     ``fixed=False``). Setting this to ``True`` can be helpful for limiting the uncertainty of long-range forecasts.
     :param decay: By default, the seasonal structure will remain as the forecast horizon increases. An alternative is
      to allow this structure to decay (i.e. pass ``True``). If you'd like more fine-grained control over this decay,
      you can specify the min/max decay as a tuple (passing ``True`` uses a default value of ``(.98, 1.0)``). You can
@@ -148,7 +148,7 @@ class Season(_Season, Process):
                  dt_unit: Optional[str],
                  K: int,
                  measure: Optional[str] = None,
-                 process_variance: bool = True,
+                 fixed: bool = False,
                  decay: Optional[Union[nn.ModuleDict, Tuple[float, float]]] = None,
                  decay_kwarg: Optional[str] = None):
 
@@ -178,7 +178,7 @@ class Season(_Season, Process):
             f_modules=transitions if decay is not None else None,
             h_tensor=torch.tensor(h_tensor),
             measure=measure,
-            no_pcov_state_elements=[] if process_variance else state_elements,
+            fixed_state_elements=state_elements if fixed else [],
             f_kwarg=decay_kwarg
         )
 
@@ -269,7 +269,7 @@ class DiscreteSeason(Process):
                  num_seasons: int,
                  season_duration: int = 1,
                  measure: Optional[str] = None,
-                 process_variance: bool = False,
+                 fixed: bool = False,
                  decay: Optional[Tuple[float, float]] = None):
         if isinstance(decay, tuple) and (decay[0] ** (num_seasons * season_duration)) < .01:
             warn(
@@ -286,7 +286,7 @@ class DiscreteSeason(Process):
             h_tensor=torch.tensor([1.] + [0.] * (num_seasons - 1)),
             f_modules=f_modules,
             f_kwarg='current_timestep',
-            no_pcov_state_elements=[] if process_variance else state_elements
+            fixed_state_elements=state_elements if fixed else [],
         )
 
     def _make_f_modules(self,

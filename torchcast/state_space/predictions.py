@@ -36,9 +36,10 @@ class Predictions(nn.Module):
 
         if not isinstance(kalman_filter, dict):
             all_state_elements = []
-            for process_name, process in kalman_filter.named_processes():
+            for pid in kalman_filter.processes:
+                process = kalman_filter.processes[pid]
                 for state_element in process.state_elements:
-                    all_state_elements.append((process_name, state_element))
+                    all_state_elements.append((pid, state_element))
             kalman_filter = {
                 'distribution_cls': kalman_filter.ss_step.get_distribution(),
                 'measures': kalman_filter.measures,
@@ -114,6 +115,11 @@ class Predictions(nn.Module):
                     f"the observations around this group/time."
                 )
         return self._covs
+
+    def sample(self) -> Tensor:
+        with torch.no_grad():
+            dist = self.distribution_cls(self.means, self.covs)
+            return dist.rsample()
 
     def log_prob(self, obs: Tensor) -> Tensor:
         """

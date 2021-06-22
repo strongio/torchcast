@@ -14,7 +14,7 @@ class Process(nn.Module):
     :param id: Unique identifier for the process
     :param state_elements: List of strings with the state-element names
     :param measure: The name of the measure for this process.
-    :param h_module: A torch.nn.Module which, when called (default with no input; can be overridden in subclasses
+    :param h_module: A ``torch.nn.Module`` which, when called (default with no input; can be overridden in subclasses
      with self.h_kwarg), will produce the 'observation' matrix: a XXXX. Only one of h_module or h_tensor should be
      passed.
     :param h_tensor: A tensor that is the 'observation' matrix (see `h_module`). Only one of h_module or h_tensor
@@ -30,8 +30,9 @@ class Process(nn.Module):
     :param f_tensors: A dictionary of tensors, specifying elements of the F-matrix. See `f_modules` for key format.
     :param f_kwarg: If given, indicates the name of the keyword-argument that's expected and will be passed to
      ``f_modules`` (e.g. ``X`` for a regression process).
-    :param no_pcov_state_elements: Names of ``state_elements`` without process-variance.
-    :param no_icov_state_elements: Names of ``state_elements`` without initial-variance.
+    :param fixed_state_elements: Names of ``state_elements`` that are 'fixed'. In a kalman-filter these will be
+     initially responsive to the incoming data but gradually convergee over time; in an exponential-smoothing model
+     these will be fixed at their initial value.
     """
 
     def __init__(self,
@@ -44,8 +45,7 @@ class Process(nn.Module):
                  f_modules: Optional[nn.ModuleDict] = None,
                  f_tensors: Optional[Dict[str, Tensor]] = None,
                  f_kwarg: str = '',
-                 no_pcov_state_elements: Optional[List[str]] = None,
-                 no_icov_state_elements: Optional[List[str]] = None):
+                 fixed_state_elements: Optional[List[str]] = None):
 
         super(Process, self).__init__()
         self.id = id
@@ -73,13 +73,11 @@ class Process(nn.Module):
         self.f_modules = f_modules
         self.f_kwarg = f_kwarg
 
-        # can be populated later, as long as its before torch.jit.script
+        # can be populated later, as long as it's before torch.jit.script
         self.measure: str = '' if measure is None else measure
 
         # elements without process covariance, defaults to none
-        self.no_pcov_state_elements: Optional[List[str]] = no_pcov_state_elements
-        # elements without initial covariance, defaults to none:
-        self.no_icov_state_elements: Optional[List[str]] = no_icov_state_elements
+        self.fixed_state_elements: Optional[List[str]] = fixed_state_elements
 
     def _apply(self, fn: Callable) -> 'Process':
         # can't register f_tensors as buffers, see https://github.com/pytorch/pytorch/issues/43815
