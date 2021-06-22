@@ -161,9 +161,9 @@ kf = KalmanFilter(
     measures=['kW_sqrt'], 
     processes=[
         # seasonal processes:
-        Season(id='day_in_week', period=24*7, dt_unit='h', K=3, process_variance=False),
-        Season(id='day_in_year', period=24*365.25, dt_unit='h', K=8, process_variance=False),
-        Season(id='hour_in_day', period=24, dt_unit='h', K=8, process_variance=False),
+        Season(id='day_in_week', period=24*7, dt_unit='h', K=3, fixed=True),
+        Season(id='day_in_year', period=24*365.25, dt_unit='h', K=8, fixed=True),
+        Season(id='hour_in_day', period=24, dt_unit='h', K=8, fixed=True),
         # long-running trend:
         LocalTrend(id='trend'),
         # 'local' processes: allow temporary deviations that decay 
