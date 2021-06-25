@@ -118,10 +118,12 @@ class TimeSeriesDataset(TensorDataset):
                                        dtype='datetime64[ns]' if self.dt_unit else 'int')
             else:
                 if self.dt_unit:
-                    if hasattr(dt, 'to_datetime64'):
+                    if isinstance(dt, datetime.datetime):  # base
+                        dt = np.datetime64(dt)
+                    if hasattr(dt, 'to_datetime64'):  # pandas
                         dt = dt.to_datetime64()
                     if not isinstance(dt, np.datetime64):
-                        dt = np.datetime64(dt, self.dt_unit)
+                        raise ValueError(f"`dt` is not datetimelike, but dataset has non-null dt_unit `{self.dt_unit}`")
                 split_times = np.full(shape=len(self.group_names), fill_value=dt)
 
         # val:
