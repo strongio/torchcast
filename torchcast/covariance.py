@@ -157,28 +157,33 @@ class Covariance(nn.Module):
         self.empty_idx = empty_idx
 
         self.param_rank = len([i for i in range(self.rank) if i not in self.empty_idx])
-        self.method = method
-        self._set_params(init_diag_multi)
+        self._set_params(method, init_diag_multi)
 
         self.var_predict_module = predict_variance
 
         # TODO: allow user-defined?
         self.expected_kwarg = '' if self.var_predict_module is None else 'X'
 
-    def _set_params(self, init_diag_multi: float):
+    def _set_params(self, method: str, init_diag_multi: float):
         self.cholesky_log_diag: Optional[nn.Parameter] = None
         self.cholesky_off_diag: Optional[nn.Parameter] = None
         self.lr_mat: Optional[nn.Parameter] = None
         self.log_std_devs: Optional[nn.Parameter] = None
-        if self.method == 'log_cholesky':
+        if method == 'log_cholesky':
+            self.method = method
             self.cholesky_log_diag = nn.Parameter(.1 * torch.randn(self.param_rank) + math.log(init_diag_multi))
             self.cholesky_off_diag = nn.Parameter(.1 * torch.randn(num_off_diag(self.param_rank)))
-        elif self.method == 'low_rank':
-            low_rank = int(math.sqrt(self.param_rank))
+        elif method.startswith('low_rank'):
+            self.method = 'low_rank'
+            low_rank = method.replace('low_rank', '')
+            if low_rank:
+                low_rank = int(low_rank)
+            else:
+                low_rank = int(math.sqrt(self.param_rank))
             self.lr_mat = nn.Parameter(data=.01 * torch.randn(self.param_rank, low_rank))
             self.log_std_devs = nn.Parameter(data=.1 * torch.randn(self.param_rank) + math.log(init_diag_multi))
         else:
-            raise NotImplementedError(self.method)
+            raise NotImplementedError(method)
 
     @jit.ignore
     def set_id(self, id: str) -> 'Covariance':
