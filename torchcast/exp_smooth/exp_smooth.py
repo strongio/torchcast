@@ -11,7 +11,7 @@ import torch
 from torch import Tensor
 
 from torchcast.state_space import Predictions
-from torchcast.exp_smooth.innovation_matrix import InnovationMatrix
+from torchcast.exp_smooth.smoothing_matrix import SmoothingMatrix
 from torchcast.covariance import Covariance
 from torchcast.process import Process
 from torchcast.state_space import StateSpaceModel
@@ -77,7 +77,7 @@ class ExpSmoother(StateSpaceModel):
                  processes: Sequence[Process],
                  measures: Optional[Sequence[str]] = None,
                  measure_covariance: Optional[Covariance] = None,
-                 predict_smoothing: Optional[torch.nn.Module] = None):
+                 smoothing_matrix: Optional[SmoothingMatrix] = None):
 
         if measure_covariance is None:
             measure_covariance = Covariance.from_measures(measures)
@@ -88,23 +88,9 @@ class ExpSmoother(StateSpaceModel):
             measure_covariance=measure_covariance,
         )
 
-        state_rank = 0
-        fixed_idx = []
-        for p in processes:
-            midx = self.measures.index(p.measure)
-            fixed_els = p.fixed_state_elements or []
-            for i, se in enumerate(p.state_elements):
-                if se in fixed_els:
-                    fixed_idx.append((state_rank + i, midx))
-                # TODO: warn if time-varying H but some unfixed_els
-            state_rank += len(p.state_elements)
-
-        self.innovation_matrix = InnovationMatrix(
-            measure_rank=len(self.measures),
-            state_rank=state_rank,
-            empty_idx=fixed_idx,
-            predict_module=predict_smoothing
-        ).set_id('innovation_matrix')
+        if smoothing_matrix is None:
+            smoothing_matrix = SmoothingMatrix.from_measures_and_processes(measures=measures, processes=processes)
+        self.smoothing_matrix = smoothing_matrix.set_id('smoothing_matrix')
 
     @torch.jit.ignore
     def initial_covariance(self, *args, **kwargs) -> Tensor:
@@ -117,7 +103,7 @@ class ExpSmoother(StateSpaceModel):
         for pid in self.processes:
             yield pid, self.processes[pid]
         yield 'measure_covariance', self.measure_covariance
-        yield 'innovation_matrix', self.innovation_matrix
+        yield 'smoothing_matrix', self.smoothing_matrix
 
     @torch.jit.ignore
     def _generate_predictions(self,
@@ -147,18 +133,18 @@ class ExpSmoother(StateSpaceModel):
         Rs = self._build_measure_var_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
 
         # innovation matrix / kalman-gain:
-        if 'innovation_matrix' in time_varying_kwargs and \
-                self.innovation_matrix.expected_kwarg in time_varying_kwargs['innovation_matrix']:
-            pvar_inputs = time_varying_kwargs['innovation_matrix'][self.innovation_matrix.expected_kwarg]
+        if 'smoothing_matrix' in time_varying_kwargs and \
+                self.smoothing_matrix.expected_kwarg in time_varying_kwargs['smoothing_matrix']:
+            pvar_inputs = time_varying_kwargs['smoothing_matrix'][self.smoothing_matrix.expected_kwarg]
             Ks: List[Tensor] = []
             for t in range(out_timesteps):
-                Ks.append(self.innovation_matrix(pvar_inputs[t]))
+                Ks.append(self.smoothing_matrix(pvar_inputs[t]))
         else:
             pvar_input: Optional[Tensor] = None
-            if 'innovation_matrix' in static_kwargs and \
-                    self.innovation_matrix.expected_kwarg in static_kwargs['innovation_matrix']:
-                pvar_input = static_kwargs['innovation_matrix'].get(self.innovation_matrix.expected_kwarg)
-            K = self.innovation_matrix(pvar_input)
+            if 'smoothing_matrix' in static_kwargs and \
+                    self.smoothing_matrix.expected_kwarg in static_kwargs['smoothing_matrix']:
+                pvar_input = static_kwargs['smoothing_matrix'].get(self.smoothing_matrix.expected_kwarg)
+            K = self.smoothing_matrix(pvar_input)
             if len(K.shape) == 2:
                 K = K.expand(num_groups, -1, -1)
             Ks = [K] * out_timesteps
