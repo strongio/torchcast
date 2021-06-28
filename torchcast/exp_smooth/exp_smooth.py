@@ -52,10 +52,8 @@ class ExpSmoothStep(StateSpaceStep):
 
     def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         F = kwargs['F']
-        K = kwargs['K']
-        R = kwargs['R']
         new_mean = (F @ mean.unsqueeze(-1)).squeeze(-1)
-        new_cov = K @ R @ K.permute(0, 2, 1)
+        new_cov = kwargs['cov1step']
         if (cov != 0).any():
             new_cov = new_cov + F @ cov @ F.permute(0, 2, 1)
         return new_mean, new_cov
@@ -127,19 +125,24 @@ class ExpSmoother(StateSpaceModel):
                            time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
                            num_groups: int,
                            out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
+        assert out_timesteps
+
         Fs, Hs = self._build_transition_and_measure_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
 
         # measure-variance:
         Rs = self._build_measure_var_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
 
         # innovation matrix / kalman-gain:
+        cov1steps: List[Tensor] = []
         if 'smoothing_matrix' in time_varying_kwargs and \
                 self.smoothing_matrix.expected_kwarg in time_varying_kwargs['smoothing_matrix']:
             pvar_inputs = time_varying_kwargs['smoothing_matrix'][self.smoothing_matrix.expected_kwarg]
             Ks: List[Tensor] = []
             for t in range(out_timesteps):
                 Ks.append(self.smoothing_matrix(pvar_inputs[t]))
+
         else:
+
             pvar_input: Optional[Tensor] = None
             if 'smoothing_matrix' in static_kwargs and \
                     self.smoothing_matrix.expected_kwarg in static_kwargs['smoothing_matrix']:
@@ -149,6 +152,16 @@ class ExpSmoother(StateSpaceModel):
                 K = K.expand(num_groups, -1, -1)
             Ks = [K] * out_timesteps
 
-        predict_kwargs = {'F': Fs, 'K': Ks, 'R': Rs}
+            if len(Rs) == 1 or Rs[0] is not Rs[1]:
+                # R is not time-varying
+                cov1step = K @ Rs[0] @ K.permute(0, 2, 1)
+                cov1steps = [cov1step] * out_timesteps
+
+        if not len(cov1steps):
+            # R is time-varying, K is time-varying, or both:
+            for t in range(out_timesteps):
+                cov1steps.append(Ks[t] @ Rs[t] @ Ks[t].permute(0, 2, 1))
+
+        predict_kwargs = {'F': Fs, 'R': Rs, 'cov1step': cov1steps}
         update_kwargs = {'H': Hs, 'K': Ks}
         return predict_kwargs, update_kwargs
