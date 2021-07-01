@@ -237,6 +237,7 @@ class Covariance(nn.Module):
         return mini_cov
 
     def forward(self, input: Optional[Tensor] = None, _ignore_input: bool = False) -> Tensor:
+        # TODO: `multi_forward()` that only computes ``_get_mini_cov()`` once if we have time-varying inputs
         mini_cov = self._get_mini_cov()
 
         pred = None

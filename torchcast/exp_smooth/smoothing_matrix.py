@@ -93,6 +93,7 @@ class SmoothingMatrix(torch.nn.Module):
 
     def forward(self, input: Optional[Tensor] = None, _ignore_input: bool = False) -> Tensor:
         if self.predict_module is not None and not _ignore_input:
+            # TODO: `multi_forward()` that only computes lr1 @ lr2 once if we have time-varying inputs
             raise NotImplementedError
 
         if self.method == 'full':
@@ -101,7 +102,8 @@ class SmoothingMatrix(torch.nn.Module):
                 dtype=self.unconstrained_params.dtype,
                 device=self.unconstrained_params.device
             )
-            K[..., self.full_states, :] = torch.sigmoid(self.unconstrained_params + self.init_bias)
+            k_full = torch.sigmoid(self.unconstrained_params + self.init_bias)
+            K[..., self.full_states, :] = k_full.view(len(self.full_states), self.measure_rank)
             return K
         elif self.method == 'low_rank':
             sm = torch.nn.Softmax(-1)
