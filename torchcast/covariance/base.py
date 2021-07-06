@@ -1,5 +1,6 @@
 import math
-from typing import List, Dict, Iterable, Optional, Tuple, Sequence, Union
+
+from typing import List, Iterable, Optional, Tuple, Sequence
 from warnings import warn
 
 import torch
@@ -7,12 +8,9 @@ import torch
 from torch import Tensor, nn, jit
 from typing_extensions import Final
 
+from torchcast.covariance.util import pad_covariance, num_off_diag
 from torchcast.internals.utils import get_owned_kwarg, is_near_zero
 from torchcast.process.base import Process
-
-
-def num_off_diag(rank: int) -> int:
-    return int(rank * (rank - 1) / 2)
 
 
 class Covariance(nn.Module):
@@ -65,6 +63,7 @@ class Covariance(nn.Module):
         :param kwargs: Other arguments passed to :func:`Covariance.__init__`.
         :return: A :class:`.Covariance` object that can be used in your :class:`.KalmanFilter`.
         """
+
         assert cov_type in {'process', 'initial'}
         state_rank = 0
         no_cov_idx = []
@@ -81,6 +80,8 @@ class Covariance(nn.Module):
             # by default, assume process cov is less than measure cov:
             if 'init_diag_multi' not in kwargs:
                 kwargs['init_diag_multi'] = .01
+            if 'method' in kwargs and kwargs['method'] == 'low_rank':
+                warn("``method='low_rank'`` not recommended for processes, consider 'low_rank+block_diag'")
         elif cov_type == 'initial':
             if (state_rank - len(no_cov_idx)) >= 10:
                 # by default, use low-rank parameterization for initial cov:
@@ -259,32 +260,3 @@ class Covariance(nn.Module):
             mini_cov = diag_multi @ mini_cov @ diag_multi
 
         return pad_covariance(mini_cov, [int(i not in self.empty_idx) for i in range(self.rank)])
-
-
-def pad_covariance(unpadded_cov: Tensor, mask_1d: List[int]) -> Tensor:
-    rank = len(mask_1d)
-    padded_to_unpadded: Dict[int, int] = {}
-    up_idx = 0
-    for p_idx, is_filled in enumerate(mask_1d):
-        if is_filled == 1:
-            padded_to_unpadded[p_idx] = up_idx
-            up_idx += 1
-    if up_idx == len(mask_1d):
-        # shortcut
-        return unpadded_cov
-
-    out = torch.zeros(unpadded_cov.shape[:-2] + (rank, rank), device=unpadded_cov.device, dtype=unpadded_cov.dtype)
-    for to_r in range(rank):
-        for to_c in range(to_r, rank):
-            from_r = padded_to_unpadded.get(to_r)
-            from_c = padded_to_unpadded.get(to_c)
-            if from_r is not None and from_c is not None:
-                out[..., to_r, to_c] = unpadded_cov[..., from_r, from_c]
-                if to_r != to_c:
-                    out[..., to_c, to_r] = out[..., to_r, to_c]  # symmetrical
-    return out
-
-
-def cov2corr(cov: Tensor) -> Tensor:
-    std_ = torch.sqrt(torch.diagonal(cov, dim1=-2, dim2=-1))
-    return cov / (std_.unsqueeze(-1) @ std_.unsqueeze(-2))
