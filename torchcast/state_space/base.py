@@ -67,6 +67,7 @@ class StateSpaceModel(nn.Module):
             callbacks: Sequence[Callable] = (),
             loss_callback: Optional[Callable] = None,
             callable_kwargs: Optional[Dict[str, Callable]] = None,
+            set_initial_values: bool = True,
             **kwargs):
         """
         A high-level interface for invoking the standard model-training boilerplate. This is helpful to common cases in
@@ -90,6 +91,9 @@ class StateSpaceModel(nn.Module):
          recomputed every time. ``callable_kwargs`` is a dictionary where the keys are keyword-names and the values
          are no-argument functions that will be called each iteration to recompute the corresponding arguments. For
          example, ``callable_kwargs={'initial_state' : lambda: my_initial_state_nn(group_ids)``.
+        :param set_initial_values: Default is to set ``initial_mean`` to sensible value given ``y``. This helps speed
+         up training if the data are not centered. Set to ``False`` if you're resuming training from a previous
+         ``fit()`` call.
         :param kwargs: Further keyword-arguments passed to :func:`KalmanFilter.forward()`.
         :return: This `KalmanFilter` instance.
         """
@@ -102,7 +106,8 @@ class StateSpaceModel(nn.Module):
             optimizer = torch.optim.LBFGS([p for p in self.parameters() if p.requires_grad],
                                           max_iter=10, line_search_fn='strong_wolfe', lr=.5)
 
-        self.set_initial_values(y)
+        if set_initial_values:
+            self.set_initial_values(y)
 
         prog = None
         if verbose > 1:
@@ -154,6 +159,8 @@ class StateSpaceModel(nn.Module):
 
     @torch.jit.ignore()
     def set_initial_values(self, y: Tensor):
+        if 'initial_mean' not in self.state_dict():
+            return
 
         assert len(self.measures) == y.shape[-1]
 
