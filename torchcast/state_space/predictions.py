@@ -384,13 +384,15 @@ class Predictions(nn.Module):
         """
         Return a `Predictions` object with a single timepoint for each group.
         """
+        if not isinstance(times, (list, tuple, np.ndarray)):
+            times = np.asanyarray([times] * self.num_groups)
+
         if start_times is not None:
-            if isinstance(times, (np.datetime64, datetime.datetime)):
-                times = np.full_like(start_times, fill_value=times)
-            assert dt_unit is not None
             if isinstance(dt_unit, str):
                 dt_unit = np.datetime64(1, dt_unit)
-            times = (times - start_times) / dt_unit  # todo: validate int?
+            times = times - start_times
+            if dt_unit is not None:
+                times /= dt_unit  # todo: validate int?
 
         assert len(times.shape) == 1
         assert times.shape[0] == self.num_groups
