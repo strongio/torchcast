@@ -31,7 +31,10 @@ class _Season:
 
     @staticmethod
     def _get_dt_unit_ns(dt_unit_str: str) -> int:
-        dt_unit = np.timedelta64(1, dt_unit_str)
+        if isinstance(dt_unit_str, np.timedelta64):
+            dt_unit = dt_unit_str
+        else:
+            dt_unit = np.timedelta64(1, dt_unit_str)
         dt_unit_ns = dt_unit / np.timedelta64(1, 'ns')
         assert dt_unit_ns.is_integer()
         return int(dt_unit_ns)

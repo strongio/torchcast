@@ -398,7 +398,9 @@ class TimeSeriesDataset(TensorDataset):
             if dt_unit is None:
                 time_idx = (times - min_time).astype('int64')
             else:
-                time_idx = (times - min_time).astype(f'timedelta64[{dt_unit}]').view('int64')
+                if not isinstance(dt_unit, np.timedelta64):
+                    dt_unit = np.timedelta64(1, dt_unit)
+                time_idx = (times - min_time) // dt_unit
             time_idxs.append(time_idx)
 
             # values:

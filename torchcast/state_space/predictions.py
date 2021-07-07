@@ -392,7 +392,7 @@ class Predictions(nn.Module):
                 dt_unit = np.datetime64(1, dt_unit)
             times = times - start_times
             if dt_unit is not None:
-                times /= dt_unit  # todo: validate int?
+                times = times // dt_unit  # todo: validate int?
 
         assert len(times.shape) == 1
         assert times.shape[0] == self.num_groups
