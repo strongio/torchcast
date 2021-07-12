@@ -8,16 +8,16 @@ import torch
 from torch import Tensor, nn, jit
 from typing_extensions import Final
 
-from torchcast.covariance.util import pad_covariance, num_off_diag
+from torchcast.covariance.util import num_off_diag
 from torchcast.internals.utils import get_owned_kwarg, is_near_zero
 from torchcast.process.base import Process
 
 
 class Covariance(nn.Module):
     """
-    The :class:`.Covariance` object can be used in settings where you'd like to predict the variance in your forecasts.
-    For example, if you're training on diverse time-serieses that vary in scale/behavior, you could use an
-    :class:`torch.nn.Embedding` with the group-ids as predictors:
+    The :class:`.Covariance` can be used when you'd like more control over the covariance specification of a state-
+    space model. For example, if you're training on diverse time-serieses that vary in scale/behavior, you could use an
+    :class:`torch.nn.Embedding` to predict the variance of each series, with the group-ids as predictors:
 
     .. code-block:: python3
 
@@ -153,11 +153,17 @@ class Covariance(nn.Module):
         self.id = id
         self.rank = rank
 
-        if len(empty_idx) == 0:
-            empty_idx = [self.rank + 1]  # jit doesn't seem to like empty lists
-        self.empty_idx = empty_idx
+        empty_idx = set(empty_idx)
+        assert all(isinstance(x, int) for x in empty_idx)
+        self.param_rank = self.rank - len(empty_idx)
+        mask = torch.zeros((self.rank, self.param_rank))
+        c = 0
+        for r in range(self.rank):
+            if r not in empty_idx:
+                mask[r, c] = 1.
+                c += 1
+        self.register_buffer('mask', mask)
 
-        self.param_rank = len([i for i in range(self.rank) if i not in self.empty_idx])
         self._set_params(method, init_diag_multi)
 
         self.var_predict_module = predict_variance
@@ -204,14 +210,12 @@ class Covariance(nn.Module):
         assert log_diag.shape[:-1] == off_diag.shape[:-1]
 
         rank = log_diag.shape[-1]
-        L = torch.diag_embed(torch.exp(log_diag))
+        L1 = torch.diag_embed(torch.exp(log_diag))
 
-        idx = 0
-        for i in range(rank):
-            for j in range(i):
-                L[..., i, j] = off_diag[..., idx]
-                idx += 1
-        return L
+        L2 = torch.zeros_like(L1)
+        mask = torch.tril_indices(rank, rank, offset=-1)
+        L2[mask[0], mask[1]] = off_diag
+        return L1 + L2
 
     def _get_mini_cov(self) -> Tensor:
         if self.method == 'log_cholesky':
@@ -259,4 +263,5 @@ class Covariance(nn.Module):
             diag_multi = torch.diag_embed(torch.exp(pred))
             mini_cov = diag_multi @ mini_cov @ diag_multi
 
-        return pad_covariance(mini_cov, [int(i not in self.empty_idx) for i in range(self.rank)])
+        return self.mask @ mini_cov @ self.mask.t()
+        # return pad_covariance(mini_cov, [int(i not in self.empty_idx) for i in range(self.rank)])
