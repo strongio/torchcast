@@ -91,7 +91,8 @@ class TimeSeriesDataset(TensorDataset):
     @torch.no_grad()
     def train_val_split(self,
                         train_frac: float = None,
-                        dt: Union[np.datetime64, dict] = None) -> Tuple['TimeSeriesDataset', 'TimeSeriesDataset']:
+                        dt: Union[np.datetime64, dict] = None,
+                        quiet: bool = False) -> Tuple['TimeSeriesDataset', 'TimeSeriesDataset']:
         """
         :param train_frac: The proportion of the data to keep for training. This is calculated on a per-group basis, by
          taking the last observation for each group (i.e., the last observation that a non-nan value on any measure). If
@@ -127,7 +128,7 @@ class TimeSeriesDataset(TensorDataset):
                 split_times = np.full(shape=len(self.group_names), fill_value=dt)
 
         # val:
-        val_dataset = self.with_new_start_times(split_times)
+        val_dataset = self.with_new_start_times(split_times, quiet=quiet)
 
         # train:
         train_tensors = []
@@ -145,7 +146,7 @@ class TimeSeriesDataset(TensorDataset):
 
         return train_dataset, val_dataset
 
-    def with_new_start_times(self, start_times: Union[np.ndarray, Sequence]) -> 'TimeSeriesDataset':
+    def with_new_start_times(self, start_times: Union[np.ndarray, Sequence], quiet: bool = False) -> 'TimeSeriesDataset':
         """
         Subset a :class:`.TimeSeriesDataset` so that some/all of the groups have later start times.
 
@@ -169,7 +170,7 @@ class TimeSeriesDataset(TensorDataset):
                 g_tens = tens[g, true1d_idx(old_times >= new_time)]
                 # drop if after last nan:
                 all_nan, _ = torch.min(torch.isnan(g_tens), 1)
-                if all_nan.all():
+                if all_nan.all() and not quiet:
                     warn(f"Group '{self.group_names[g]}' (tensor {i}) has only `nans` after {new_time}")
                     end_idx = 0
                 else:

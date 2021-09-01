@@ -5,6 +5,7 @@ from warnings import warn
 import torch
 from torch import nn, Tensor
 
+from internals.utils import get_owned_kwargs
 from torchcast.covariance import Covariance
 from torchcast.state_space.predictions import Predictions
 from torchcast.state_space.ss_step import StateSpaceStep
@@ -240,8 +241,8 @@ class StateSpaceModel(nn.Module):
          predictions (i.e. n_step=1).
         :param start_offsets: If your model includes seasonal processes, then these needs to know the start-time for
          each group in ``input``. If you passed ``dt_unit`` when constructing those processes, then you should pass an
-         array datetimes here. Otherwise you can pass an array of integers (or leave `None` if there are no seasonal
-         processes).
+         array of datetimes here. Otherwise you can pass an array of integers. Or leave ``None`` if there are no
+         seasonal processes.
         :param out_timesteps: The number of timesteps to produce in the output. This is useful when passing a tensor
          of predictors that goes later in time than the `input` tensor -- you can specify ``out_timesteps=X.shape[1]``
          to get forecasts into this later time horizon.
@@ -255,8 +256,8 @@ class StateSpaceModel(nn.Module):
          would be 2-step-ahead, ... the 23rd would be 24-step-ahead, the 24th would be 1-step-ahead, etc. The advantage
          to ``every_step=False`` is speed: training data for long-range forecasts can be generated without requiring
          the model to produce and discard intermediate predictions every timestep.
-        :param kwargs: Further arguments passed to the `processes`. For example, the :class:`.LinearModel` and
-         :class:`.NN` processes expect a ``X`` argument for predictors.
+        :param kwargs: Further arguments passed to the `processes`. For example, the :class:`.LinearModel` expects an
+         ``X`` argument for predictors.
         :return: A :class:`.Predictions` object with :func:`Predictions.log_prob()` and
          :func:`Predictions.to_dataframe()` methods.
         """
@@ -295,7 +296,7 @@ class StateSpaceModel(nn.Module):
             n_step=n_step,
             every_step=every_step,
             out_timesteps=out_timesteps,
-            **self._parse_design_kwargs(input=input, out_timesteps=out_timesteps or input.shape[1], **kwargs)
+            design_kwargs=self._parse_design_kwargs(input, out_timesteps=out_timesteps or input.shape[1], **kwargs)
         )
         return self._generate_predictions(means, covs, predict_kwargs, update_kwargs)
 
@@ -321,7 +322,7 @@ class StateSpaceModel(nn.Module):
         assert len(init_mean.shape) == 2
 
         if init_cov is None:
-            init_cov = self.initial_covariance(None, _ignore_input=True)[None, :]
+            init_cov = self.initial_covariance({}, num_groups=num_groups, num_times=1, _ignore_input=True)[:, 0]
 
         if num_groups is None and start_offsets is not None:
             num_groups = len(start_offsets)
@@ -331,34 +332,31 @@ class StateSpaceModel(nn.Module):
             init_mean = init_mean.expand(num_groups, -1)
             init_cov = init_cov.expand(num_groups, -1, -1)
 
-        measure_scaling = torch.diag_embed(self._get_measure_scaling())
+        measure_scaling = torch.diag_embed(self._get_measure_scaling().unsqueeze(0))
         init_cov = measure_scaling @ init_cov @ measure_scaling
 
         # seasonal processes need to offset the initial mean:
-        init_mean_offset = []
+        init_mean_w_offset = []
         for pid in self.processes:
             p = self.processes[pid]
             _process_slice = slice(*self.process_to_slice[pid])
-            init_mean_offset.append(p.offset_initial_state(init_mean[:, _process_slice], start_offsets))
-        init_mean_offset = torch.cat(init_mean_offset, 1)
+            init_mean_w_offset.append(p.offset_initial_state(init_mean[:, _process_slice], start_offsets))
+        init_mean_offset = torch.cat(init_mean_w_offset, 1)
 
         return init_mean_offset, init_cov
 
     @torch.jit.export
     def _script_forward(self,
                         input: Optional[Tensor],
-                        static_kwargs: Dict[str, Dict[str, Tensor]],
-                        time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                        kwargs_per_process: Dict[str, Dict[str, Tensor]],
                         initial_state: Tuple[Tensor, Tensor],
                         n_step: int = 1,
                         out_timesteps: Optional[int] = None,
-                        every_step: bool = True) -> Tuple[
-        Tensor, Tensor, Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
+                        every_step: bool = True
+                        ) -> Tuple[Tensor, Tensor, Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
         """
         :param input: A (group X time X measures) tensor. Optional if `initial_state` is specified.
-        :param static_kwargs: Keyword-arguments to the Processes which do not vary over time.
-        :param time_varying_kwargs: Keyword-arguments to the Process which do vary over time. At each timestep, each
-        kwarg gets sliced for that timestep.
+        :param kwargs_per_process: Keyword-arguments to the Processes XXX
         :param initial_state: A (mean, cov) tuple to use as the initial state.
         :param n_step: What is the horizon for predictions? Defaults to one-step-ahead (i.e. n_step=1).
         :param out_timesteps: The number of timesteps in the output. Might be longer than input if forecasting.
@@ -396,8 +394,7 @@ class StateSpaceModel(nn.Module):
                 out_timesteps = len(inputs)
 
         predict_kwargs, update_kwargs = self._build_design_mats(
-            static_kwargs=static_kwargs,
-            time_varying_kwargs=time_varying_kwargs,
+            kwargs_per_process=kwargs_per_process,
             num_groups=num_groups,
             out_timesteps=out_timesteps
         )
@@ -441,8 +438,7 @@ class StateSpaceModel(nn.Module):
         return torch.stack(means, 1), torch.stack(covs, 1), predict_kwargs, update_kwargs
 
     def _build_design_mats(self,
-                           static_kwargs: Dict[str, Dict[str, Tensor]],
-                           time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                           kwargs_per_process: Dict[str, Dict[str, Tensor]],
                            num_groups: int,
                            out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
         """
@@ -462,112 +458,48 @@ class StateSpaceModel(nn.Module):
         raise NotImplementedError
 
     def _build_transition_and_measure_mats(self,
-                                           static_kwargs: Dict[str, Dict[str, Tensor]],
-                                           time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                                           kwargs_per_process: Dict[str, Dict[str, Tensor]],
                                            num_groups: int,
                                            out_timesteps: int) -> Tuple[List[Tensor], List[Tensor]]:
         ms = self._get_measure_scaling()
 
-        base_F = torch.zeros(
-            (num_groups, self.state_rank, self.state_rank),
+        Fs = torch.zeros(
+            (num_groups, out_timesteps, self.state_rank, self.state_rank),
             dtype=ms.dtype,
             device=ms.device
         )
-        base_H = torch.zeros(
-            (num_groups, len(self.measures), self.state_rank),
+        Hs = torch.zeros(
+            (num_groups, out_timesteps, len(self.measures), self.state_rank),
             dtype=ms.dtype,
             device=ms.device
         )
-        for pid, process1 in self.processes.items():
-            p_tv_kwargs = time_varying_kwargs.get(pid)
-            p_static_kwargs = static_kwargs.get(pid)
+        for pid, process in self.processes.items():
             _process_slice1 = slice(*self.process_to_slice[pid])
+            p_kwargs = kwargs_per_process.get(pid, {})
+            pH, pF = process(inputs=p_kwargs, num_groups=num_groups, num_timesteps=out_timesteps)
+            Hs[:, :, self.measure_to_idx[process.measure], _process_slice1] = pH
+            Fs[:, :, _process_slice1, _process_slice1] = pF
 
-            # static H:
-            if p_tv_kwargs is None or process1.h_kwarg not in p_tv_kwargs:
-                h_input = None if p_static_kwargs is None else p_static_kwargs.get(process1.h_kwarg)
-                ph = process1.h_forward(h_input)
-                base_H[:, self.measure_to_idx[process1.measure], _process_slice1] = ph
+        Fs = Fs.unbind(1)
+        Hs = Hs.unbind(1)
 
-            # static F:
-            if p_tv_kwargs is None or process1.f_kwarg not in p_tv_kwargs:
-                f_input = None if p_static_kwargs is None else p_static_kwargs.get(process1.f_kwarg)
-                pf = process1.f_forward(f_input)
-                base_F[:, _process_slice1, _process_slice1] = pf
-
-        Fs: List[Tensor] = []
-        Hs: List[Tensor] = []
-        for t in range(out_timesteps):
-            Ft = base_F
-            Ht = base_H
-            for pid, process2 in self.processes.items():
-                p_tv_kwargs = time_varying_kwargs.get(pid)
-                _process_slice2 = slice(*self.process_to_slice[pid])
-
-                # tv H:
-                if p_tv_kwargs is not None and process2.h_kwarg in p_tv_kwargs:
-                    if Ht is base_H:
-                        Ht = Ht.clone()
-                    ph = process2.h_forward(p_tv_kwargs[process2.h_kwarg][t])
-                    Ht[:, self.measure_to_idx[process2.measure], _process_slice2] = ph
-
-                # tv F:
-                if p_tv_kwargs is not None and process2.f_kwarg in p_tv_kwargs:
-                    if Ft is base_F:
-                        Ft = Ft.clone()
-                    pf = process2.f_forward(p_tv_kwargs[process2.f_kwarg][t])
-                    Ft[:, _process_slice2, _process_slice2] = pf
-            Fs.append(Ft)
-            Hs.append(Ht)
         return Fs, Hs
-
-    def _build_measure_var_mats(self,
-                                static_kwargs: Dict[str, Dict[str, Tensor]],
-                                time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
-                                num_groups: int,
-                                out_timesteps: int) -> List[Tensor]:
-        if 'measure_covariance' in time_varying_kwargs and \
-                self.measure_covariance.expected_kwarg in time_varying_kwargs['measure_covariance']:
-            mvar_inputs = time_varying_kwargs['measure_covariance'][self.measure_covariance.expected_kwarg]
-            Rs: List[Tensor] = []
-            for t in range(out_timesteps):
-                Rs.append(self.measure_covariance(mvar_inputs[t]))
-        else:
-            mvar_input: Optional[Tensor] = None
-            if 'measure_covariance' in static_kwargs and \
-                    self.measure_covariance.expected_kwarg in static_kwargs['measure_covariance']:
-                mvar_input = static_kwargs['measure_covariance'].get(self.measure_covariance.expected_kwarg)
-            R = self.measure_covariance(mvar_input)
-            if len(R.shape) == 2:
-                R = R.expand(num_groups, -1, -1)
-            Rs = [R] * out_timesteps
-
-        return Rs
 
     @torch.jit.ignore()
     def _parse_design_kwargs(self, input: Optional[Tensor], out_timesteps: int, **kwargs) -> Dict[str, dict]:
-        static_kwargs = defaultdict(dict)
-        time_varying_kwargs = defaultdict(dict)
+        kwargs_per_process = defaultdict(dict)
         unused = set(kwargs)
         kwargs.update(input=input, current_timestep=torch.tensor(list(range(out_timesteps))).view(1, -1, 1))
         for submodule_nm, submodule in self.design_modules():
-            for found_key, key_name, value in submodule.get_kwargs(kwargs):
+            for found_key, key_name, value in get_owned_kwargs(submodule, kwargs):
                 unused.discard(found_key)
-                if value is not None and len(value.shape) == 3:
-                    time_varying_kwargs[submodule_nm][key_name] = value.unbind(1)
-                elif value is not None:
-                    assert len(value.shape) <= 2, f"'{found_key}' has unexpected ndim {len(value.shape)}, expected <= 3"
-                    static_kwargs[submodule_nm][key_name] = value
-
+                kwargs_per_process[submodule][key_name] = value
         if unused:
             warn(f"There are unused keyword arguments:\n{unused}")
-        return {
-            'static_kwargs': dict(static_kwargs),
-            'time_varying_kwargs': dict(time_varying_kwargs)
-        }
+        return dict(kwargs_per_process)
 
     def _get_measure_scaling(self) -> Tensor:
-        mcov = self.measure_covariance(None, _ignore_input=True)
+        mcov = self.measure_covariance({}, num_groups=1, num_times=1, _ignore_input=True)[0, 0]
         if self._scale_by_measure_var:
             measure_var = mcov.diagonal(dim1=-2, dim2=-1)
             multi = torch.zeros(mcov.shape[0:-2] + (self.state_rank,), dtype=mcov.dtype, device=mcov.device)
@@ -607,7 +539,8 @@ class StateSpaceModel(nn.Module):
         :return: A :class:`.Simulations` object with a :func:`Simulations.sample()` method.
         """
 
-        design_kwargs = self._parse_design_kwargs(input=None, out_timesteps=out_timesteps, **kwargs)
+        # design_kwargs = self._parse_design_kwargs(input=None, out_timesteps=out_timesteps, **kwargs)
+        raise NotImplementedError("TODO")
 
         mean, cov = self._prepare_initial_state(initial_state, start_offsets=start_offsets, num_groups=num_sims)
 

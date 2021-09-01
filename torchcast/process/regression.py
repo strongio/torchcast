@@ -1,48 +1,16 @@
-from typing import Tuple, Sequence, Optional, Union
+from typing import Tuple, Sequence, Optional, Dict
+from warnings import warn
 
 import torch
 
 from torch import nn
 
+from internals.utils import validate_gt_shape
 from torchcast.process.base import Process
-from torchcast.process.utils import Identity, Bounded, SingleOutput
+from torchcast.process.utils import Bounded, SingleOutput
 
 
-class _RegressionBase(Process):
-    def __init__(self,
-                 id: str,
-                 predictors: Sequence[str],
-                 h_module: torch.nn.Module,
-                 measure: Optional[str] = None,
-                 fixed: bool = True,
-                 decay: Optional[Union[nn.Module, Tuple[float, float]]] = None,
-                 **kwargs):
-
-        predictors = list(predictors)
-
-        if decay is None:
-            transitions = {'all_self': torch.ones(len(predictors))}
-        else:
-            if decay is True:
-                decay = (.98, 1.0)
-            if isinstance(decay, tuple):
-                decay = SingleOutput(numel=len(predictors), transform=Bounded(*decay))
-            transitions = nn.ModuleDict({'all_self': decay})
-
-        super().__init__(
-            id=id,
-            measure=measure,
-            state_elements=predictors,
-            f_tensors=transitions if decay is None else None,
-            f_modules=None if decay is None else transitions,
-            h_module=h_module,
-            h_kwarg='X',
-            fixed_state_elements=predictors if fixed else [],
-            **kwargs
-        )
-
-
-class LinearModel(_RegressionBase):
+class LinearModel(Process):
     """
     A process which takes a model-matrix of predictors, and each state corresponds to the coefficient on each.
 
@@ -52,9 +20,10 @@ class LinearModel(_RegressionBase):
     :param fixed: By default, the regression-coefficients are assumed to be fixed: we are initially
      uncertain about their value at the start of each series, but we gradually grow more confident. If
      ``fixed=False`` then we continue to inject uncertainty at each timestep so that uncertainty asymptotes
-     at some nonzero value. This amounts to dynamic-regression where the coefficients evolve over-time.
-    :param decay: By default, the seasonal structure will remain as the forecast horizon increases. An alternative is
-     to allow this structure to decay (i.e. pass ``True``). If you'd like more fine-grained control over this decay,
+     at some nonzero value. This amounts to dynamic-regression where the coefficients evolve over-time. Note only
+     ``KalmanFilter`` (but not ``ExpSmoother``) supports this.
+    :param decay: By default, the coefficient-values will remain as the forecast horizon increases. An alternative is
+     to allow these to decay (i.e. pass ``True``). If you'd like more fine-grained control over this decay,
      you can specify the min/max decay as a tuple (passing ``True`` uses a default value of ``(.98, 1.0)``).
     """
 
@@ -64,70 +33,35 @@ class LinearModel(_RegressionBase):
                  measure: Optional[str] = None,
                  fixed: bool = True,
                  decay: Optional[Tuple[float, float]] = None):
+
         super().__init__(
             id=id,
-            predictors=predictors,
+            state_elements=predictors,
             measure=measure,
-            h_module=Identity(),
-            fixed=fixed,
-            decay=decay
+            fixed_state_elements=predictors if fixed else []
         )
 
+        if decay is None:
+            self.f_tensors['all_self'] = torch.ones(len(predictors))
+        else:
+            if fixed:
+                warn("decay=True, fixed=True not recommended.")
+            if decay is True:
+                decay = (.98, 1.0)
+            if isinstance(decay, tuple):
+                decay = SingleOutput(numel=len(predictors), transform=Bounded(*decay))
+            self.f_modules['all_self'] = decay
+        self.expected_kwargs = ['X']
 
-class NN(_RegressionBase):
-    """
-    A process which takes a model-matrix of predictors and feeds them into a neural-network; the output of this is then
-    used in the KalmanFilter's observation matrix. This allows the KalmanFilter to have states corresponding to
-    arbitrary combinations of predictors.
-
-    :param id: Unique identifier for the process
-    :param nn: A `nn.Module` that takes inputs from a model-matrix and tranlates them into entries in the
-     observation matrix H.
-    :param measure: The name of the measure for this process.
-    :param fixed: By default, the state of each output is assumed to be fixed: we are initially
-     uncertain about their value at the start of each series, but we gradually grow more confident. If
-     ``fixed=False`` then we continue to inject uncertainty at each timestep so that uncertainty asymptotes
-     at some nonzero value.
-    :param decay: By default, the seasonal structure will remain as the forecast horizon increases. An alternative is
-     to allow this structure to decay (i.e. pass ``True``). If you'd like more fine-grained control over this decay,
-     you can specify the min/max decay as a tuple (passing ``True`` uses a default value of ``(.98, 1.0)``).
-    """
-
-    def __init__(self,
-                 id: str,
-                 nn: torch.nn.Module,
-                 measure: Optional[str] = None,
-                 fixed: bool = True,
-                 decay: Optional[Tuple[float, float]] = None):
-        num_outputs = self._infer_num_outputs(nn)
-        super().__init__(
-            id=id,
-            predictors=[f'nn{i}' for i in range(num_outputs)],
-            h_module=nn,
-            measure=measure,
-            fixed=fixed,
-            decay=decay
-        )
-
-    @staticmethod
-    def _infer_num_outputs(nn: torch.nn.Module) -> int:
-        num_weights = False
-        if hasattr(nn, 'out_features'):
-            return nn.out_features
+    def _build_h_mat(self, inputs: Dict[str, torch.Tensor], num_groups: int, num_times: int) -> torch.Tensor:
         try:
-            reversed_nn = reversed(nn)
-        except TypeError as e:
-            if 'not reversible' not in str(e):
-                raise e
-            reversed_nn = []
-        for layer in reversed_nn:
-            try:
-                num_weights = layer.out_features
-                break
-            except AttributeError:
-                pass
-        if num_weights is not False:
-            return num_weights
-        raise TypeError(
-            f"Unable to infer num-outputs of {nn} by iterating over it and looking for the final `out_features`."
-        )
+            X = inputs['X']
+        except KeyError as e:
+            raise TypeError(f"Missing required keyword-arg `X` (or `{self.id}__X`).") from e
+        assert not torch.isnan(X).any()
+        assert not torch.isinf(X).any()
+
+        X = validate_gt_shape(X, num_groups, num_times, trailing_dim=(self.rank,))
+        # note: trailing_dim is really (self.rank, self.measures), but currently processes can only have one measure
+
+        return X

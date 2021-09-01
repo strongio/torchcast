@@ -1,6 +1,6 @@
 import math
 
-from typing import List, Iterable, Optional, Tuple, Sequence
+from typing import List, Optional, Sequence, Dict, Union
 from warnings import warn
 
 import torch
@@ -8,8 +8,9 @@ import torch
 from torch import Tensor, nn, jit
 from typing_extensions import Final
 
+from torchcast.process.utils import Identity
 from torchcast.covariance.util import num_off_diag
-from torchcast.internals.utils import get_owned_kwarg, is_near_zero
+from torchcast.internals.utils import is_near_zero, validate_gt_shape
 from torchcast.process.base import Process
 
 
@@ -26,15 +27,19 @@ class Covariance(nn.Module):
             processes=processes,
             measure_covariance=Covariance.from_measures(
                 measures,
-                predict_variance=torch.nn.Embedding(len(group_ids), len(measures), padding_idx=0)
+                predict_variance=torch.nn.Sequential(
+                    torch.nn.Embedding(len(group_ids), len(measures), padding_idx=0),
+                    torch.nn.Softplus()
+                ),
+                expected_kwargs=['group_ids']
             ),
             process_covariance=Covariance.from_processes(
                 processes,
-                predict_variance=torch.nn.Embedding(
-                    len(group_ids),
-                    Covariance.from_processes(processes).param_rank,
-                    padding_idx=0
-                )
+                predict_variance=torch.nn.Sequential(
+                    torch.nn.Embedding(len(group_ids), Covariance.from_processes(processes).param_rank, padding_idx=0),
+                    torch.nn.Softplus()
+                ),
+                expected_kwargs=['group_ids']
             )
         )
 
@@ -52,16 +57,19 @@ class Covariance(nn.Module):
     def from_processes(cls,
                        processes: Sequence[Process],
                        cov_type: str = 'process',
-                       predict_variance: Optional[nn.Module] = None,
+                       predict_variance: Union[bool, nn.Module] = None,
                        **kwargs) -> 'Covariance':
         """
         :param processes: The ``processes`` used in your :class:`.StateSpaceModel`.
         :param cov_type: The type of covariance, either 'process' or 'initial' (default: 'process').
-        :param predict_variance: A :class:`torch.nn.Module` that will predict a (log) multiplier for the variance.
-         These should output real-values with shape ``(num_groups, self.param_rank)``; these values will then be
-         converted to multipliers by applying :func:`torch.exp` (i.e. don't pass the output through a softplus).
+        :param predict_variance: Will the variance be predicted upon calling ``forward()``? This is implemented as a
+         multiplier on the base variance given from the 'method'. You can either pass ``True`` in which case it is
+         expected you will pass multipliers as 'process_var_multi' when ``forward()`` is called; *or* you can pass a
+         :class:`torch.nn.Module` that will predict the multipliers, in which case you'll pass input(s) to this
+         module at forward. Either way please note these should output strictly positive values with shape
+         ``(num_groups, num_times, self.param_rank)``.
         :param kwargs: Other arguments passed to :func:`Covariance.__init__`.
-        :return: A :class:`.Covariance` object that can be used in your :class:`.KalmanFilter`.
+        :return: A :class:`.Covariance` object that can be used in your :class:`.StateSpaceModel`.
         """
 
         assert cov_type in {'process', 'initial'}
@@ -90,6 +98,11 @@ class Covariance(nn.Module):
         else:
             raise ValueError(f"Unrecognized cov_type {cov_type}, expected 'initial' or 'process'.")
 
+        if predict_variance is True:
+            predict_variance = Identity()
+            if 'expected_kwargs' not in kwargs:
+                kwargs['expected_kwargs'] = [f'{cov_type}_var_multi']
+
         return cls(
             rank=state_rank,
             empty_idx=no_cov_idx,
@@ -101,15 +114,18 @@ class Covariance(nn.Module):
     @classmethod
     def from_measures(cls,
                       measures: Sequence[str],
-                      predict_variance: Optional[nn.Module] = None,
+                      predict_variance: Union[bool, nn.Module] = None,
                       **kwargs) -> 'Covariance':
         """
         :param measures: The ``measures`` used in your :class:`.KalmanFilter`.
-        :param predict_variance: A :class:`torch.nn.Module` that will predict a (log) multiplier for the variance.
-         These should output real-values with shape ``(num_groups, num_measures)``; these values will then be
-         converted to multipliers by applying :func:`torch.exp` (i.e. don't pass the output through a softplus).
+        :param predict_variance: Will the variance be predicted upon calling ``forward()``? This is implemented as a
+         multiplier on the base variance given from the 'method'. You can either pass ``True`` in which case it is
+         expected you will pass multipliers as 'measure_var_multi' when ``forward()`` is called; *or* you can pass a
+         :class:`torch.nn.Module` that will predict the multipliers, in which case you'll pass input(s) to this
+         module at forward. Either way please note these should output strictly positive values with shape
+         ``(num_groups, num_times, self.param_rank)``.
         :param kwargs: Other arguments passed to :func:`Covariance.__init__`.
-        :return: A :class:`.Covariance` object that can be used in your :class:`.KalmanFilter`.
+        :return: A :class:`.Covariance` object that can be used in your :class:`.StateSpaceModel`.
         """
         if isinstance(measures, str):
             measures = [measures]
@@ -118,6 +134,12 @@ class Covariance(nn.Module):
             kwargs['method'] = 'low_rank'
         if 'init_diag_multi' not in kwargs:
             kwargs['init_diag_multi'] = 1.0
+
+        if predict_variance is True:
+            predict_variance = Identity()
+            if 'expected_kwargs' not in kwargs:
+                kwargs['expected_kwargs'] = [f'measure_var_multi']
+
         return cls(rank=len(measures), id='measure_covariance', predict_variance=predict_variance, **kwargs)
 
     def __init__(self,
@@ -125,6 +147,7 @@ class Covariance(nn.Module):
                  method: str = 'log_cholesky',
                  empty_idx: List[int] = (),
                  predict_variance: Optional[nn.Module] = None,
+                 expected_kwargs: Optional[Sequence[str]] = None,
                  id: Optional[str] = None,
                  init_diag_multi: float = 0.1):
         """
@@ -139,11 +162,11 @@ class Covariance(nn.Module):
          G*K tensor where G is the number of random-effects and K is int(sqrt(G)). Then the covariance is
          ``D + V @ V.t()`` where D is a diagonal-matrix with the std-deviations**2, and V is the low-rank tensor.
         :param empty_idx: In some cases (e.g. process-covariance) we will have some elements with no variance.
-        :param predict_variance: A :class:`torch.nn.Module` that will predict a (log) multiplier for the variance.
-         These should output real-values with shape ``(num_groups, self.param_rank)``; these values will then be
-         converted to multipliers by applying :func:`torch.exp` (i.e. don't pass the output through a softplus).
+        :param predict_variance: For predicting variance, see :func:`Covariance.from_measures`.
+        :param expected_kwargs: If ``predict_variance`` is set, this allows you to set the keyword that will be passed
+         at ``forward()``.
         :param id: Identifier for this covariance. Typically left ``None`` and set when passed to the
-         :class:`.KalmanFilter`.
+         :class:`.StateSpaceModel`.
         :param init_diag_multi: A float that will be applied as a multiplier to the initial values along the diagonal.
          This can be useful to provide intelligent starting-values to speed up optimization.
         """
@@ -168,8 +191,11 @@ class Covariance(nn.Module):
 
         self.var_predict_module = predict_variance
 
-        # TODO: allow user-defined?
-        self.expected_kwarg = '' if self.var_predict_module is None else 'X'
+        if self.var_predict_module and expected_kwargs is None:
+            raise ValueError("Please explicitly specify ``expected_kwargs`` if passing ``predict_variance``.")
+        if isinstance(expected_kwargs, str):
+            expected_kwargs = [expected_kwargs]
+        self.expected_kwargs: List[str] = list(expected_kwargs)
 
     def _set_params(self, method: str, init_diag_multi: float):
         self.cholesky_log_diag: Optional[nn.Parameter] = None
@@ -198,12 +224,6 @@ class Covariance(nn.Module):
             warn(f"Id already set to {self.id}, overwriting")
         self.id = id
         return self
-
-    @jit.ignore
-    def get_kwargs(self, kwargs: dict) -> Iterable[Tuple[str, str, Tensor]]:
-        if self.expected_kwarg:
-            found_key, value = get_owned_kwarg(self.id, self.expected_kwarg, kwargs)
-            yield found_key, self.expected_kwarg, torch.as_tensor(value)
 
     @staticmethod
     def log_chol_to_chol(log_diag: torch.Tensor, off_diag: torch.Tensor) -> torch.Tensor:
@@ -241,27 +261,30 @@ class Covariance(nn.Module):
             mini_cov = mini_cov + torch.eye(mini_cov.shape[-1], device=mini_cov.device, dtype=mini_cov.dtype) * 1e-12
         return mini_cov
 
-    def forward(self, input: Optional[Tensor] = None, _ignore_input: bool = False) -> Tensor:
-        # TODO: `multi_forward()` that only computes ``_get_mini_cov()`` once if we have time-varying inputs
+    def forward(self,
+                inputs: Dict[str, Tensor],
+                num_groups: int,
+                num_times: int,
+                _ignore_input: bool = False) -> Tensor:
         mini_cov = self._get_mini_cov()
+        mini_cov = validate_gt_shape(
+            mini_cov, num_groups=num_groups, num_times=num_times, trailing_dim=(self.param_rank, self.param_rank)
+        )
 
         pred = None
         if self.var_predict_module is not None and not _ignore_input:
-            pred = self.var_predict_multi * self.var_predict_module(input)
+            pred = self.var_predict_module(*[inputs[x] for x in self.expected_kwargs])
             if torch.isnan(pred).any() or torch.isinf(pred).any():
                 raise RuntimeError(f"{self.id}'s `predict_variance` produced nans/infs")
-            if len(pred.shape) == 1:
-                raise ValueError(
-                    f"{self.id} `predict_variance` module output should have 2D output, got {len(pred.shape)}"
-                )
-            elif pred.shape[-1] not in (1, self.param_rank):
-                raise ValueError(
-                    f"{self.id} `predict_variance` module output should have `shape[-1]` of "
-                    f"{self.param_rank}, got {pred.shape[-1]}"
-                )
+            if (pred < 0).any():
+                raise RuntimeError(f"{self.id}'s `predict_variance` produced values <0; needs exp/softplus layer.")
+            pred = pred * self.var_predict_multi
+            pred = validate_gt_shape(pred, num_groups=num_groups, num_times=num_times, trailing_dim=(self.param_rank,))
+
         if pred is not None:
             diag_multi = torch.diag_embed(torch.exp(pred))
             mini_cov = diag_multi @ mini_cov @ diag_multi
 
-        return self.mask @ mini_cov @ self.mask.t()
-        # return pad_covariance(mini_cov, [int(i not in self.empty_idx) for i in range(self.rank)])
+        mask = self.mask.unsqueeze(0).unsqueeze(0)
+
+        return mask @ mini_cov @ mask.tranpose(-1, -2)

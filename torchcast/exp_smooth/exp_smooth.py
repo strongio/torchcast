@@ -121,46 +121,37 @@ class ExpSmoother(StateSpaceModel):
         )
 
     def _build_design_mats(self,
-                           static_kwargs: Dict[str, Dict[str, Tensor]],
-                           time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                           kwargs_per_process: Dict[str, Dict[str, Tensor]],
                            num_groups: int,
                            out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
         assert out_timesteps
 
-        Fs, Hs = self._build_transition_and_measure_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
+        Fs, Hs = self._build_transition_and_measure_mats(kwargs_per_process, num_groups, out_timesteps)
 
         # measure-variance:
-        Rs = self._build_measure_var_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
+        mcov_input = kwargs_per_process.get('measure_covariance', {})
+        Rs = self.measure_covariance(mcov_input,
+                                     num_groups=num_groups,
+                                     num_times=out_timesteps)
 
-        # innovation matrix / kalman-gain:
-        cov1steps: List[Tensor] = []
-        if 'smoothing_matrix' in time_varying_kwargs and \
-                self.smoothing_matrix.expected_kwarg in time_varying_kwargs['smoothing_matrix']:
-            pvar_inputs = time_varying_kwargs['smoothing_matrix'][self.smoothing_matrix.expected_kwarg]
-            Ks: List[Tensor] = []
-            for t in range(out_timesteps):
-                Ks.append(self.smoothing_matrix(pvar_inputs[t]))
+        sm_input = kwargs_per_process.get('smoothing_matrix', {})
+        Ks = self.smoothing_matrix(sm_input,
+                                   num_groups=num_groups,
+                                   num_times=out_timesteps)
 
+        # pre-compute 1-step-ahead variance
+        if len(mcov_input) > 0 or len(sm_input) > 0:
+            cov1steps = Ks @ Rs @ Ks.transpose(-1, -2)
+            cov1steps = cov1steps.unbind(1)
         else:
+            # if not time-varying, the this is  cheaper
+            # todo: will false-alarm with inputs that are groupwise but not timewise
+            cov1step = Ks[0] @ Rs[0] @ Ks[0].t()
+            cov1steps = [cov1step] * out_timesteps
 
-            pvar_input: Optional[Tensor] = None
-            if 'smoothing_matrix' in static_kwargs and \
-                    self.smoothing_matrix.expected_kwarg in static_kwargs['smoothing_matrix']:
-                pvar_input = static_kwargs['smoothing_matrix'].get(self.smoothing_matrix.expected_kwarg)
-            K = self.smoothing_matrix(pvar_input)
-            if len(K.shape) == 2:
-                K = K.expand(num_groups, -1, -1)
-            Ks = [K] * out_timesteps
-
-            if len(Rs) == 1 or Rs[0] is not Rs[1]:
-                # R is not time-varying
-                cov1step = K @ Rs[0] @ K.permute(0, 2, 1)
-                cov1steps = [cov1step] * out_timesteps
-
-        if not len(cov1steps):
-            # R is time-varying, K is time-varying, or both:
-            for t in range(out_timesteps):
-                cov1steps.append(Ks[t] @ Rs[t] @ Ks[t].permute(0, 2, 1))
+        #
+        Rs = Rs.unbind(1)
+        Ks = Ks.unbind(1)
 
         predict_kwargs = {'F': Fs, 'R': Rs, 'cov1step': cov1steps}
         update_kwargs = {'H': Hs, 'K': Ks}

@@ -143,32 +143,22 @@ class KalmanFilter(StateSpaceModel):
         )
 
     def _build_design_mats(self,
-                           static_kwargs: Dict[str, Dict[str, Tensor]],
-                           time_varying_kwargs: Dict[str, Dict[str, List[Tensor]]],
+                           kwargs_per_process: Dict[str, Dict[str, Tensor]],
                            num_groups: int,
                            out_timesteps: int) -> Tuple[Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
-        Fs, Hs = self._build_transition_and_measure_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
+        Fs, Hs = self._build_transition_and_measure_mats(kwargs_per_process, num_groups, out_timesteps)
 
         # measure-variance:
-        Rs = self._build_measure_var_mats(static_kwargs, time_varying_kwargs, num_groups, out_timesteps)
+        Rs = self.measure_covariance(kwargs_per_process.get('measure_covariance', {}),
+                                     num_groups=num_groups,
+                                     num_times=out_timesteps)
+        Rs = Rs.unbind(1)
 
         # process-variance:
-        measure_scaling = torch.diag_embed(self._get_measure_scaling())
-        if 'process_covariance' in time_varying_kwargs and \
-                self.process_covariance.expected_kwarg in time_varying_kwargs['process_covariance']:
-            pvar_inputs = time_varying_kwargs['process_covariance'][self.process_covariance.expected_kwarg]
-            Qs: List[Tensor] = []
-            for t in range(out_timesteps):
-                Qs.append(measure_scaling @ self.process_covariance(pvar_inputs[t]) @ measure_scaling)
-        else:
-            pvar_input: Optional[Tensor] = None
-            if 'process_covariance' in static_kwargs and \
-                    self.process_covariance.expected_kwarg in static_kwargs['process_covariance']:
-                pvar_input = static_kwargs['process_covariance'].get(self.process_covariance.expected_kwarg)
-            Q = measure_scaling @ self.process_covariance(pvar_input) @ measure_scaling
-            if len(Q.shape) == 2:
-                Q = Q.expand(num_groups, -1, -1)
-            Qs = [Q] * out_timesteps
+        measure_scaling = torch.diag_embed(self._get_measure_scaling().unsqueeze(0).unsqueeze(0))
+        pcov_raw = self.process_covariance(kwargs_per_process.get('process_covariance', {}))
+        Qs = measure_scaling @ pcov_raw @ measure_scaling
+        Qs = Qs.unbind(1)
 
         predict_kwargs = {'F': Fs, 'Q': Qs}
         update_kwargs = {'H': Hs, 'R': Rs}
