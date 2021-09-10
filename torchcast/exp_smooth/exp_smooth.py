@@ -91,9 +91,11 @@ class ExpSmoother(StateSpaceModel):
         self.smoothing_matrix = smoothing_matrix.set_id('smoothing_matrix')
 
     @torch.jit.ignore
-    def initial_covariance(self, *args, **kwargs) -> Tensor:
+    def initial_covariance(self, inputs: dict, num_groups: int, num_times: int, _ignore_input: bool = False) -> Tensor:
+        # this is a dummy method since we just need the shape to be like what you'd get from calling Covariance()(),
+        # but don't actually want learnable parameter b/c unused otherwise
         ms = self._get_measure_scaling()
-        return torch.eye(self.state_rank, dtype=ms.dtype, device=ms.device)
+        return torch.eye(self.state_rank, dtype=ms.dtype, device=ms.device).expand(num_groups, num_times, -1, -1)
 
     @torch.jit.ignore
     def design_modules(self) -> Iterable[Tuple[str, torch.nn.Module]]:
@@ -140,18 +142,18 @@ class ExpSmoother(StateSpaceModel):
                                    num_times=out_timesteps)
 
         # pre-compute 1-step-ahead variance
+        cov1steps: Optional[List[Tensor]] = None
         if len(mcov_input) > 0 or len(sm_input) > 0:
-            cov1steps = Ks @ Rs @ Ks.transpose(-1, -2)
-            cov1steps = cov1steps.unbind(1)
-        else:
-            # if not time-varying, the this is  cheaper
-            # todo: will false-alarm with inputs that are groupwise but not timewise
-            cov1step = Ks[0] @ Rs[0] @ Ks[0].t()
-            cov1steps = [cov1step] * out_timesteps
+            cov1steps = (Ks @ Rs @ Ks.transpose(-1, -2)).unbind(1)
 
-        #
+        # unbind
         Rs = Rs.unbind(1)
         Ks = Ks.unbind(1)
+        if cov1steps is None:
+            # if not time-varying, the this is  cheaper
+            # todo: will false-alarm with inputs that are groupwise but not timewise
+            cov1step = Ks[0] @ Rs[0] @ Ks[0].transpose(-1, -2)
+            cov1steps = [cov1step] * out_timesteps
 
         predict_kwargs = {'F': Fs, 'R': Rs, 'cov1step': cov1steps}
         update_kwargs = {'H': Hs, 'K': Ks}
