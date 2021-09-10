@@ -7,7 +7,7 @@ import torch
 from parameterized import parameterized
 
 from torchcast.kalman_filter import KalmanFilter
-from torchcast.process import LocalLevel, LinearModel, LocalTrend, TBATS
+from torchcast.process import LocalLevel, LinearModel, LocalTrend, Season
 from torchcast.utils.data import TimeSeriesDataset
 
 MAX_TRIES = 3  # we set the seed but not tested across different platforms
@@ -81,7 +81,7 @@ class TestTraining(unittest.TestCase):
         # TODO: include nans; make sure performance doesn't take significant hit w/partial nans
 
         def _make_kf():
-            return torch.jit.script(KalmanFilter(
+            return KalmanFilter(
                 processes=[
                               LocalLevel(id=f'll{i + 1}', measure=str(i + 1))
                               for i in range(ndim)
@@ -92,7 +92,7 @@ class TestTraining(unittest.TestCase):
                               for i in range(ndim)
                           ],
                 measures=[str(i + 1) for i in range(ndim)]
-            ))
+            )
 
         # simulate:
         X = torch.randn((num_groups, num_times, 5))
@@ -137,7 +137,6 @@ class TestTraining(unittest.TestCase):
         """
         # manually generated data (sin-wave, trend, etc.) with virtually no noise: MSE should be near zero
         """
-        from torchcast.process.season import FourierSeason
         torch.manual_seed(123)
 
         weekly = torch.sin(2. * 3.1415 * torch.arange(0., 7.) / 7.)
@@ -147,13 +146,13 @@ class TestTraining(unittest.TestCase):
         start_datetimes = np.array([np.datetime64('2019-04-14') + np.timedelta64(i, 'D') for i in range(num_groups)])
 
         def _train(num_epochs: int = 12):
-            kf = torch.jit.script(KalmanFilter(
+            kf = KalmanFilter(
                 processes=[
                     LocalTrend(id='trend'),
-                    FourierSeason(id='day_of_week', period='7D', dt_unit='D', K=3)
+                    Season(id='day_of_week', period='7D', dt_unit='D', K=3, fixed=True)
                 ],
                 measures=['y']
-            ))
+            )
 
             # train:
             optimizer = torch.optim.LBFGS([p for n, p in kf.named_parameters() if 'measure_covariance' not in n],
@@ -164,7 +163,7 @@ class TestTraining(unittest.TestCase):
                 optimizer.zero_grad()
                 _start = time.time()
                 # print(f'[{datetime.datetime.now().time()}] forward...')
-                pred = kf(data, start_datetimes=start_datetimes)
+                pred = kf(data, start_offsets=start_datetimes)
                 loss = -pred.log_prob(data).mean()
                 _start = time.time()
                 loss.backward()
@@ -189,7 +188,7 @@ class TestTraining(unittest.TestCase):
         if kf is None:
             raise RuntimeError("MAX_TRIES exceeded")
 
-        pred = kf(data, start_datetimes=start_datetimes)
+        pred = kf(data, start_offsets=start_datetimes)
         # MSE should be virtually zero
         self.assertLess(torch.mean((pred.means - data) ** 2), .01)
         # trend should be identified:
@@ -225,12 +224,30 @@ class TestTraining(unittest.TestCase):
         )
 
         def _train(num_epochs: int = 15):
-            kf = torch.jit.script(KalmanFilter(
+            # TODO: file an issue
+            # hit an error if scripting:
+            # ```
+            # RuntimeError: The following operation failed in the TorchScript interpreter.
+            # Traceback of TorchScript (most recent call last):
+            #   File "<string>", line 138, in <backward op>
+            #                    dim: int):
+            #             def backward(grad_outputs: List[Tensor]):
+            #                 grad_self = torch.stack(grad_outputs, dim)
+            #                             ~~~~~~~~~~~ <--- HERE
+            #                 return grad_self, None
+            # RuntimeError: stack expects each tensor to be equal size, but got [10, 2, 2] at entry 0 and [0] at entry34
+            # ```
+            # appears to be a bug in torchscript's unbind.backwards:
+            # https://github.com/pytorch/pytorch/blob/2a81e8b8f1526b375d1e78402f91bf8fd82d2b68/torch/csrc/jit/runtime/symbolic_script.cpp#L602
+            # note that entry 34 is the last timestep. my guess is that one of the design-mats (e.g. F) is not used on
+            # the last timestep (by design) so doesn't get a gradient, so has a grad tensor of zero-extent, which can't
+            # be stacked w/the other timesteps
+            kf = KalmanFilter(
                 processes=[
-                    TBATS(id='day_of_week', period='7D', dt_unit='D', K=1, decay=(.85, 1.))
+                    Season(id='day_of_week', period='7D', dt_unit='D', K=1, decay=(.85, 1.))
                 ],
                 measures=['y']
-            ))
+            )
 
             # train:
             optimizer = torch.optim.LBFGS(kf.parameters(), lr=.15, max_iter=10)

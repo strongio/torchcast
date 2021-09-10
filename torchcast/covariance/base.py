@@ -117,13 +117,13 @@ class Covariance(nn.Module):
                       predict_variance: Union[bool, nn.Module] = None,
                       **kwargs) -> 'Covariance':
         """
-        :param measures: The ``measures`` used in your :class:`.KalmanFilter`.
+        :param measures: The ``measures`` used in your :class:`.StateSpaceModel`.
         :param predict_variance: Will the variance be predicted upon calling ``forward()``? This is implemented as a
          multiplier on the base variance given from the 'method'. You can either pass ``True`` in which case it is
          expected you will pass multipliers as 'measure_var_multi' when ``forward()`` is called; *or* you can pass a
          :class:`torch.nn.Module` that will predict the multipliers, in which case you'll pass input(s) to this
          module at forward. Either way please note these should output strictly positive values with shape
-         ``(num_groups, num_times, self.param_rank)``.
+         ``(num_groups, num_times, len(measures))``.
         :param kwargs: Other arguments passed to :func:`Covariance.__init__`.
         :return: A :class:`.Covariance` object that can be used in your :class:`.StateSpaceModel`.
         """
@@ -195,7 +195,7 @@ class Covariance(nn.Module):
             raise ValueError("Please explicitly specify ``expected_kwargs`` if passing ``predict_variance``.")
         if isinstance(expected_kwargs, str):
             expected_kwargs = [expected_kwargs]
-        self.expected_kwargs: List[str] = list(expected_kwargs)
+        self.expected_kwargs: Optional[List[str]] = None if expected_kwargs is None else list(expected_kwargs)
 
     def _set_params(self, method: str, init_diag_multi: float):
         self.cholesky_log_diag: Optional[nn.Parameter] = None
@@ -268,7 +268,7 @@ class Covariance(nn.Module):
                 _ignore_input: bool = False) -> Tensor:
         mini_cov = self._get_mini_cov()
         mini_cov = validate_gt_shape(
-            mini_cov, num_groups=num_groups, num_times=num_times, trailing_dim=(self.param_rank, self.param_rank)
+            mini_cov, num_groups=num_groups, num_times=num_times, trailing_dim=[self.param_rank, self.param_rank]
         )
 
         pred = None
@@ -279,7 +279,7 @@ class Covariance(nn.Module):
             if (pred < 0).any():
                 raise RuntimeError(f"{self.id}'s `predict_variance` produced values <0; needs exp/softplus layer.")
             pred = pred * self.var_predict_multi
-            pred = validate_gt_shape(pred, num_groups=num_groups, num_times=num_times, trailing_dim=(self.param_rank,))
+            pred = validate_gt_shape(pred, num_groups=num_groups, num_times=num_times, trailing_dim=[self.param_rank])
 
         if pred is not None:
             diag_multi = torch.diag_embed(torch.exp(pred))
@@ -287,4 +287,4 @@ class Covariance(nn.Module):
 
         mask = self.mask.unsqueeze(0).unsqueeze(0)
 
-        return mask @ mini_cov @ mask.tranpose(-1, -2)
+        return mask @ mini_cov @ mask.transpose(-1, -2)

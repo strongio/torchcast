@@ -3,9 +3,7 @@ from warnings import warn
 
 import torch
 
-from torch import nn
-
-from internals.utils import validate_gt_shape
+from torchcast.internals.utils import validate_gt_shape
 from torchcast.process.base import Process
 from torchcast.process.utils import Bounded, SingleOutput
 
@@ -54,14 +52,17 @@ class LinearModel(Process):
         self.expected_kwargs = ['X']
 
     def _build_h_mat(self, inputs: Dict[str, torch.Tensor], num_groups: int, num_times: int) -> torch.Tensor:
-        try:
-            X = inputs['X']
-        except KeyError as e:
-            raise TypeError(f"Missing required keyword-arg `X` (or `{self.id}__X`).") from e
+        # if not torch.jit.is_scripting():
+        #     try:
+        #         X = inputs['X']
+        #     except KeyError as e:
+        #         raise TypeError(f"Missing required keyword-arg `X` (or `{self.id}__X`).") from e
+        # else:
+        X = inputs['X']
         assert not torch.isnan(X).any()
         assert not torch.isinf(X).any()
 
-        X = validate_gt_shape(X, num_groups, num_times, trailing_dim=(self.rank,))
+        X = validate_gt_shape(X, num_groups, num_times, trailing_dim=[self.rank])
         # note: trailing_dim is really (self.rank, self.measures), but currently processes can only have one measure
 
         return X

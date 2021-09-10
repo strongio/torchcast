@@ -40,10 +40,10 @@ class LocalLevel(Process):
                 decay = SingleOutput(transform=Bounded(*decay))
             self.f_modules[f'{se}->{se}'] = decay
         else:
-            self.f_tensors = {f'{se}->{se}': torch.ones(1)}
+            self.f_tensors[f'{se}->{se}'] = torch.ones(1)
 
     def _build_h_mat(self, inputs: Dict[str, torch.Tensor], num_groups: int, num_times: int) -> Tensor:
-        return torch.tensor([1.])
+        return torch.tensor([1.], device=self.device, dtype=self.dtype)
 
 
 class LocalTrend(Process):
@@ -67,9 +67,11 @@ class LocalTrend(Process):
                  decay_position: Optional[Union[torch.nn.Module, Tuple[float, float]]] = None,
                  velocity_multi: float = 0.1):
 
-        # define transitions:
-        self.f_modules: nn.ModuleDict = nn.ModuleDict()
-        self.f_tensors: Dict[str, torch.Tensor] = {}
+        super(LocalTrend, self).__init__(
+            id=id,
+            measure=measure,
+            state_elements=['position', 'velocity'],
+        )
 
         if decay_position is None:
             self.f_tensors['position->position'] = torch.ones(1)
@@ -87,11 +89,5 @@ class LocalTrend(Process):
         assert velocity_multi <= 1.
         self.f_tensors['velocity->position'] = torch.ones(1) * velocity_multi
 
-        super(LocalTrend, self).__init__(
-            id=id,
-            measure=measure,
-            state_elements=['position', 'velocity'],
-        )
-
     def _build_h_mat(self, inputs: Dict[str, torch.Tensor], num_groups: int, num_times: int) -> Tensor:
-        return torch.tensor([1., 0.])
+        return torch.tensor([1., 0.], device=self.device, dtype=self.dtype)

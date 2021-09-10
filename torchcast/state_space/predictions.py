@@ -1,4 +1,3 @@
-import datetime
 from typing import Tuple, Union, Optional, Dict, Iterator
 from warnings import warn
 
@@ -23,7 +22,7 @@ class Predictions(nn.Module):
                  state_covs: Tensor,
                  R: Tensor,
                  H: Tensor,
-                 kalman_filter: Union['KalmanFilter', dict]):
+                 model: Union['StateSpaceModel', dict]):
         super().__init__()
         self.state_means = state_means
         if torch.isnan(self.state_means).any():
@@ -34,20 +33,20 @@ class Predictions(nn.Module):
         self.H = H
         self.R = R
 
-        if not isinstance(kalman_filter, dict):
+        if not isinstance(model, dict):
             all_state_elements = []
-            for pid in kalman_filter.processes:
-                process = kalman_filter.processes[pid]
+            for pid in model.processes:
+                process = model.processes[pid]
                 for state_element in process.state_elements:
                     all_state_elements.append((pid, state_element))
-            kalman_filter = {
-                'distribution_cls': kalman_filter.ss_step.get_distribution(),
-                'measures': kalman_filter.measures,
+            model = {
+                'distribution_cls': model.ss_step.get_distribution(),
+                'measures': model.measures,
                 'all_state_elements': all_state_elements
             }
-        self.distribution_cls = kalman_filter['distribution_cls']
-        self.measures = kalman_filter['measures']
-        self.all_state_elements = kalman_filter['all_state_elements']
+        self.distribution_cls = model['distribution_cls']
+        self.measures = model['measures']
+        self.all_state_elements = model['all_state_elements']
 
         self._means = None
         self._covs = None
@@ -435,10 +434,10 @@ class Predictions(nn.Module):
                 raise TypeError(f"Cannot index into non-batch dims of {cls.__name__}")
             if k == 'H' and v.shape[-2] != self.H.shape[-2]:
                 raise TypeError(f"Cannot index into non-batch dims of {cls.__name__}")
-        return cls(**kwargs, kalman_filter=self._kf_attributes)
+        return cls(**kwargs, model=self._model_attributes)
 
     @property
-    def _kf_attributes(self) -> dict:
+    def _model_attributes(self) -> dict:
         """
         Has the attributes of a KalmanFilter that are needed in __init__
         """

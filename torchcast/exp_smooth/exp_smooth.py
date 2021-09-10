@@ -117,7 +117,7 @@ class ExpSmoother(StateSpaceModel):
             state_covs=covs,
             R=torch.stack(predict_kwargs['R'], 1),
             H=torch.stack(update_kwargs['H'], 1),
-            kalman_filter=self
+            model=self
         )
 
     def _build_design_mats(self,

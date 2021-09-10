@@ -61,7 +61,7 @@ def validate_gt_shape(
         tensor: torch.Tensor,
         num_groups: int,
         num_times: int,
-        trailing_dim: Tuple[int, ...]
+        trailing_dim: List[int]
 ) -> torch.Tensor:
     """
     Given we expect a tensor whose batch dimensions are (group, time) and with trailing dimensions, validate and
@@ -75,27 +75,27 @@ def validate_gt_shape(
     :param trailing_dim: Tuple with ints for trailing dim shape.
     :return: A tensor with shape (num_groups, num_times, *trailing_dim).
     """
+    trailing_dim = list(trailing_dim)
     ntrailing = len(trailing_dim)
-    if tensor.shape[-ntrailing:] != trailing_dim:
-        raise ValueError(f"Expected `tensor.shape[-{ntrailing}:]` to be {ntrailing}, got {tensor.shape[-ntrailing:]}")
+
+    if list(tensor.shape[-ntrailing:]) != trailing_dim:
+        raise ValueError(f"Expected `x.shape[-{ntrailing}:]` to be {trailing_dim}, got {tensor.shape[-ntrailing:]}")
     ndim = len(tensor.shape)
-    trailing_shape = [-1] * ntrailing
     if ndim == ntrailing:
         # insert dims for group and time:
-        tensor = tensor.unsqueeze(0).expand(num_groups, *trailing_shape)
-        tensor = tensor.unsqueeze(1).expand(-1, num_times, *trailing_shape)
+        tensor = tensor.expand(torch.Size([num_groups, num_times] + trailing_dim))
     elif ndim == ntrailing + 1:
         # if we're only missing one dim and the first and last dims match, assume the time dim is singleton.
         if tensor.shape[0] == num_groups:
-            tensor = tensor.unsqueeze(1).expand(-1, num_times, *trailing_shape)
+            tensor = tensor.unsqueeze(1).expand(torch.Size([-1, num_times] + trailing_dim))
         else:
-            raise ValueError(f"Expected `tensor.shape[0]` to be ngroups, got {tensor.shape[0]}")
+            raise ValueError(f"Expected `x.shape[0]` to be ngroups, got {tensor.shape[0]}")
     elif ndim == ntrailing + 2:
         # note, does not allow singleton
-        if tuple(tensor.shape[0:2]) != (num_groups, num_times):
-            raise ValueError(f"Expected `tensor.shape[0:2]` to be (ngroups, ntimes), got {tensor.shape[0:2]}")
+        if tensor.shape[0] != num_groups or tensor.shape[1] != num_times:
+            raise ValueError(f"Expected `x.shape[0:2]` to be (ngroups, ntimes), got {tensor.shape[0:2]}")
     else:
-        raise ValueError(f"Expected len(tensor.shape) to be {ntrailing + 2} or {ntrailing}, got {ndim}")
+        raise ValueError(f"Expected len(x.shape) to be {ntrailing + 2} or {ntrailing}, got {ndim}")
     return tensor
 
 

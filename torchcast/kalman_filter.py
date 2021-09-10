@@ -75,7 +75,7 @@ class KalmanStep(StateSpaceStep):
     def _kalman_gain(cov: Tensor, H: Tensor, R: Tensor) -> Tensor:
         Ht = H.permute(0, 2, 1)
         covs_measured = cov @ Ht
-        system_covariance = torch.baddbmm(R, H @ cov, Ht)
+        system_covariance = H @ cov @ Ht + R
         A = system_covariance.permute(0, 2, 1)
         B = covs_measured.permute(0, 2, 1)
         Kt, _ = torch.solve(B, A)
@@ -139,7 +139,7 @@ class KalmanFilter(StateSpaceModel):
             state_covs=covs,
             R=torch.stack(update_kwargs['R'], 1),
             H=torch.stack(update_kwargs['H'], 1),
-            kalman_filter=self
+            model=self
         )
 
     def _build_design_mats(self,
@@ -156,7 +156,9 @@ class KalmanFilter(StateSpaceModel):
 
         # process-variance:
         measure_scaling = torch.diag_embed(self._get_measure_scaling().unsqueeze(0).unsqueeze(0))
-        pcov_raw = self.process_covariance(kwargs_per_process.get('process_covariance', {}))
+        pcov_raw = self.process_covariance(
+            kwargs_per_process.get('process_covariance', {}), num_groups=num_groups, num_times=out_timesteps
+        )
         Qs = measure_scaling @ pcov_raw @ measure_scaling
         Qs = Qs.unbind(1)
 

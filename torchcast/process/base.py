@@ -1,9 +1,8 @@
-from typing import Tuple, Sequence, List, Dict, Optional, Iterable, Callable
+from typing import Tuple, Sequence, List, Dict, Optional, Callable
 
 import torch
 
 from torch import nn, Tensor, jit
-from torchcast.internals.utils import get_owned_kwarg
 
 
 class Process(nn.Module):
@@ -45,7 +44,7 @@ class Process(nn.Module):
         # can/should be overridden by subclasses:
         self.expected_kwargs: Optional[List[str]] = None
         self.f_modules: nn.ModuleDict = nn.ModuleDict()
-        self.f_tensors: Dict[str, torch.Tensor] = {}
+        self.f_tensors: Dict[str, torch.Tensor] = {'': torch.empty(0)}  # for jit
 
     @jit.ignore
     def offset_initial_state(self, initial_state: Tensor, start_offsets: Optional[Sequence] = None) -> Tensor:
@@ -63,7 +62,7 @@ class Process(nn.Module):
         F = self._build_f_mat(inputs, num_groups, num_times)
         return H, F
 
-    def _build_h_mat(self, inputs: dict, num_groups: int, num_times: int) -> Tensor:
+    def _build_h_mat(self, inputs: Dict[str, Tensor], num_groups: int, num_times: int) -> Tensor:
         """
         Construct observation matrix H.
 
@@ -74,7 +73,7 @@ class Process(nn.Module):
         """
         raise NotImplementedError
 
-    def _get_transitions_dict(self, inputs: dict) -> Dict[str, Tensor]:
+    def _get_transitions_dict(self, inputs: Dict[str, Tensor]) -> Dict[str, Tensor]:
         """
         Construct transitions dictionary which will be used by ``_build_f_mat()`` to construct transition-matrix F.
         This default method does not make use of inputs, but subclasses can override (e.g. different decay for each
@@ -85,13 +84,17 @@ class Process(nn.Module):
         transition-values.
         """
         out = {}
-        for k, v in self.f_modules.items():
-            out[k] = v()
-        for k, v in self.f_tensors.items():
-            out[k] = v
+        for km, module in self.f_modules.items():
+            out[km] = module()
+        for kt, tens in self.f_tensors.items():
+            if kt == '':  # see self.f_tensors definition
+                continue
+            # can't register f_tensors as buffers, see https://github.com/pytorch/pytorch/issues/43815
+            # another approach would be override _apply, but that doesn't seem to work with torchscript
+            out[kt] = tens.to(dtype=self.dtype, device=self.device)
         return out
 
-    def _build_f_mat(self, inputs: dict, num_groups: int, num_times: int) -> Tensor:
+    def _build_f_mat(self, inputs: Dict[str, Tensor], num_groups: int, num_times: int) -> Tensor:
         """
         :param inputs: Inputs from ``forward()``
         :param num_groups: Number of groups.
@@ -122,13 +125,6 @@ class Process(nn.Module):
             c = self.se_to_idx[from_el]
             r = self.se_to_idx[to_el]
             return [r], [c]
-
-    def _apply(self, fn: Callable) -> 'Process':
-        # can't register f_tensors as buffers, see https://github.com/pytorch/pytorch/issues/43815
-        if self.f_tensors is not None:
-            for k, v in self.f_tensors.items():
-                self.f_tensors[k] = fn(v)
-        return super()._apply(fn)
 
     @property
     def device(self) -> torch.device:

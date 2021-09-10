@@ -74,23 +74,6 @@ class Multi(nn.Module):
         return input * self.value
 
 
-class TimesToFourier(nn.Module):
-    """
-    Takes a (N x 1) tensor of times and outputs a (N X K*2) tensor of fourier terms, useful for modeling seasonality.
-    """
-
-    def __init__(self, K: int, seasonal_period: float):
-        super(TimesToFourier, self).__init__()
-        self.K = K
-        self.seasonal_period = float(seasonal_period)
-
-    def forward(self, times: torch.Tensor):
-        if len(times.shape) >= 2:
-            assert len(times.shape) == 2 and times.shape[-1] == 1
-            times = times.squeeze(-1)
-        return fourier_tensor(times, seasonal_period=self.seasonal_period, K=self.K).view(times.shape[0], self.K * 2)
-
-
 class Assignments(nn.Module):
     """
     Takes a (N x K) input and maps it to a (N X G) output by assigning columns of the input to columns of the output.

@@ -1,11 +1,12 @@
 import copy
 import itertools
 from collections import defaultdict
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict
 from unittest import TestCase
 
 import torch
 from parameterized import parameterized
+from torch import Tensor
 
 from torchcast.internals.utils import get_nan_groups
 
@@ -80,10 +81,19 @@ class TestKalmanFilter(TestCase):
         f_modules = torch.nn.ModuleDict()
         f_modules['position->position'] = SingleOutput()
 
-        compilable = Process(id='compilable',
-                             state_elements=['position'],
-                             h_module=h_module,
-                             f_modules=f_modules)
+        class ExProc(Process):
+            def __init__(self, id: str, state_elements: list, h_module: torch.nn.Module, f_modules: dict):
+                super().__init__(id=id, state_elements=state_elements)
+                self.f_modules.update(f_modules)
+                self.h_module = h_module
+
+            def _build_h_mat(self, inputs: Dict[str, Tensor], num_groups: int, num_times: int) -> Tensor:
+                return self.h_module()
+
+        compilable = ExProc(id='compilable',
+                            state_elements=['position'],
+                            h_module=h_module,
+                            f_modules=f_modules)
 
         torch_kf = KalmanFilter(
             processes=[compilable],
@@ -93,10 +103,10 @@ class TestKalmanFilter(TestCase):
         self.assertIsInstance(torch_kf(torch.tensor([[-5., 5., 1.]]).unsqueeze(-1)), Predictions)
 
         # not compile-able:
-        not_compilable = Process(id='not_compilable',
-                                 state_elements=['position'],
-                                 h_module=lambda x=None: h_module(x),
-                                 f_tensors={'position->position': torch.ones(1)})
+        not_compilable = ExProc(id='not_compilable',
+                                state_elements=['position'],
+                                h_module=lambda x=None: h_module(x),
+                                f_modules=f_modules)
         torch_kf = KalmanFilter(
             processes=[not_compilable],
             measures=['y']
@@ -108,10 +118,6 @@ class TestKalmanFilter(TestCase):
         self.assertIn('TorchScript', str(the_exception))
 
         # but we can skip compilation:
-        torch_kf = KalmanFilter(
-            processes=[not_compilable],
-            measures=['y']
-        )
         self.assertIsInstance(torch_kf(torch.tensor([[-5., 5., 1.]]).unsqueeze(-1)), Predictions)
 
     @torch.no_grad()
@@ -124,10 +130,12 @@ class TestKalmanFilter(TestCase):
             processes=[LinearModel(id='lm', predictors=['x1', 'x2', 'x3'], fixed=False, decay=(.95, 1.))],
             measures=['y']
         )
-        _kwargs = torch_kf._parse_design_kwargs(
+        kwargs_per_process = torch_kf._parse_design_kwargs(
             input=data, out_timesteps=num_times, X=torch.randn(1, num_times, 3)
         )
-        predict_kwargs, update_kwargs = torch_kf._build_design_mats(**_kwargs, num_groups=1, out_timesteps=num_times)
+        predict_kwargs, update_kwargs = torch_kf._build_design_mats(
+            kwargs_per_process, num_groups=1, out_timesteps=num_times
+        )
         F = predict_kwargs['F'][0][0]
 
         self.assertTrue((torch.diag(F) > .95).all())
@@ -154,12 +162,14 @@ class TestKalmanFilter(TestCase):
             kf = torch.jit.script(torch_kf)
         expectedF = torch.tensor([[1., 1.], [0., 1.]])
         expectedH = torch.tensor([[1., 0.]])
-        _kwargs = torch_kf._parse_design_kwargs(input=data, out_timesteps=num_times)
-        predict_kwargs, update_kwargs = torch_kf._build_design_mats(**_kwargs, num_groups=1, out_timesteps=num_times)
-        F = predict_kwargs['F'][0]
-        Q = predict_kwargs['Q'][0]
-        H = update_kwargs['H'][0]
-        R = update_kwargs['R'][0]
+        kwargs_per_process = torch_kf._parse_design_kwargs(input=data, out_timesteps=num_times)
+        predict_kwargs, update_kwargs = torch_kf._build_design_mats(
+            kwargs_per_process, num_groups=1, out_timesteps=num_times
+        )
+        F = predict_kwargs['F'][0][0]
+        Q = predict_kwargs['Q'][0][0]
+        H = update_kwargs['H'][0][0]
+        R = update_kwargs['R'][0][0]
         assert torch.isclose(expectedF, F).all()
         assert torch.isclose(expectedH, H).all()
 
@@ -168,10 +178,10 @@ class TestKalmanFilter(TestCase):
         filter_kf.x, filter_kf.P = torch_kf._prepare_initial_state((None, None))
         filter_kf.x = filter_kf.x.detach().numpy().T
         filter_kf.P = filter_kf.P.detach().numpy().squeeze(0)
-        filter_kf.Q = Q.numpy().squeeze(0)
-        filter_kf.R = R.numpy().squeeze(0)
-        filter_kf.F = F.numpy().squeeze(0)
-        filter_kf.H = H.numpy().squeeze(0)
+        filter_kf.Q = Q.numpy()
+        filter_kf.R = R.numpy()
+        filter_kf.F = F.numpy()
+        filter_kf.H = H.numpy()
 
         # compare:
         if n_step == 0:
@@ -248,62 +258,19 @@ class TestKalmanFilter(TestCase):
             else:
                 self.assertLess((resid ** 2).mean(), .02)
 
-    @parameterized.expand(itertools.product([False, True], ['', 'X']))
-    def test_time_varying_kwargs(self, compiled: bool, h_kwarg: str):
-        class CallCounter(torch.nn.Module):
-            def __init__(self):
-                super(CallCounter, self).__init__()
-                self.call_count = 0
-
-            def forward(self, input: Optional[torch.Tensor] = None) -> torch.Tensor:
-                self.call_count += 1
-                return torch.ones(1) * self.call_count
-
-        data = torch.tensor([[-5., 5., 1., 0., 3.]]).unsqueeze(-1)
-        kf = KalmanFilter(
-            processes=[Process(
-                id='call_counter',
-                state_elements=['position'],
-                h_module=CallCounter(),
-                h_kwarg=h_kwarg,
-                f_tensors={'position->position': torch.ones(1)}
-            )],
-            measures=['y']
-        )
-        if compiled:
-            kf = torch.jit.script(kf)
-
-        if h_kwarg:
-            # with 2D input, only called once:
-            pred = kf(data, call_counter__X=data[:, 0])
-            self.assertTrue((pred.H == 1.).all())
-
-            # with 3d input, need to call each timestep:
-            pred = kf(data, call_counter__X=data)
-            self.assertListEqual(pred.H.squeeze().tolist(), [float(x) for x in range(2, 7)])
-
-        else:
-            # with no input, only called once
-            try:
-                pred = kf(data)
-            except (NotImplementedError, torch.jit.Error) as e:
-                if compiled and 'unsupported' in str(e):
-                    return
-                raise
-            self.assertTrue((pred.H == 1.).all())
-
     def test_keyword_dispatch(self):
         _counter = defaultdict(int)
 
         def check_input(func: Callable, expected: torch.Tensor) -> Callable:
-            def outfunc(x):
+            def outfunc(inputs, num_groups, num_times):
+                x = inputs.get('X')
                 _counter[func.__name__] += 1
                 self.assertIsNotNone(x)
                 _bool = (x == expected)
                 if hasattr(_bool, 'all'):
                     _bool = _bool.all().item()
                 self.assertTrue(_bool)
-                return func(x)
+                return func(inputs, num_groups, num_times)
 
             return outfunc
 
@@ -322,25 +289,31 @@ class TestKalmanFilter(TestCase):
 
         # shared --
         expected = {'lm1': torch.zeros(1), 'lm2': torch.zeros(1)}
+
         # share input:
         kf = _make_kf()
         for nm, proc in kf.processes.items():
-            proc.h_forward = check_input(proc.h_forward, expected[nm])
+            proc._build_h_mat = check_input(proc._build_h_mat, expected[nm])
         kf(data, X=_predictors * 0.)
+        expected_call_count = len(expected)
+        self.assertGreaterEqual(_counter['_build_h_mat'], expected_call_count)
 
         # separate ---
         expected['lm2'] = torch.ones(1)
         # individual input:
         kf = _make_kf()
         for nm, proc in kf.processes.items():
-            proc.h_forward = check_input(proc.h_forward, expected[nm])
+            proc._build_h_mat = check_input(proc._build_h_mat, expected[nm])
         kf(data, lm1__X=_predictors * 0., lm2__X=_predictors)
+        expected_call_count += len(expected)
+        self.assertGreaterEqual(_counter['_build_h_mat'], expected_call_count)
 
         # specific overrides general
         kf(data, X=_predictors * 0., lm2__X=_predictors)
+        expected_call_count += len(expected)
+        self.assertGreaterEqual(_counter['_build_h_mat'], expected_call_count)
 
         # make sure check_input is being called:
-        self.assertGreaterEqual(_counter['h_forward'] / data.shape[1] / 2, 3)
         with self.assertRaises(AssertionError) as cm:
             kf(data, X=_predictors * 0.)
         self.assertEqual(str(cm.exception).lower(), "false is not true")
@@ -356,12 +329,13 @@ class TestKalmanFilter(TestCase):
             def __init__(self, id: str):
                 super(Season, self).__init__(
                     id=id,
-                    h_module=make_season,
                     state_elements=['x'],
-                    f_tensors={'x->x': torch.ones(1)}
                 )
-                self.h_kwarg = 'current_timestep'
-                self.time_varying_kwargs = ['current_timestep']
+                self.f_tensors['x->x'] = torch.ones(1)
+                self.expected_kwargs = ['current_timestep']
+
+            def _build_h_mat(self, inputs: Dict[str, Tensor], num_groups: int, num_times: int) -> Tensor:
+                return make_season(inputs['current_timestep'])
 
         kf = KalmanFilter(
             processes=[Season(id='s1')],
@@ -373,8 +347,8 @@ class TestKalmanFilter(TestCase):
             kf.state_dict()['initial_mean'][:] = torch.ones(1) * init_state
             _state['call_counter'] = 0
             pred = kf(data)
-            # make sure test was called each time:
-            self.assertEqual(_state['call_counter'], data.shape[1])
+            # only needed to call once:
+            self.assertEqual(_state['call_counter'], 1)
 
             # more suited to a season test but we'll check anyways:
             if init_state == 1.:
@@ -415,7 +389,7 @@ class TestKalmanFilter(TestCase):
     @torch.no_grad()
     def test_no_proc_variance(self):
         kf = KalmanFilter(processes=[LinearModel(id='lm', predictors=['x1', 'x2'])], measures=['y'])
-        cov = kf.process_covariance({}, {})
+        cov = kf.process_covariance({}, num_groups=1, num_times=1).squeeze()
         self.assertEqual(cov.shape[-1], 2)
         self.assertTrue((cov == 0).all())
 

@@ -5,7 +5,7 @@ from warnings import warn
 import torch
 from torch import nn, Tensor
 
-from internals.utils import get_owned_kwargs
+from torchcast.internals.utils import get_owned_kwargs
 from torchcast.covariance import Covariance
 from torchcast.state_space.predictions import Predictions
 from torchcast.state_space.ss_step import StateSpaceStep
@@ -262,7 +262,6 @@ class StateSpaceModel(nn.Module):
          :func:`Predictions.to_dataframe()` methods.
         """
 
-        # this may change in the future
         assert len(args) <= 1
         if len(args):
             input = args[0]
@@ -278,7 +277,6 @@ class StateSpaceModel(nn.Module):
         initial_state = self._prepare_initial_state(
             initial_state,
             start_offsets=start_offsets,
-            num_groups=None if input is None else input.shape[0]
         )
 
         if isinstance(n_step, float):
@@ -296,7 +294,11 @@ class StateSpaceModel(nn.Module):
             n_step=n_step,
             every_step=every_step,
             out_timesteps=out_timesteps,
-            design_kwargs=self._parse_design_kwargs(input, out_timesteps=out_timesteps or input.shape[1], **kwargs)
+            kwargs_per_process=self._parse_design_kwargs(
+                input,
+                out_timesteps=out_timesteps or input.shape[1],
+                **kwargs
+            )
         )
         return self._generate_predictions(means, covs, predict_kwargs, update_kwargs)
 
@@ -314,34 +316,40 @@ class StateSpaceModel(nn.Module):
     @torch.jit.ignore
     def _prepare_initial_state(self,
                                initial_state: Tuple[Optional[Tensor], Optional[Tensor]],
-                               start_offsets: Optional[Sequence] = None,
-                               num_groups: Optional[int] = None) -> Tuple[Tensor, Tensor]:
+                               start_offsets: Optional[Sequence] = None) -> Tuple[Tensor, Tensor]:
         init_mean, init_cov = initial_state
         if init_mean is None:
             init_mean = self.initial_mean[None, :]
-        assert len(init_mean.shape) == 2
+        elif len(init_mean.shape) != 2:
+            raise ValueError(
+                f"Expected ``init_mean`` to have two-dimensions for (num_groups, state_dim), got {init_mean.shape}"
+            )
 
         if init_cov is None:
-            init_cov = self.initial_covariance({}, num_groups=num_groups, num_times=1, _ignore_input=True)[:, 0]
-
-        if num_groups is None and start_offsets is not None:
-            num_groups = len(start_offsets)
-
-        if num_groups is not None:
-            assert init_mean.shape[0] in (num_groups, 1)
-            init_mean = init_mean.expand(num_groups, -1)
-            init_cov = init_cov.expand(num_groups, -1, -1)
+            init_cov = self.initial_covariance({}, num_groups=1, num_times=1, _ignore_input=True)[:, 0]
+        elif len(init_cov.shape) != 3:
+            raise ValueError(
+                f"Expected ``init_cov`` to be 3-D with (num_groups, state_dim, state_dim), got {init_cov.shape}"
+            )
 
         measure_scaling = torch.diag_embed(self._get_measure_scaling().unsqueeze(0))
         init_cov = measure_scaling @ init_cov @ measure_scaling
 
         # seasonal processes need to offset the initial mean:
-        init_mean_w_offset = []
-        for pid in self.processes:
-            p = self.processes[pid]
-            _process_slice = slice(*self.process_to_slice[pid])
-            init_mean_w_offset.append(p.offset_initial_state(init_mean[:, _process_slice], start_offsets))
-        init_mean_offset = torch.cat(init_mean_w_offset, 1)
+        if start_offsets is not None:
+            if init_mean.shape[0] == 1:
+                init_mean = init_mean.expand(len(start_offsets), -1)
+            elif init_mean.shape[0] != len(start_offsets):
+                raise ValueError("Expected ``len(start_offets) == initial_state[0].shape[0]``")
+
+            init_mean_w_offset = []
+            for pid in self.processes:
+                p = self.processes[pid]
+                _process_slice = slice(*self.process_to_slice[pid])
+                init_mean_w_offset.append(p.offset_initial_state(init_mean[:, _process_slice], start_offsets))
+            init_mean_offset = torch.cat(init_mean_w_offset, 1)
+        else:
+            init_mean_offset = init_mean
 
         return init_mean_offset, init_cov
 
@@ -473,12 +481,13 @@ class StateSpaceModel(nn.Module):
             dtype=ms.dtype,
             device=ms.device
         )
+
         for pid, process in self.processes.items():
-            _process_slice1 = slice(*self.process_to_slice[pid])
+            _process_slice = slice(*self.process_to_slice[pid])
             p_kwargs = kwargs_per_process.get(pid, {})
-            pH, pF = process(inputs=p_kwargs, num_groups=num_groups, num_timesteps=out_timesteps)
-            Hs[:, :, self.measure_to_idx[process.measure], _process_slice1] = pH
-            Fs[:, :, _process_slice1, _process_slice1] = pF
+            pH, pF = process(inputs=p_kwargs, num_groups=num_groups, num_times=out_timesteps)
+            Hs[:, :, self.measure_to_idx[process.measure], _process_slice] = pH
+            Fs[:, :, _process_slice, _process_slice] = pF
 
         Fs = Fs.unbind(1)
         Hs = Hs.unbind(1)
@@ -493,7 +502,7 @@ class StateSpaceModel(nn.Module):
         for submodule_nm, submodule in self.design_modules():
             for found_key, key_name, value in get_owned_kwargs(submodule, kwargs):
                 unused.discard(found_key)
-                kwargs_per_process[submodule][key_name] = value
+                kwargs_per_process[submodule_nm][key_name] = value
         if unused:
             warn(f"There are unused keyword arguments:\n{unused}")
         return dict(kwargs_per_process)
@@ -539,10 +548,7 @@ class StateSpaceModel(nn.Module):
         :return: A :class:`.Simulations` object with a :func:`Simulations.sample()` method.
         """
 
-        # design_kwargs = self._parse_design_kwargs(input=None, out_timesteps=out_timesteps, **kwargs)
-        raise NotImplementedError("TODO")
-
-        mean, cov = self._prepare_initial_state(initial_state, start_offsets=start_offsets, num_groups=num_sims)
+        mean, cov = self._prepare_initial_state(initial_state, start_offsets=start_offsets)
 
         times = range(out_timesteps)
         if progress:
@@ -556,7 +562,9 @@ class StateSpaceModel(nn.Module):
             times = progress(times)
 
         predict_kwargs, update_kwargs = self._build_design_mats(
-            num_groups=num_sims, out_timesteps=out_timesteps, **design_kwargs
+            num_groups=num_sims,
+            out_timesteps=out_timesteps,
+            kwargs_per_process=self._parse_design_kwargs(input=None, out_timesteps=out_timesteps, **kwargs)
         )
 
         dist_cls = self.ss_step.get_distribution()

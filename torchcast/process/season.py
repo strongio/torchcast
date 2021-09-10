@@ -1,7 +1,7 @@
 import copy
 import itertools
 import math
-from typing import Optional, Tuple, Iterable, Sequence, Union
+from typing import Optional, Tuple, Sequence, Union, Dict
 from warnings import warn
 
 import numpy as np
@@ -10,7 +10,8 @@ import torch
 from torch import jit, nn, Tensor
 
 from torchcast.process.base import Process
-from torchcast.process.utils import SingleOutput, Multi, Bounded, TimesToFourier, ScriptSequential
+from torchcast.process.utils import SingleOutput, Multi, Bounded, ScriptSequential
+from torchcast.utils.features import fourier_tensor
 
 
 class _Season:
@@ -103,9 +104,10 @@ class Season(_Season, Process):
         else:
             self.f_modules.update(transitions)
 
-        self.h_tensor = torch.tensor(h_tensor)
+        h_tensor = torch.tensor(h_tensor)
+        self.register_buffer('h_tensor', h_tensor)
 
-    def _build_h_mat(self, inputs: dict, num_groups: int, num_times: int) -> Tensor:
+    def _build_h_mat(self, inputs: Dict[str, Tensor], num_groups: int, num_times: int) -> Tensor:
         return self.h_tensor
 
     @staticmethod
@@ -168,6 +170,8 @@ class Season(_Season, Process):
         # TODO: this is imprecise for non-integer periods
         start_offsets = start_offsets.round()
         num_groups = len(start_offsets)
+
+        # called from StateSpaceModel._prepare_initial_state which expands as needed
         assert initial_state.shape[0] == num_groups
 
         F = self._build_f_mat({}, num_groups=num_groups, num_times=1)[:, 0]
@@ -184,75 +188,3 @@ class Season(_Season, Process):
 
 
 TBATS = Season
-
-
-class FourierSeason(_Season):
-    """
-    A process which captures seasonal patterns using fourier serieses. Essentially a ``LinearModel`` where the
-    model-matrix construction is done for you. Only recommended for toy problems; Consider ``TBATS`` or a
-    ``LinearModel`` w/``torchcast.utils.add_season_features``.
-    """
-
-    def __init__(self,
-                 id: str,
-                 dt_unit: Optional[str],
-                 period: Union[float, str],
-                 K: int,
-                 measure: Optional[str] = None,
-                 fixed: bool = True,
-                 decay: Optional[Union[nn.Module, Tuple[float, float]]] = None):
-        """
-        :param id: A unique identifier for this process
-        :param dt_unit: A numpy.timedelta64 (or string that will be converted to one) that indicates the time-units
-        used in the kalman-filter -- i.e., how far we advance with every timestep. Can be `None` if the data are in
-        arbitrary (non-datetime) units.
-        :param period: The number of timesteps it takes to get through a full seasonal cycle. Does not have to be an
-        integer (e.g. 365.25 for yearly to account for leap-years). Can also be a numpy.timedelta64 (or string that
-        will be converted to one).
-        :param K: The number of the fourier components
-        :param measure: The name of the measure for this process.
-        :param fixed: TODO
-        :param decay: TODO
-        """
-        raise NotImplementedError("TODO")
-        warn(
-            "This process is only recommended for toy problems. "
-            "Consider `TBATS` or a `LinearModel` w/`torchcast.utils.add_season_features`",
-        )
-
-        self.dt_unit_ns: Optional[int] = None if dt_unit is None else self._get_dt_unit_ns(dt_unit)
-        self.period = self._standardize_period(period, self.dt_unit_ns)
-
-        if self.period.is_integer() and self.period < K * 2:
-            warn(f"K is larger than necessary given a period of {self.period}.")
-
-        if isinstance(decay, tuple) and (decay[0] ** self.period) < .01:
-            warn(
-                f"Given the seasonal period, the lower bound on `{id}`'s `decay` ({decay}) may be too low to "
-                f"generate useful gradient information for optimization."
-            )
-
-        state_elements = []
-        for j in range(K):
-            state_elements.append(f'sin{j}')
-            state_elements.append(f'cos{j}')
-
-        super().__init__(
-            id=id,
-            predictors=state_elements,
-            measure=measure,
-            h_module=TimesToFourier(K=K, seasonal_period=float(self.period)),
-            fixed=fixed,
-            decay=decay
-        )
-        self.h_kwarg = 'current_times'
-
-    @jit.ignore
-    def get_kwargs(self, kwargs: dict) -> Iterable[Tuple[str, str, str, Tensor]]:
-        offsets = self._standardize_offsets(kwargs['start_datetimes'])
-        offsets = torch.as_tensor(offsets).view(-1, 1, 1)
-        kwargs['current_times'] = offsets + kwargs['current_timestep']
-        for found_key, key_name, value in Process.get_kwargs(self, kwargs):
-            if found_key == 'current_times' and self.dt_unit_ns is not None:
-                found_key = 'start_datetimes'
-            yield found_key, key_name, value
