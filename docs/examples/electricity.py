@@ -22,7 +22,7 @@ import copy
 
 import matplotlib.pyplot as plt
 
-from torchcast.kalman_filter import KalmanFilter
+from torchcast.exp_smooth import ExpSmoother
 from torchcast.utils.data import (
     TimeSeriesDataset, TimeSeriesDataLoader, complete_times, nanmean
 )
@@ -157,7 +157,7 @@ df_elec.loc[(df_elec['time'] >= SPLIT_DT) & ~df_elec.pop('_use_2014_as_test'),'d
 # +
 from torchcast.process import LocalLevel, LocalTrend, Season
 
-kf = KalmanFilter(
+es = ExpSmoother(
     measures=['kW_sqrt'], 
     processes=[
         # seasonal processes:
@@ -166,9 +166,9 @@ kf = KalmanFilter(
         Season(id='hour_in_day', period=24, dt_unit='h', K=8, fixed=True),
         # long-running trend:
         LocalTrend(id='trend'),
-        # 'local' processes: allow temporary deviations that decay 
-        LocalLevel(id='level', decay=True),
-        Season(id='hour_in_day2', period=24, dt_unit='h', K=6, decay=True),
+#         # 'local' processes: allow temporary deviations that decay 
+#         LocalLevel(id='level', decay=True),
+#         Season(id='hour_in_day2', period=24, dt_unit='h', K=6, decay=True),
     ]
 )
 
@@ -184,8 +184,11 @@ df_elec['gym'] =\
      df_elec['time'].dt.month.astype('str').str.zfill(2)
 
 train_MT_052 = TimeSeriesDataset.from_dataframe(
-    df_elec.query("group == 'MT_052'").query("dataset == 'train'"),
-    group_colname='gym', 
+    df_elec.\
+        query("group == 'MT_052'").\
+        query("dataset == 'train'").\
+        assign(group_year = lambda df: df['group'] + df_elec['time'].dt.year.astype('str')),
+    group_colname='group', 
     time_colname='time',
     measure_colnames=['kW_sqrt'],
     dt_unit='h'
@@ -194,20 +197,20 @@ train_MT_052 = train_MT_052.to(DEVICE)
 train_MT_052
 
 # +
-kf.to(DEVICE)
+es.to(DEVICE)
 
 try:
-    kf.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", "kf_standard.pt"), map_location=DEVICE))
+    es.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", "es_standard.pt"), map_location=DEVICE))
 except FileNotFoundError:
-    kf.fit(
+    es.fit(
         train_MT_052.tensors[0],
         start_offsets=train_MT_052.start_datetimes,
-        n_step=int(24 * 7),
-        every_step=False
     )
-    torch.save(kf.state_dict(), os.path.join(BASE_DIR, "electricity_models", "kf_standard.pt"))
+    #torch.save(es.state_dict(), os.path.join(BASE_DIR, "electricity_models", "es_standard.pt"))
 # -
 
+# XXX
+#
 # Despite this being the 'standard' approach, we are still using some nonstandard tricks here:
 #
 # - We are using the `n_step` argument to train our model on one-week ahead forecasts, instead of one step (i.e. hour) ahead. This improves the efficiency of training by 'encouraging' the model to 'care about' longer range forecasts vs. over-focusing on the easier problem of forecasting the next hour.
@@ -226,7 +229,7 @@ eval_MT_052 = TimeSeriesDataset.from_dataframe(
 ).to(DEVICE)
 with torch.no_grad():
     y = eval_MT_052.train_val_split(dt=SPLIT_DT)[0].tensors[0]
-    pred = kf(
+    pred = es(
             y, 
             start_offsets=eval_MT_052.start_datetimes,
             out_timesteps=y.shape[1] + 24*365.25,
@@ -288,7 +291,7 @@ trainval_batches = TimeSeriesDataLoader.from_dataframe(
     df_elec.query("dataset != 'test'"), 
     group_colname='group', 
     **dataset_kwargs,
-    batch_size=20
+    batch_size=18
 )
 
 val_batch = TimeSeriesDataset.from_dataframe(
@@ -324,6 +327,83 @@ def standardize_by_group(tensor, dataset):
     means = torch.as_tensor([group_means[gn] for gn in group_names], device=DEVICE)
     stds = torch.as_tensor([group_stds[gn] for gn in group_names], device=DEVICE)
     return (tensor - means[:,None,None]) / stds[:,None,None]
+
+
+# -
+
+class MatmulNN(torch.nn.Module):
+    def __init__(self, lhs, rhs):
+        super().__init__()
+        self.lhs = lhs
+        self.rhs = rhs
+    
+    def forward(self, inputs):
+        lhs_in, rhs_in = inputs
+        lhs_out = self.lhs(lhs_in)
+        rhs_out = self.rhs(rhs_in)
+        assert len(lhs_out.shape) == len(rhs_out.shape)
+        return (lhs_out.unsqueeze(-2) @ rhs_out.unsqueeze(-1)).squeeze(-1)
+
+
+# +
+ts_nn = MatmulNN(
+    torch.nn.Sequential(
+        torch.nn.Linear(len(season_cols), 64),
+        torch.nn.Tanh(),
+        torch.nn.Linear(64, 64),
+        torch.nn.Tanh(),
+        torch.nn.Linear(64, 20)
+    ),
+    torch.nn.Embedding(
+        num_embeddings=len(group_id_mapping),
+        embedding_dim=20
+    )
+)
+with torch.no_grad():
+    ts_nn.rhs.weight[:] = .01*torch.randn_like(ts_nn.rhs.weight)
+from IPython import display
+ts_nn.optimizer = torch.optim.Adam(ts_nn.parameters())
+
+ts_nn.loss_history = []
+ts_nn.val_history = []
+for epoch in range(1500):
+    epoch_loss = 0
+    for batch in trainval_batches:
+        batch, _ = batch.train_val_split(dt=SPLIT_DT)
+        y, X = batch.to(DEVICE).tensors
+        X[torch.isnan(X)] = 0.
+        y = standardize_by_group(y, batch)
+        nan_mask = torch.isnan(y)
+        group_ids = get_group_ids(batch)
+        try:
+            pred = ts_nn((X, group_ids.view(-1,1)))
+            loss = torch.mean((pred[~nan_mask] - y[~nan_mask]) ** 2)
+            loss.backward()
+            ts_nn.optimizer.step()
+            if torch.isnan(ts_nn.rhs.weight).any():
+                raise Exception("foo")
+            epoch_loss += loss.item()
+        finally:
+            ts_nn.optimizer.zero_grad(set_to_none=True)
+    ts_nn.loss_history.append(epoch_loss / len(trainval_batches))
+
+    with torch.no_grad():
+        y, X = val_batch.to(DEVICE).tensors
+        y = standardize_by_group(y, val_batch)
+        nan_mask = torch.isnan(y)
+        group_ids = get_group_ids(val_batch)
+        pred = ts_nn((X, group_ids.view(-1,1)))
+        val_loss = torch.mean((pred[~nan_mask] - y[~nan_mask]) ** 2)
+        ts_nn.val_history.append(val_loss.item())
+
+    if epoch > 10:
+        plt.close()
+        display.clear_output(wait=True)
+        fig, axes = plt.subplots(ncols=2, figsize=(10,5))
+        pd.Series(ts_nn.loss_history[10:]).plot(ax=axes[0], logy=True)
+        pd.Series(ts_nn.val_history[10:]).plot(ax=axes[1], logy=True)
+        display.display(plt.gcf())
+torch.save(ts_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", "ts_nn.pt"))
 
 
 # +
@@ -582,12 +662,22 @@ plt.tight_layout()
 - MT_045/MT_036/MT_013 -- seems like LocalLevel should be *much* more responsive. 
     - OTOH it's clearly just xmas, maybe exs like that are incredibly rare otherwise so training doesn't prioritze
 """;
+
+
 # -
 
 # While it's fairly obvious from looking at the forecasts, we can confirm that the 2nd model does indeed substantially reduce forecast error, relative to the 'standard' model:
 
+def inverse_transform(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for col in ['mean', 'lower', 'upper', 'actual']:
+        df[col] = df[col].clip(lower=0) ** 2
+    return df
+
+
 # +
 df_nn_err = df_pred_nn.\
+    pipe(inverse_transform).\
     assign(error = lambda df: (df['mean'] - df['actual']).abs(),
            validation = lambda df: df['time'] > SPLIT_DT).\
     groupby(['group','validation']).\
@@ -595,9 +685,46 @@ df_nn_err = df_pred_nn.\
     reset_index()
 
 df_pred52.\
+    pipe(inverse_transform).\
     assign(error = lambda df: (df['mean'] - df['actual']).abs(),
            validation = lambda df: df['time'] > SPLIT_DT).\
     groupby(['group','validation']).\
     agg(error = ('error', 'mean')).\
     reset_index().\
     merge(df_nn_err, on=['group', 'validation'])
+# -
+
+SPLIT_DT
+
+dfc = pred_nn.to_dataframe(eval_batch, type='components')
+
+pred.plot(dfc.query("time.between('2013-12-26','2014-01-15')"))
+
+from plotnine import *
+
+foo = dfc.\
+    query("time.between('2013-12-26','2014-01-30')").\
+    assign(
+        var=lambda df: ((df['upper'] - df['lower']) / 1.96) ** 2,
+        process=lambda df: df['process'].map({'level' : 'Local Level', 
+                                              'hour_in_day' : 'Local Hour-in-Day',
+                                              'nn' : 'Typical Pattern (NN)'})
+    ).groupby(['process','time'])\
+    [['mean','var']].sum().\
+    reset_index().\
+    assign(mean=lambda df: df['mean'] - df.groupby('process')['mean'].transform('mean'),
+           lower=lambda df: df['mean'] - df['var'] ** .5,
+           upper=lambda df: df['mean'] + df['var'] ** .5)
+print(
+    ggplot(foo, aes(x='time', y='mean')) + 
+    geom_line(color='blue') +
+    geom_ribbon(aes(ymin='lower', ymax='upper'), alpha=.25) +
+    facet_wrap("~process", scales='free_y', ncol=1) +
+    geom_vline(xintercept=SPLIT_DT, linetype='dashed') +
+    theme_bw() +
+    theme(figure_size=(10,5), subplots_adjust={'wspace': 0.25}) +
+    scale_y_continuous(name="State") +
+    scale_x_date(name="", date_breaks="1 week", date_labels='%b %d')
+)
+
+
