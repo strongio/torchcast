@@ -112,11 +112,14 @@ class StateSpaceModel(nn.Module):
 
         prog = None
         if verbose > 1:
-            from tqdm.auto import tqdm
-            if isinstance(optimizer, torch.optim.LBFGS):
-                prog = tqdm(total=optimizer.param_groups[0]['max_eval'])
-            else:
-                prog = tqdm(total=1)
+            try:
+                from tqdm.auto import tqdm
+                if isinstance(optimizer, torch.optim.LBFGS):
+                    prog = tqdm(total=optimizer.param_groups[0]['max_eval'])
+                else:
+                    prog = tqdm(total=1)
+            except ImportError:
+                warn("`progress=True` requires package `tqdm`.")
 
         epoch = 0
 
