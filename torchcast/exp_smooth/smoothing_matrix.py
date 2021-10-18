@@ -1,5 +1,6 @@
 import math
-from typing import Iterable, Tuple, Optional, Sequence, Dict
+from typing import Optional, Sequence, Dict
+import torch.nn.functional as F
 from warnings import warn
 
 import torch
@@ -98,18 +99,20 @@ class SmoothingMatrix(torch.nn.Module):
                 device=self.unconstrained_params.device
             )
             k_full = torch.sigmoid(self.unconstrained_params + self.init_bias)
-            K[..., self.full_states, :] = k_full.view(len(self.full_states), self.measure_rank)
+            K[:, :, self.full_states, :] = k_full.view(len(self.full_states), self.measure_rank)
             return K
         else:
             assert self.method == 'low_rank'
-            sm = torch.nn.Softmax(-1)
+            assert self.lr1 is not None
+            assert self.lr2 is not None
             # we want lr1 @ lr2 to be constrained to 0-1. this could be accomplished by applying sigmoid after matmul,
             # but there may be matmul-ordering optimizations to keeping lr1 and lr2 separate for `predict` or `update`
             # so we want to instead constrain lr1 and lr2 themselves
             # lr1: each row needs to sum to 0<=sum(row)<=1. softmax is traditionally overparameterized b/c sums to 1,
             #      but here it is *not* overparameterized b/c sums to <=1 (`* torch.sigmoid(l1.sum)` part)
             lr1 = torch.zeros((self.state_rank, self.lr1.shape[-1]), dtype=self.lr1.dtype, device=self.lr1.device)
-            lr1[self.full_states] = sm(self.lr1) * torch.sigmoid(self.lr1.sum(-1, keepdim=True) + self.init_bias / 2)
+            lr1[self.full_states] = \
+                F.softmax(self.lr1, -1) * torch.sigmoid(self.lr1.sum(-1, keepdim=True) + self.init_bias / 2)
             # lr2: each element is 0<=el<=1
             lr2 = torch.sigmoid(self.lr2 + self.init_bias / 2)
             # "there may be matmul-ordering optimizations to keeping lr1 and lr2 separate" -- in theory, yes.
