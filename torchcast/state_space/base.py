@@ -447,9 +447,10 @@ class StateSpaceModel(nn.Module):
                 meanus.append(meanu)
                 covus.append(covu)
 
+        # 2nd loop to get n_step updates:
+        # idx: Dict[int, int] = {}
         meanps: Dict[int, Tensor] = {}
         covps: Dict[int, Tensor] = {}
-        # 2nd loop to get n_step updates:
         for t1 in range(out_timesteps):
             # tu: time of update
             # t1: time of 1step
@@ -469,6 +470,7 @@ class StateSpaceModel(nn.Module):
                             {k: v[tu + h] for k, v in predict_kwargs.items()}
                         )
                     if tu + h not in meanps:
+                        # idx[tu + h] = tu
                         meanps[tu + h] = meanp
                         covps[tu + h] = covp
 
