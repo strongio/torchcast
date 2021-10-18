@@ -12,7 +12,7 @@ from torchcast.process.season import Season
 
 class TestProcess(TestCase):
     def test_fourier_season(self):
-        series = torch.cos(2. * 3.1415 * torch.arange(0., 7.) / 7.)
+        series = torch.cos(2. * 3.1415 * torch.arange(1., 8.) / 7.)
         data = torch.stack([series.roll(-i).repeat(3) for i in range(6)]).unsqueeze(-1)
         start_datetimes = np.array([np.datetime64('2019-04-18') + np.timedelta64(i, 'D') for i in range(6)])
         kf = KalmanFilter(
@@ -24,7 +24,7 @@ class TestProcess(TestCase):
         kf.state_dict()['measure_covariance.cholesky_log_diag'] -= 2
         pred = kf(data, start_offsets=start_datetimes)
         for g in range(6):
-            self.assertLess(torch.abs(pred.means[g] - data[g]).mean(), .01)
+            self.assertLess(torch.abs(pred.means[g] - data[g]).mean(), .01, msg=str(g))
 
     @parameterized.expand(itertools.product([1, 2, 3], [1, 2, 3]))
     @torch.no_grad()
