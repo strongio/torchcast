@@ -22,17 +22,31 @@ class Predictions(nn.Module):
                  state_covs: Tensor,
                  R: Tensor,
                  H: Tensor,
-                 model: Union['StateSpaceModel', dict]):
+                 model: Union['StateSpaceModel', dict],
+                 update_means: Optional[Tensor] = None,
+                 update_covs: Optional[Tensor] = None):
         super().__init__()
+
+        # predictions state:
         self.state_means = state_means
         if torch.isnan(self.state_means).any():
             raise ValueError("`nans` in `state_means`")
         self.state_covs = state_covs
         if torch.isnan(self.state_covs).any():
             raise ValueError("`nans` in `state_covs`")
+
+        # updates state:
+        if update_means is not None:
+            assert update_means.shape == self.state_means.shape
+            assert update_covs.shape == self.state_covs.shape
+        self.update_means = update_means
+        self.update_covs = update_covs
+
+        # design mats:
         self.H = H
         self.R = R
 
+        # some model attributes are needed for `log_prob` method and for names for plotting
         if not isinstance(model, dict):
             all_state_elements = []
             for pid in model.processes:
@@ -48,20 +62,23 @@ class Predictions(nn.Module):
         self.measures = model['measures']
         self.all_state_elements = model['all_state_elements']
 
+        # for lazily populated properties:
         self._means = None
         self._covs = None
 
+        # useful to have:
         self.num_groups, self.num_timesteps, self.state_size = self.state_means.shape
 
     def get_state_at_times(self,
                            times: Union[np.ndarray, np.datetime64],
                            start_times: Optional[np.ndarray] = None,
-                           dt_unit: Optional[str] = None) -> Tuple[Tensor, Tensor]:
+                           dt_unit: Optional[str] = None,
+                           type_: str = 'update') -> Tuple[Tensor, Tensor]:
         """
         For each group, get the state (tuple of (mean, cov)) for a timepoint. This is often useful since predictions
         are right-aligned and padded, so that the final prediction for each group is arbitrarily padded and does not
         correspond to a timepoint of interest -- e.g. for forecasting (i.e., calling
-        ``KalmanFilter.forward(initial_state=get_state_at_times(...))``).
+        ``StateSpaceModel.forward(initial_state=get_state_at_times(...))``).
 
         :param times: Either (a) indices corresponding to each group (e.g. ``times[0]`` corresponds to the timestep to
          take for the 0th group, ``times[1]`` the timestep to take for the 1th group, etc.) or (b) if ``start_times``
@@ -71,11 +88,25 @@ class Predictions(nn.Module):
         :param dt_unit: If ``times`` is an array of datetimes, must also pass ``dt_unit``, i.e. a
          :class:`numpy.timedelta64` that indicates how much time passes at each timestep. (times-start_times)/dt_unit
          should be an array of integers.
+        :param type_: What type of state? Since this method is typically used for getting an `initial_state` for
+         another call to :func:`StateSpaceModel.forward()`, this should generally be 'update' (the default); other
+         option is 'prediction'.
         :return: A tuple of state-means and state-covs, appropriate for forecasting by passing as `initial_state`
-         for :func:`KalmanFilter.forward()`.
+         for :func:`StateSpaceModel.forward()`.
         """
         sliced = self._subset_to_times(times=times, start_times=start_times, dt_unit=dt_unit)
-        return sliced.state_means.squeeze(1), sliced.state_covs.squeeze(1)
+        if type_.startswith('pred'):
+            return sliced.state_means.squeeze(1), sliced.state_covs.squeeze(1)
+        elif type_.startswith('update'):
+            if self.update_means is None:
+                raise RuntimeError(
+                    "Cannot get with ``type_='update'`` because update mean/cov was not passed when creating this "
+                    "``Predictions`` object. This usually means you have to include ``include_updates=True`` when "
+                    "calling ``StateSpaceModel``."
+                )
+            return sliced.update_means.squeeze(1), sliced.update_covs.squeeze(1)
+        else:
+            raise ValueError("Unrecognized `type_`, expected 'prediction' or 'update'.")
 
     @classmethod
     def observe(cls, state_means: Tensor, state_covs: Tensor, R: Tensor, H: Tensor) -> Tuple[Tensor, Tensor]:
@@ -422,6 +453,8 @@ class Predictions(nn.Module):
             'H': self.H[idx],
             'R': self.R[idx]
         }
+        if self.update_means is not None:
+            kwargs.update({'update_means': self.update_means[idx], 'update_covs': self.update_covs[idx]})
         cls = type(self)
         for k in list(kwargs):
             expected_shape = getattr(self, k).shape

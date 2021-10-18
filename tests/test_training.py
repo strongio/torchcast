@@ -81,7 +81,7 @@ class TestTraining(unittest.TestCase):
         # TODO: include nans; make sure performance doesn't take significant hit w/partial nans
 
         def _make_kf():
-            return KalmanFilter(
+            return torch.jit.script(KalmanFilter(
                 processes=[
                               LocalLevel(id=f'll{i + 1}', measure=str(i + 1))
                               for i in range(ndim)
@@ -92,7 +92,7 @@ class TestTraining(unittest.TestCase):
                               for i in range(ndim)
                           ],
                 measures=[str(i + 1) for i in range(ndim)]
-            )
+            ))
 
         # simulate:
         X = torch.randn((num_groups, num_times, 5))
@@ -153,6 +153,7 @@ class TestTraining(unittest.TestCase):
                 ],
                 measures=['y']
             )
+            kf = torch.jit.script(kf)
 
             # train:
             optimizer = torch.optim.LBFGS([p for n, p in kf.named_parameters() if 'measure_covariance' not in n],
@@ -224,30 +225,14 @@ class TestTraining(unittest.TestCase):
         )
 
         def _train(num_epochs: int = 15):
-            # TODO: file an issue
-            # hit an error if scripting:
-            # ```
-            # RuntimeError: The following operation failed in the TorchScript interpreter.
-            # Traceback of TorchScript (most recent call last):
-            #   File "<string>", line 138, in <backward op>
-            #                    dim: int):
-            #             def backward(grad_outputs: List[Tensor]):
-            #                 grad_self = torch.stack(grad_outputs, dim)
-            #                             ~~~~~~~~~~~ <--- HERE
-            #                 return grad_self, None
-            # RuntimeError: stack expects each tensor to be equal size, but got [10, 2, 2] at entry 0 and [0] at entry34
-            # ```
-            # appears to be a bug in torchscript's unbind.backwards:
-            # https://github.com/pytorch/pytorch/blob/2a81e8b8f1526b375d1e78402f91bf8fd82d2b68/torch/csrc/jit/runtime/symbolic_script.cpp#L602
-            # note that entry 34 is the last timestep. my guess is that one of the design-mats (e.g. F) is not used on
-            # the last timestep (by design) so doesn't get a gradient, so has a grad tensor of zero-extent, which can't
-            # be stacked w/the other timesteps
+
             kf = KalmanFilter(
                 processes=[
                     Season(id='day_of_week', period='7D', dt_unit='D', K=1, decay=(.85, 1.))
                 ],
                 measures=['y']
             )
+            kf = torch.jit.script(kf)
 
             # train:
             optimizer = torch.optim.LBFGS(kf.parameters(), lr=.15, max_iter=10)

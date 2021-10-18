@@ -147,9 +147,8 @@ class TestKalmanFilter(TestCase):
                     continue
                 self.assertEqual(F[r, c], 0)
 
-    @parameterized.expand([(0,), (1,), (2,), (3,)])
     @torch.no_grad()
-    def test_equations(self, n_step: int):
+    def test_equations(self):
         data = torch.tensor([[-5., 5., 1., 0., 3.]]).unsqueeze(-1)
         num_times = data.shape[1]
 
@@ -158,8 +157,7 @@ class TestKalmanFilter(TestCase):
             processes=[LocalTrend(id='lt', decay_velocity=None, measure='y', velocity_multi=1.)],
             measures=['y']
         )
-        if n_step > 0:
-            kf = torch.jit.script(torch_kf)
+        kf = torch.jit.script(torch_kf)
         expectedF = torch.tensor([[1., 1.], [0., 1.]])
         expectedH = torch.tensor([[1., 0.]])
         kwargs_per_process = torch_kf._parse_design_kwargs(input=data, out_timesteps=num_times)
@@ -184,25 +182,18 @@ class TestKalmanFilter(TestCase):
         filter_kf.H = H.numpy()
 
         # compare:
-        if n_step == 0:
-            with self.assertRaises(AssertionError):
-                torch_kf(data, n_step=n_step)
-            return
-        else:
-            sb = torch_kf(data, n_step=n_step)
+        sb = torch_kf(data)
 
         #
         filter_kf.state_means = []
         filter_kf.state_covs = []
         for t in range(num_times):
-            if t >= n_step:
-                filter_kf.update(data[:, t - n_step, :])
-                # 1step:
-                filter_kf.predict()
-            # n_step:
+            # 1step:
+            filter_kf.predict()
+            # update:
             filter_kf_copy = copy.deepcopy(filter_kf)
-            for i in range(1, n_step):
-                filter_kf_copy.predict()
+            filter_kf.update(data[:, t, :])
+            # append:
             filter_kf.state_means.append(filter_kf_copy.x)
             filter_kf.state_covs.append(filter_kf_copy.P)
 
@@ -247,6 +238,11 @@ class TestKalmanFilter(TestCase):
         y, X = dataset.tensors
 
         from pandas import Series
+
+        if n_step == 0:
+            with self.assertRaises(AssertionError):
+                kf(y, X=X, n_step=n_step)
+            return
 
         pred = kf(y, X=X, out_timesteps=X.shape[1], n_step=n_step)
         y_series = Series(y.squeeze().numpy())

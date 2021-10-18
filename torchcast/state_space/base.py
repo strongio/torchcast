@@ -235,6 +235,7 @@ class StateSpaceModel(nn.Module):
                 out_timesteps: Optional[Union[int, float]] = None,
                 initial_state: Union[Tensor, Tuple[Optional[Tensor], Optional[Tensor]]] = (None, None),
                 every_step: bool = True,
+                include_updates_in_output: bool = False,
                 **kwargs) -> Predictions:
         """
         Generate n-step-ahead predictions from the model.
@@ -259,6 +260,9 @@ class StateSpaceModel(nn.Module):
          would be 2-step-ahead, ... the 23rd would be 24-step-ahead, the 24th would be 1-step-ahead, etc. The advantage
          to ``every_step=False`` is speed: training data for long-range forecasts can be generated without requiring
          the model to produce and discard intermediate predictions every timestep.
+        :param include_updates_in_output: If False, only the ``n_step`` ahead predictions are included in the output.
+         This means that we cannot use this output to generate the ``initial_state`` for subsequent forward-passes. Set
+         to True to allow this -- False by default to reduce memory.
         :param kwargs: Further arguments passed to the `processes`. For example, the :class:`.LinearModel` expects an
          ``X`` argument for predictors.
         :return: A :class:`.Predictions` object with :func:`Predictions.log_prob()` and
@@ -291,7 +295,7 @@ class StateSpaceModel(nn.Module):
                 raise ValueError("`out_timesteps` must be an int.")
             out_timesteps = int(out_timesteps)
 
-        means, covs, predict_kwargs, update_kwargs = self._script_forward(
+        preds, updates, R, H = self._script_forward(
             input=input,
             initial_state=initial_state,
             n_step=n_step,
@@ -303,18 +307,28 @@ class StateSpaceModel(nn.Module):
                 **kwargs
             )
         )
-        return self._generate_predictions(means, covs, predict_kwargs, update_kwargs)
+        return self._generate_predictions(preds, R, H, updates if include_updates_in_output else None)
 
     @torch.jit.ignore
     def _generate_predictions(self,
-                              means: Tensor,
-                              covs: Tensor,
-                              predict_kwargs: Dict[str, List[Tensor]],
-                              update_kwargs: Dict[str, List[Tensor]]) -> 'Predictions':
+                              preds: Tuple[Tensor, Tensor],
+                              R: Tensor,
+                              H: Tensor,
+                              updates: Optional[Tuple[Tensor, Tensor]] = None) -> 'Predictions':
         """
         StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
         """
-        raise NotImplementedError
+
+        kwargs = {
+            'state_means': preds[0],
+            'state_covs': preds[1],
+            'R': R,
+            'H': H,
+            'model': self
+        }
+        if updates is not None:
+            kwargs.update(update_means=updates[0], update_covs=updates[1])
+        return Predictions(**kwargs)
 
     @torch.jit.ignore
     def _prepare_initial_state(self,
@@ -364,10 +378,10 @@ class StateSpaceModel(nn.Module):
                         n_step: int = 1,
                         out_timesteps: Optional[int] = None,
                         every_step: bool = True
-                        ) -> Tuple[Tensor, Tensor, Dict[str, List[Tensor]], Dict[str, List[Tensor]]]:
+                        ) -> Tuple[Tuple[Tensor, Tensor], Tuple[Tensor, Tensor], Tensor, Tensor]:
         """
         :param input: A (group X time X measures) tensor. Optional if `initial_state` is specified.
-        :param kwargs_per_process: Keyword-arguments to the Processes XXX
+        :param kwargs_per_process: Keyword-arguments to the Processes TODO
         :param initial_state: A (mean, cov) tuple to use as the initial state.
         :param n_step: What is the horizon for predictions? Defaults to one-step-ahead (i.e. n_step=1).
         :param out_timesteps: The number of timesteps in the output. Might be longer than input if forecasting.
@@ -376,18 +390,18 @@ class StateSpaceModel(nn.Module):
          Alternatively, we could generate 24-hour-ahead predictions at every 24th hour, in which case we'd save
          predictions 1-24. The former corresponds to every_step=True, the latter to every_step=False. If n_step=1
          (the default) then this option has no effect.
-        :return: means, covs, R, H
+        :return: predictions (tuple of (means,covs)), updates (tuple of (means,covs)), R, H
         """
         assert n_step > 0
 
-        mean1step, cov1step = initial_state
+        meanu, covu = initial_state
 
         if input is None:
             if out_timesteps is None:
                 raise RuntimeError("If `input` is None must pass `out_timesteps`")
             inputs = []
 
-            num_groups = mean1step.shape[0]
+            num_groups = meanu.shape[0]
         else:
             if len(input.shape) != 3:
                 raise ValueError(f"Expected len(input.shape) == 3 (group,time,measure)")
@@ -395,10 +409,10 @@ class StateSpaceModel(nn.Module):
                 raise ValueError(f"Expected input.shape[-1] == {len(self.measures)} (len(self.measures))")
 
             num_groups = input.shape[0]
-            if mean1step.shape[0] == 1:
-                mean1step = mean1step.expand(num_groups, -1)
-            if cov1step.shape[0] == 1:
-                cov1step = cov1step.expand(num_groups, -1, -1)
+            if meanu.shape[0] == 1:
+                meanu = meanu.expand(num_groups, -1)
+            if covu.shape[0] == 1:
+                covu = covu.expand(num_groups, -1, -1)
 
             inputs = input.unbind(1)
             if out_timesteps is None:
@@ -410,43 +424,63 @@ class StateSpaceModel(nn.Module):
             out_timesteps=out_timesteps
         )
 
-        # generate predictions:
-        means: List[Tensor] = []
-        covs: List[Tensor] = []
-        for ts in range(out_timesteps):
-
-            # ts: the time of the state
-            # tu: the time of the update
-            tu = ts - n_step
-            if tu >= 0:
-                if tu < len(inputs):
-                    mean1step, cov1step = self.ss_step.update(
-                        inputs[tu],
-                        mean1step,
-                        cov1step,
-                        {k: v[tu] for k, v in update_kwargs.items()}
-                    )
-                mean1step, cov1step = self.ss_step.predict(
+        # first loop through to do predict -> update
+        meanus: List[Tensor] = []
+        covus: List[Tensor] = []
+        mean1s: List[Tensor] = []
+        cov1s: List[Tensor] = []
+        for t in range(out_timesteps):
+            mean1step, cov1step = self.ss_step.predict(
+                meanu,
+                covu,
+                {k: v[t] for k, v in predict_kwargs.items()}
+            )
+            mean1s.append(mean1step)
+            cov1s.append(cov1step)
+            if t < len(inputs):
+                meanu, covu = self.ss_step.update(
+                    inputs[t],
                     mean1step,
                     cov1step,
-                    {k: v[tu] for k, v in predict_kwargs.items()}
+                    {k: v[t] for k, v in update_kwargs.items()}
                 )
-            # - if n_step=1, append to output immediately, and exit the loop
-            # - if n_step>1 & every_step, wait to append to output until h reaches n_step
-            # - if n_step>1 & !every_step, only append every 24th iter; but when we do, append for each h
-            if every_step or (tu % n_step) == 0:
-                mean, cov = mean1step, cov1step
-                for h in range(n_step):
-                    if h > 0:
-                        mean, cov = self.ss_step.predict(mean, cov, {k: v[tu + h] for k, v in predict_kwargs.items()})
-                    if not every_step or h == (n_step - 1):
-                        means += [mean]
-                        covs += [cov]
+                meanus.append(meanu)
+                covus.append(covu)
 
-        means = means[:out_timesteps]
-        covs = covs[:out_timesteps]
+        meanps: Dict[int, Tensor] = {}
+        covps: Dict[int, Tensor] = {}
+        # 2nd loop to get n_step updates:
+        for t1 in range(out_timesteps):
+            # tu: time of update
+            # t1: time of 1step
+            tu = t1 - 1
 
-        return torch.stack(means, 1), torch.stack(covs, 1), predict_kwargs, update_kwargs
+            # - if every_step, we run this loop ever iter
+            # - if not every_step, we run this loop every nth iter
+            if every_step or (t1 % n_step) == 0:
+                meanp, covp = mean1s[t1], cov1s[t1]  # already had to generate h=1 above
+                for h in range(1, n_step + 1):
+                    if tu + h >= out_timesteps:
+                        break
+                    if h > 1:
+                        meanp, covp = self.ss_step.predict(
+                            meanp,
+                            covp,
+                            {k: v[tu + h] for k, v in predict_kwargs.items()}
+                        )
+                    if tu + h not in meanps:
+                        meanps[tu + h] = meanp
+                        covps[tu + h] = covp
+
+        preds = (
+            torch.stack([meanps[t] for t in range(out_timesteps)], 1),
+            torch.stack([covps[t] for t in range(out_timesteps)], 1)
+        )
+        updates = torch.stack(meanus, 1), torch.stack(covus, 1)
+        R = torch.stack(update_kwargs['R'], 1)
+        H = torch.stack(update_kwargs['H'], 1)
+
+        return preds, updates, R, H
 
     def _build_design_mats(self,
                            kwargs_per_process: Dict[str, Dict[str, Tensor]],
@@ -582,9 +616,10 @@ class StateSpaceModel(nn.Module):
 
         smeans = torch.stack(means, 1)
         num_groups, num_times, sdim = smeans.shape
+        scovs = torch.zeros((num_groups, num_times, sdim, sdim), dtype=smeans.dtype, device=smeans.device)
+
         return self._generate_predictions(
-            means=smeans,
-            covs=torch.zeros((num_groups, num_times, sdim, sdim), dtype=smeans.dtype, device=smeans.device),
-            predict_kwargs=predict_kwargs,
-            update_kwargs=update_kwargs
+            preds=(smeans, scovs),
+            R=torch.stack(update_kwargs['R'], 1),
+            H=torch.stack(update_kwargs['H'], 1)
         )

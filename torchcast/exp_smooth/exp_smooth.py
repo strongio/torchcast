@@ -105,23 +105,6 @@ class ExpSmoother(StateSpaceModel):
         yield 'measure_covariance', self.measure_covariance
         yield 'smoothing_matrix', self.smoothing_matrix
 
-    @torch.jit.ignore
-    def _generate_predictions(self,
-                              means: Tensor,
-                              covs: Tensor,
-                              predict_kwargs: Dict[str, List[Tensor]],
-                              update_kwargs: Dict[str, List[Tensor]]) -> 'Predictions':
-        """
-        StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
-        """
-        return Predictions(
-            state_means=means,
-            state_covs=covs,
-            R=torch.stack(predict_kwargs['R'], 1),
-            H=torch.stack(update_kwargs['H'], 1),
-            model=self
-        )
-
     def _build_design_mats(self,
                            kwargs_per_process: Dict[str, Dict[str, Tensor]],
                            num_groups: int,
@@ -155,6 +138,6 @@ class ExpSmoother(StateSpaceModel):
             cov1step = Ks[0] @ Rs[0] @ Ks[0].transpose(-1, -2)
             cov1steps = [cov1step] * out_timesteps
 
-        predict_kwargs = {'F': Fs, 'R': Rs, 'cov1step': cov1steps}
-        update_kwargs = {'H': Hs, 'K': Ks}
+        predict_kwargs = {'F': Fs, 'cov1step': cov1steps}
+        update_kwargs = {'H': Hs, 'K': Ks, 'R': Rs}
         return predict_kwargs, update_kwargs
