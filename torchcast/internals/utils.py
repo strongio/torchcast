@@ -54,7 +54,9 @@ def get_owned_kwargs(module, kwargs: dict) -> Iterable[Tuple[str, str, Optional[
             if subkey in expected_kwargs:
                 yield k, subkey, kwargs[k]
             else:
-                raise ValueError(f"Found {k}, but {module.id} wasn't expected a kwarg named '{subkey}'")
+                raise ValueError(
+                    f"Found {k}, but {module.id} wasn't expecting a kwarg named '{subkey}'; expected:{expected_kwargs}"
+                )
 
 
 def validate_gt_shape(

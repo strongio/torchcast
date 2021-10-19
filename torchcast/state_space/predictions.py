@@ -339,7 +339,9 @@ class Predictions(nn.Module):
             ggplot, aes, geom_line, geom_ribbon, facet_grid, facet_wrap, theme_bw, theme, ylab, geom_vline
         )
 
-        is_components = ('process' in df.columns and 'state_element' in df.columns)
+        is_components = 'process' in df.columns
+        if is_components and 'state_element' not in df.columns:
+            df = df.assign(state_element='all')
 
         if group_colname is None:
             group_colname = 'group'
