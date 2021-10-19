@@ -146,11 +146,14 @@ class TimeSeriesDataset(TensorDataset):
 
         return train_dataset, val_dataset
 
-    def with_new_start_times(self, start_times: Union[np.ndarray, Sequence], quiet: bool = False) -> 'TimeSeriesDataset':
+    def with_new_start_times(self,
+                             start_times: Union[np.ndarray, Sequence],
+                             quiet: bool = False) -> 'TimeSeriesDataset':
         """
         Subset a :class:`.TimeSeriesDataset` so that some/all of the groups have later start times.
 
         :param start_times: An array/list of new datetimes.
+        :param quiet: If True, will not emit a warning for groups having only `nan` after the start-time.
         :return: A new :class:`.TimeSeriesDataset`.
         """
         new_tensors = []
@@ -170,8 +173,9 @@ class TimeSeriesDataset(TensorDataset):
                 g_tens = tens[g, true1d_idx(old_times >= new_time)]
                 # drop if after last nan:
                 all_nan, _ = torch.min(torch.isnan(g_tens), 1)
-                if all_nan.all() and not quiet:
-                    warn(f"Group '{self.group_names[g]}' (tensor {i}) has only `nans` after {new_time}")
+                if all_nan.all():
+                    if not quiet:
+                        warn(f"Group '{self.group_names[g]}' (tensor {i}) has only `nans` after {new_time}")
                     end_idx = 0
                 else:
                     end_idx = true1d_idx(~all_nan).max() + 1
