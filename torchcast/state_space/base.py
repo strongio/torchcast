@@ -444,8 +444,10 @@ class StateSpaceModel(nn.Module):
                     cov1step,
                     {k: v[t] for k, v in update_kwargs.items()}
                 )
-                meanus.append(meanu)
-                covus.append(covu)
+            else:
+                meanu, covu = mean1step, cov1step
+            meanus.append(meanu)
+            covus.append(covu)
 
         # 2nd loop to get n_step updates:
         # idx: Dict[int, int] = {}

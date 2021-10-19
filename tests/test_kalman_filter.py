@@ -147,6 +147,17 @@ class TestKalmanFilter(TestCase):
                     continue
                 self.assertEqual(F[r, c], 0)
 
+        # confirm decay works in forward pass
+        # also tests that kf.forward works with `out_timesteps > input.shape[1]`
+        pred = torch_kf(
+            initial_state=torch_kf._prepare_initial_state((None, None), start_offsets=np.zeros(1)),
+            X=torch.randn(1, num_times, 3),
+            out_timesteps=num_times
+        )
+        for t in range(1, num_times):
+            for i in range(3):
+                self.assertLess(pred.state_means[:, t, i].abs(), pred.state_means[:, t - 1, i].abs())
+
     @torch.no_grad()
     def test_equations(self):
         data = torch.tensor([[-5., 5., 1., 0., 3.]]).unsqueeze(-1)

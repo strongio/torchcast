@@ -72,8 +72,6 @@ kf_pm_univariate.fit(
     dataset_pm_univariate_train.tensors[0],
     start_offsets=dataset_pm_univariate_train.start_datetimes
 )
-
-
 # -
 
 # Let's see how our forecasts look:
@@ -81,9 +79,9 @@ kf_pm_univariate.fit(
 # +
 # helper for transforming log back to original:
 def inverse_transform(df):
-    df = df.copy(deep=False)
+    df = df.copy()
     # bias-correction for log-transform (see https://otexts.com/fpp2/transformations.html#bias-adjustments)
-    df['mean'] += .5 * (df['upper'] - df['lower']) / 1.96 ** 2
+    df['mean'] = df['mean'] + .5 * (df['upper'] - df['lower']) / 1.96 ** 2
     # inverse the log10:
     df[['actual', 'mean', 'upper', 'lower']] = 10 ** df[['actual', 'mean', 'upper', 'lower']]
     df['measure'] = df['measure'].str.replace('_log10', '')
