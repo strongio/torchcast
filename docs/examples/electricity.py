@@ -1,7 +1,7 @@
 # ---
 # jupyter:
 #   jupytext:
-#     formats: py:light
+#     formats: py:light,ipynb
 #     text_representation:
 #       extension: .py
 #       format_name: light
@@ -14,8 +14,7 @@
 # ---
 
 # + nbsphinx="hidden"
-# # !pip install git+https://github.com/strongio/torch-kalman.git@feature/rename#egg=torchcast
-# # !pip install torch_optimizer
+# # !pip install git+https://github.com/strongio/torchcast.git#egg=torchcast
 
 import torch
 import copy
@@ -177,7 +176,7 @@ es = ExpSmoother(
 
 df_elec['kW_sqrt'] = np.sqrt(df_elec['kW'])
 
-# for efficiency of training, we split this single group into multiple groups
+# # for efficiency of training, we split this single group into multiple groups
 df_elec['gym'] =\
      df_elec['group'] + ":" +\
      df_elec['time'].dt.year.astype('str') + "_" +\
@@ -186,9 +185,8 @@ df_elec['gym'] =\
 train_MT_052 = TimeSeriesDataset.from_dataframe(
     df_elec.\
         query("group == 'MT_052'").\
-        query("dataset == 'train'").\
-        assign(group_year = lambda df: df['group'] + df_elec['time'].dt.year.astype('str')),
-    group_colname='group', 
+        query("dataset == 'train'"),
+    group_colname='gym', 
     time_colname='time',
     measure_colnames=['kW_sqrt'],
     dt_unit='h'
@@ -197,16 +195,25 @@ train_MT_052 = train_MT_052.to(DEVICE)
 train_MT_052
 
 # +
+# df_elec.\
+#     query("group == 'MT_052'").\
+#     drop(columns=['group','kW_sqrt']).\
+#     reset_index(drop=True).\
+#     to_csv("./df_MT_052.csv", index=False)
+
+# +
 es.to(DEVICE)
 
 try:
     es.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", "es_standard.pt"), map_location=DEVICE))
 except FileNotFoundError:
+    _start = pd.Timestamp.utcnow()
     es.fit(
         train_MT_052.tensors[0],
         start_offsets=train_MT_052.start_datetimes,
     )
-    #torch.save(es.state_dict(), os.path.join(BASE_DIR, "electricity_models", "es_standard.pt"))
+    print(pd.Timestamp.utcnow() - _start)
+    torch.save(es.state_dict(), os.path.join(BASE_DIR, "electricity_models", "es_standard.pt"))
 # -
 
 # XXX
@@ -227,6 +234,23 @@ eval_MT_052 = TimeSeriesDataset.from_dataframe(
     measure_colnames=['kW_sqrt'],
     dt_unit='h'
 ).to(DEVICE)
+with torch.no_grad():
+    y = eval_MT_052.train_val_split(dt=SPLIT_DT)[0].tensors[0]
+    pred = es(
+            y, 
+            start_offsets=eval_MT_052.start_datetimes,
+            out_timesteps=y.shape[1] + 24*365.25,
+        ) 
+    df_pred52 = pred.to_dataframe(eval_MT_052)
+df_pred52 = df_pred52.loc[~df_pred52['actual'].isnull(),:].reset_index(drop=True)
+pred.plot(df_pred52, split_dt=SPLIT_DT)
+
+es.fit(
+    train_MT_052.tensors[0],
+    start_offsets=train_MT_052.start_datetimes,
+    n_step=int(24*7.5), 
+    every_step=False
+)
 with torch.no_grad():
     y = eval_MT_052.train_val_split(dt=SPLIT_DT)[0].tensors[0]
     pred = es(
@@ -259,6 +283,19 @@ plt.tight_layout()
 # -
 
 # Viewing the forecastsing this way helps us understand the problem: the annual seasonal pattern is very different for daytimes and nighttimes, but the model isn't (and can't be) capturing that. For example, it incorrectly forecasts a 'hump' during summer days and weekend nights, even though this hump is really only present on weekday nights. The model only allows for a single seasonal pattern, rather than a separate one for different times of the day and days of the week.
+
+df_pred52_c = pred.to_dataframe(eval_MT_052, type='components', multi=None)
+pred.plot(df_pred52_c.query("time>'2013-01-01'"), subplots_adjust={'wspace': 0.25}, split_dt=SPLIT_DT)
+
+pred.plot(df_pred52_c.\
+          query("time.between('2013-12-21','2014-01-07')").\
+          query("process.isin(['day_in_week','hour_in_day'])").\
+          assign(var=lambda df: df['std'] ** 2).\
+          groupby(['process','group','time','measure'])[['mean','var']].sum().\
+          reset_index().\
+          assign(std=lambda df: df['var'] ** .5), 
+          subplots_adjust={'wspace': 0.25},
+          split_dt=SPLIT_DT)
 
 # ## Incorporating a Neural Network
 #
@@ -319,6 +356,9 @@ def get_group_ids(dataset):
     group_names = pd.Series(dataset.group_names).str.split(":", expand=True)[0]
     return torch.as_tensor([group_id_mapping[gn] for gn in group_names], device=DEVICE)
 
+
+# -
+
 # scaling
 group_means = df_elec.query("time < @SPLIT_DT").groupby('group')['kW_sqrt'].mean().to_dict()
 group_stds = df_elec.query("time < @SPLIT_DT").groupby('group')['kW_sqrt'].mean().to_dict()
@@ -328,8 +368,6 @@ def standardize_by_group(tensor, dataset):
     stds = torch.as_tensor([group_stds[gn] for gn in group_names], device=DEVICE)
     return (tensor - means[:,None,None]) / stds[:,None,None]
 
-
-# -
 
 class MatmulNN(torch.nn.Module):
     def __init__(self, lhs, rhs):
@@ -345,7 +383,6 @@ class MatmulNN(torch.nn.Module):
         return (lhs_out.unsqueeze(-2) @ rhs_out.unsqueeze(-1)).squeeze(-1)
 
 
-# +
 ts_nn = MatmulNN(
     torch.nn.Sequential(
         torch.nn.Linear(len(season_cols), 64),
@@ -359,131 +396,52 @@ ts_nn = MatmulNN(
         embedding_dim=20
     )
 )
-with torch.no_grad():
-    ts_nn.rhs.weight[:] = .01*torch.randn_like(ts_nn.rhs.weight)
-from IPython import display
-ts_nn.optimizer = torch.optim.Adam(ts_nn.parameters())
-
-ts_nn.loss_history = []
-ts_nn.val_history = []
-for epoch in range(1500):
-    epoch_loss = 0
-    for batch in trainval_batches:
-        batch, _ = batch.train_val_split(dt=SPLIT_DT)
-        y, X = batch.to(DEVICE).tensors
-        X[torch.isnan(X)] = 0.
-        y = standardize_by_group(y, batch)
-        nan_mask = torch.isnan(y)
-        group_ids = get_group_ids(batch)
-        try:
-            pred = ts_nn((X, group_ids.view(-1,1)))
-            loss = torch.mean((pred[~nan_mask] - y[~nan_mask]) ** 2)
-            loss.backward()
-            ts_nn.optimizer.step()
-            if torch.isnan(ts_nn.rhs.weight).any():
-                raise Exception("foo")
-            epoch_loss += loss.item()
-        finally:
-            ts_nn.optimizer.zero_grad(set_to_none=True)
-    ts_nn.loss_history.append(epoch_loss / len(trainval_batches))
-
-    with torch.no_grad():
-        y, X = val_batch.to(DEVICE).tensors
-        y = standardize_by_group(y, val_batch)
-        nan_mask = torch.isnan(y)
-        group_ids = get_group_ids(val_batch)
-        pred = ts_nn((X, group_ids.view(-1,1)))
-        val_loss = torch.mean((pred[~nan_mask] - y[~nan_mask]) ** 2)
-        ts_nn.val_history.append(val_loss.item())
-
-    if epoch > 10:
-        plt.close()
-        display.clear_output(wait=True)
-        fig, axes = plt.subplots(ncols=2, figsize=(10,5))
-        pd.Series(ts_nn.loss_history[10:]).plot(ax=axes[0], logy=True)
-        pd.Series(ts_nn.val_history[10:]).plot(ax=axes[1], logy=True)
-        display.display(plt.gcf())
-torch.save(ts_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", "ts_nn.pt"))
-
-
-# +
-# helper class for combining shared layers with per-building embedding:
-class PerGroupNN(torch.nn.Module):
-    def __init__(self, shared: torch.nn.Module, embedding: torch.nn.Module):
-        super().__init__()
-        self.shared = shared
-        self.embedding = embedding
-
-    def forward(self, X, group_ids):
-        shared_weights = self.shared(X)
-        per_group = self.embedding(group_ids)
-        per_group_w, per_group_b = torch.split(
-            per_group.unsqueeze(1), 
-            [self.embedding.embedding_dim - 1, 1], 
-            -1
-        )
-        outw = shared_weights.unsqueeze(-2) @ per_group_w.unsqueeze(-1)
-        return outw.squeeze(-1) + per_group_b 
-
-per_group_nn = PerGroupNN(
-    shared = torch.nn.Sequential(
-        torch.nn.Linear(len(season_cols), 64),
-        torch.nn.Tanh(),
-        torch.nn.Linear(64, 64),
-        torch.nn.Tanh(),
-        torch.nn.Linear(64, 20)
-    ),
-    embedding = torch.nn.Embedding(
-        num_embeddings=len(group_id_mapping),
-        embedding_dim=21
-    )
-)
-per_group_nn.to(DEVICE)
-
 try:
-    per_group_nn.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", "per_group_nn.pt"), map_location=DEVICE))
+    ts_nn.load_state_dict(torch.load(os.path.join(BASE_DIR,"electricity_models", "ts_nn.pt"), map_location=DEVICE))
 except FileNotFoundError:
+    with torch.no_grad():
+        ts_nn.rhs.weight[:] = .01*torch.randn_like(ts_nn.rhs.weight)
     from IPython import display
-    per_group_nn.optimizer = torch.optim.Adam(per_group_nn.parameters())
+    ts_nn.optimizer = torch.optim.Adam(ts_nn.parameters())
 
-    per_group_nn.loss_history = []
-    per_group_nn.val_history = []
-    for epoch in range(1500):
+    ts_nn.loss_history = []
+    ts_nn.val_history = []
+    for epoch in range(200):
         epoch_loss = 0
         for batch in trainval_batches:
-            batch, _ = batch.train_val_split(dt=SPLIT_DT)
+            batch, _ = batch.train_val_split(dt=SPLIT_DT, quiet=True)
             y, X = batch.to(DEVICE).tensors
+            X[torch.isnan(X)] = 0.
             y = standardize_by_group(y, batch)
             nan_mask = torch.isnan(y)
             group_ids = get_group_ids(batch)
             try:
-                pred = per_group_nn(X, group_ids=group_ids)
+                pred = ts_nn((X, group_ids.view(-1,1)))
                 loss = torch.mean((pred[~nan_mask] - y[~nan_mask]) ** 2)
                 loss.backward()
-                per_group_nn.optimizer.step()
+                ts_nn.optimizer.step()
                 epoch_loss += loss.item()
             finally:
-                per_group_nn.optimizer.zero_grad(set_to_none=True)
-        per_group_nn.loss_history.append(epoch_loss / len(train_batches))
+                ts_nn.optimizer.zero_grad(set_to_none=True)
+        ts_nn.loss_history.append(epoch_loss / len(trainval_batches))
 
         with torch.no_grad():
             y, X = val_batch.to(DEVICE).tensors
             y = standardize_by_group(y, val_batch)
             nan_mask = torch.isnan(y)
             group_ids = get_group_ids(val_batch)
-            pred = per_group_nn(X, group_ids=group_ids)
+            pred = ts_nn((X, group_ids.view(-1,1)))
             val_loss = torch.mean((pred[~nan_mask] - y[~nan_mask]) ** 2)
-            per_group_nn.val_history.append(val_loss.item())
+            ts_nn.val_history.append(val_loss.item())
 
         if epoch > 10:
             plt.close()
             display.clear_output(wait=True)
             fig, axes = plt.subplots(ncols=2, figsize=(10,5))
-            pd.Series(per_group_nn.loss_history[10:]).plot(ax=axes[0], logy=True)
-            pd.Series(per_group_nn.val_history[10:]).plot(ax=axes[1], logy=True)
+            pd.Series(ts_nn.loss_history[10:]).plot(ax=axes[0], logy=True)
+            pd.Series(ts_nn.val_history[10:]).plot(ax=axes[1], logy=True)
             display.display(plt.gcf())
-    torch.save(per_group_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", "per_group_nn.pt"))
-# -
+    torch.save(ts_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", "ts_nn.pt"))
 
 # ### Training our Hybrid Forecasting Model
 #
@@ -495,47 +453,37 @@ except FileNotFoundError:
 # - **Predicting Initial Values:** We are still splitting each series into multiple sub-series to aid in efficiency of training. This means that we need to let each series start off with its own unique internal state that encodes its unique seasonal and random-walk structure. 
 
 # +
-from torchcast.process import NN, LocalLevel, LocalTrend, Season
+from torchcast.process import LinearModel, LocalLevel, LocalTrend, Season
 from torchcast.covariance import Covariance
-
-shared_nn = copy.deepcopy(per_group_nn.shared)
 
 processes = [
     LocalTrend(id='trend'),
-    LocalLevel(id='level', decay=True),
     Season(id='hour_in_day', period=24, dt_unit='h', K=6, decay=True),
-    NN(id='nn', nn=shared_nn)
+    LinearModel(id='seasonal', predictors=['nn_output'])
 ]
 
-mvar_nn = torch.nn.Embedding(
-    len(group_id_mapping),
-    embedding_dim=1,
-)
-pvar_nn = torch.nn.Embedding(
-    len(group_id_mapping),
-    embedding_dim=Covariance.from_processes(processes).param_rank,
-)
-
-kf_nn = KalmanFilter(
+es_nn = ExpSmoother(
     measures=['kW_sqrt'], 
     processes=processes,
-    measure_covariance=Covariance.from_measures(['kW_sqrt'], predict_variance=mvar_nn),
-    process_covariance=Covariance.from_processes(processes, predict_variance=pvar_nn)
+    measure_covariance=Covariance.from_measures(['kW_sqrt'], predict_variance=True),
 )
 
-kf_nn.initial_state_nn = torch.nn.Embedding(
-    len(group_id_mapping),
-    embedding_dim=len(kf_nn.initial_mean),
+# we save these as attributes so they'll be included in the optimizer and saved/loaded:
+es_nn.mvar_nn = torch.nn.Sequential(
+    torch.nn.Embedding(
+        len(group_id_mapping),
+        embedding_dim=1,
+    ),
+    torch.nn.Softplus()
 )
-with torch.no_grad():
-    kf_nn.initial_state_nn.weight[:] *= .01
-kf_nn.initial_mean = None
 
-kf_nn.to(DEVICE)
+es_nn.ts_nn = copy.deepcopy(ts_nn)
+
+es_nn.to(DEVICE)
 # -
 
 try:
-    kf_nn.load_state_dict(torch.load(os.path.join(BASE_DIR,"electricity_models", "kf_nn.pt"), map_location=DEVICE))
+    es_nn.load_state_dict(torch.load(os.path.join(BASE_DIR,"electricity_models", "es_nn.pt"), map_location=DEVICE))
 except FileNotFoundError:
     from IPython import display
     train_batches = TimeSeriesDataLoader.from_dataframe(
@@ -546,65 +494,61 @@ except FileNotFoundError:
         shuffle=True
     )
 
-    from torch_optimizer import Adahessian
-    kf_nn.optimizer = Adahessian([
-        {'params' : [p for n,p in kf_nn.named_parameters() if 'processes.nn.'     in n], 'lr' : .001},
-        {'params' : [p for n,p in kf_nn.named_parameters() if 'processes.nn.' not in n], 'lr' : .50}
+    es_nn.optimizer = torch.optim.Adam([
+        {'params' : [p for n,p in es_nn.named_parameters() if n.startswith('ts_nn')], 'lr' : .001},
+        {'params' : [p for n,p in es_nn.named_parameters() if not n.startswith('ts_nn')], 'lr' : .1}
     ])
+    assert all(len(g['params'])>0 for g in es_nn.optimizer.param_groups)
 
-    kf_nn.loss_history = []
-    kf_nn.val_history = []
-    for epoch in range(200):
+    es_nn.loss_history = []
+    es_nn.val_history = []
+    for epoch in range(60):
         # training:
         train_loss = 0
         for batch in tqdm(train_batches, total=len(train_batches), desc=f"Epoch {epoch}"):
             y, X = batch.to(DEVICE).tensors
             group_ids = get_group_ids(batch)
             try:
-                pred = kf_nn(
+                pred = es_nn(
                     y, 
-                    X=X,
-                    measure_covariance__X=group_ids,
-                    process_covariance__X=group_ids,
-                    initial_state=kf_nn.initial_state_nn(group_ids),
+                    seasonal__X=es_nn.ts_nn((X, group_ids.view(-1,1))),
+                    measure_var_multi=es_nn.mvar_nn(group_ids),
                     start_offsets=batch.start_datetimes,
                     n_step=int(24 * 7.5),
                     every_step=False
                 )
                 loss = -pred.log_prob(y).mean()
-                loss.backward(create_graph=True)
-                kf_nn.optimizer.step()
+                loss.backward(create_graph=False)
+                es_nn.optimizer.step()
                 train_loss += loss.item()
             finally:
-                kf_nn.optimizer.zero_grad(set_to_none=True)
+                es_nn.optimizer.zero_grad(set_to_none=True)
         train_loss /= len(train_batches)
-        kf_nn.loss_history.append(train_loss)
+        es_nn.loss_history.append(train_loss)
 
         # validation:
         with torch.no_grad():
             y, X = val_batch.to(DEVICE).tensors
             group_ids = get_group_ids(val_batch)
-            pred = kf_nn(
+            pred = es_nn(
                     y, 
-                    X=X,
-                    measure_covariance__X=group_ids,
-                    process_covariance__X=group_ids,
-                    initial_state=kf_nn.initial_state_nn(group_ids),
+                    seasonal__X=es_nn.ts_nn((X, group_ids.view(-1,1))),
+                    measure_var_multi=es_nn.mvar_nn(group_ids),
                     start_offsets=val_batch.start_datetimes,
                     n_step=int(24 * 7.5),
                     every_step=False
                 )
             val_errs = nanmean((pred.means - y).abs(), dim=1) / nanmean(y, dim=1)
-            kf_nn.val_history.append(val_errs.mean().item())
+            es_nn.val_history.append(val_errs.mean().item())
 
         display.clear_output(wait=True)
         if epoch > 2:
             plt.close()
             fig, axes = plt.subplots(ncols=2,figsize=(10,5))
-            pd.Series(kf_nn.loss_history[2:]).plot(ax=axes[0])
-            pd.Series(kf_nn.val_history[2:]).plot(ax=axes[1])
+            pd.Series(es_nn.loss_history[2:]).plot(ax=axes[0])
+            pd.Series(es_nn.val_history[2:]).plot(ax=axes[1])
             display.display(plt.gcf())
-        torch.save(kf_nn.state_dict(), os.path.join(BASE_DIR,"electricity_models", "kf_nn.pt"))
+        torch.save(es_nn.state_dict(), os.path.join(BASE_DIR,"electricity_models", "es_nn.pt"))
 
 # ### Model Evaluation
 #
@@ -624,18 +568,20 @@ with torch.no_grad():
         y = eval_batch.train_val_split(dt=SPLIT_DT)[0].tensors[0]
         X = eval_batch.tensors[1]
         group_ids = get_group_ids(eval_batch)
-        pred_nn = kf_nn(
+        pred_nn = es_nn(
                 y, 
-                X=X,
-                measure_covariance__X=group_ids,
-                process_covariance__X=group_ids,
-                initial_state=kf_nn.initial_state_nn(group_ids),
+                seasonal__X=es_nn.ts_nn((X, group_ids.view(-1,1))),
+                measure_var_multi=es_nn.mvar_nn(group_ids),
                 start_offsets=eval_batch.start_datetimes,
                 out_timesteps=X.shape[1],
             ) 
         df_pred_nn.append(pred_nn.to_dataframe(eval_batch))
 df_pred_nn = pd.concat(df_pred_nn)
 df_pred_nn = df_pred_nn.loc[~df_pred_nn['actual'].isnull(),:].reset_index(drop=True)
+
+# +
+# foo=pred_nn.to_dataframe(eval_batch, type='components')
+# pred.plot(foo.query("group=='MT_052'"), split_dt=SPLIT_DT)
 
 # +
 df_pred52_nn = df_pred_nn.\
@@ -656,7 +602,7 @@ plt.tight_layout()
 
 # + nbsphinx="hidden"
 """
-- MT_029 -- need (way) higher K for annual season?
+- MT_029 -- temporarily dip at split_dt (probably new-year holiday) was mis-attributed to 'trend' component
 - MT_018, MT_024, MT_047 -- still systematic bias in certain parts of the day. why? 
     - when we split day into 12/12 hours, don't really see it. so seems like just having trouble with *exact* shape.
 - MT_045/MT_036/MT_013 -- seems like LocalLevel should be *much* more responsive. 
@@ -691,40 +637,7 @@ df_pred52.\
     groupby(['group','validation']).\
     agg(error = ('error', 'mean')).\
     reset_index().\
-    merge(df_nn_err, on=['group', 'validation'])
+    merge(df_nn_err, on=['group', 'validation'], suffixes=('_es', '_es_nn'))
 # -
-
-SPLIT_DT
-
-dfc = pred_nn.to_dataframe(eval_batch, type='components')
-
-pred.plot(dfc.query("time.between('2013-12-26','2014-01-15')"))
-
-from plotnine import *
-
-foo = dfc.\
-    query("time.between('2013-12-26','2014-01-30')").\
-    assign(
-        var=lambda df: ((df['upper'] - df['lower']) / 1.96) ** 2,
-        process=lambda df: df['process'].map({'level' : 'Local Level', 
-                                              'hour_in_day' : 'Local Hour-in-Day',
-                                              'nn' : 'Typical Pattern (NN)'})
-    ).groupby(['process','time'])\
-    [['mean','var']].sum().\
-    reset_index().\
-    assign(mean=lambda df: df['mean'] - df.groupby('process')['mean'].transform('mean'),
-           lower=lambda df: df['mean'] - df['var'] ** .5,
-           upper=lambda df: df['mean'] + df['var'] ** .5)
-print(
-    ggplot(foo, aes(x='time', y='mean')) + 
-    geom_line(color='blue') +
-    geom_ribbon(aes(ymin='lower', ymax='upper'), alpha=.25) +
-    facet_wrap("~process", scales='free_y', ncol=1) +
-    geom_vline(xintercept=SPLIT_DT, linetype='dashed') +
-    theme_bw() +
-    theme(figure_size=(10,5), subplots_adjust={'wspace': 0.25}) +
-    scale_y_continuous(name="State") +
-    scale_x_date(name="", date_breaks="1 week", date_labels='%b %d')
-)
 
 
