@@ -47,14 +47,13 @@ class ExpSmoothStep(StateSpaceStep):
         measured_mean = (kwargs['H'] @ mean.unsqueeze(-1)).squeeze(-1)
         resid = input - measured_mean
         new_mean = mean + (kwargs['K'] @ resid.unsqueeze(-1)).squeeze(-1)
-        new_cov = torch.zeros_like(cov)
-        return new_mean, new_cov
+        return new_mean, None
 
     def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         F = kwargs['F']
         new_mean = (F @ mean.unsqueeze(-1)).squeeze(-1)
         new_cov = kwargs['cov1step']
-        if (cov != 0).any():
+        if cov is not None:
             new_cov = new_cov + F @ cov @ F.permute(0, 2, 1)
         return new_mean, new_cov
 
@@ -133,8 +132,8 @@ class ExpSmoother(StateSpaceModel):
         Rs = Rs.unbind(1)
         Ks = Ks.unbind(1)
         if cov1steps is None:
-            # if not time-varying, the this is  cheaper
-            # todo: will false-alarm with inputs that are groupwise but not timewise
+            # if not time-varying, the this is cheaper
+            # note: will unnecessarily do the less cheap version with inputs that are groupwise but not timewise
             cov1step = Ks[0] @ Rs[0] @ Ks[0].transpose(-1, -2)
             cov1steps = [cov1step] * out_timesteps
 

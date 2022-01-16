@@ -55,9 +55,13 @@ class StateSpaceStep(torch.nn.Module):
             new_cov = cov.clone()
             for groups, val_idx in get_nan_groups(isnan):
                 masked_input, masked_kwargs = self._mask_mats(groups, val_idx, input=input, kwargs=kwargs)
-                new_mean[groups], new_cov[groups] = self._update(
+                m,c = self._update(
                     input=masked_input, mean=mean[groups], cov=cov[groups], kwargs=masked_kwargs
                 )
+                new_mean[groups] = m
+                if c is None:
+                    c = 0
+                new_cov[groups] = c
             return new_mean, new_cov
         else:
             return self._update(input=input, mean=mean, cov=cov, kwargs=kwargs)
