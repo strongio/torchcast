@@ -311,10 +311,10 @@ class StateSpaceModel(nn.Module):
 
     @torch.jit.ignore
     def _generate_predictions(self,
-                              preds: Tuple[Tensor, Tensor],
-                              R: Tensor,
-                              H: Tensor,
-                              updates: Optional[Tuple[Tensor, Tensor]] = None) -> 'Predictions':
+                              preds: Tuple[List[Tensor], List[Tensor]],
+                              R: List[Tensor],
+                              H: List[Tensor],
+                              updates: Optional[Tuple[List[Tensor], List[Tensor]]] = None) -> 'Predictions':
         """
         StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
         """
@@ -378,7 +378,12 @@ class StateSpaceModel(nn.Module):
                         n_step: int = 1,
                         out_timesteps: Optional[int] = None,
                         every_step: bool = True
-                        ) -> Tuple[Tuple[Tensor, Tensor], Tuple[Tensor, Tensor], Tensor, Tensor]:
+                        ) -> Tuple[
+        Tuple[List[Tensor], List[Tensor]],
+        Tuple[List[Tensor], List[Tensor]],
+        List[Tensor],
+        List[Tensor]
+    ]:
         """
         :param input: A (group X time X measures) tensor. Optional if `initial_state` is specified.
         :param kwargs_per_process: Keyword-arguments to the Processes TODO
@@ -476,13 +481,10 @@ class StateSpaceModel(nn.Module):
                         meanps[tu + h] = meanp
                         covps[tu + h] = covp
 
-        preds = (
-            torch.stack([meanps[t] for t in range(out_timesteps)], 1),
-            torch.stack([covps[t] for t in range(out_timesteps)], 1)
-        )
-        updates = torch.stack(meanus, 1), torch.stack(covus, 1)
-        R = torch.stack(update_kwargs['R'], 1)
-        H = torch.stack(update_kwargs['H'], 1)
+        preds = [meanps[t] for t in range(out_timesteps)], [covps[t] for t in range(out_timesteps)]
+        updates = meanus, covus
+        R = update_kwargs['R']
+        H = update_kwargs['H']
 
         return preds, updates, R, H
 
@@ -510,6 +512,7 @@ class StateSpaceModel(nn.Module):
                                            kwargs_per_process: Dict[str, Dict[str, Tensor]],
                                            num_groups: int,
                                            out_timesteps: int) -> Tuple[List[Tensor], List[Tensor]]:
+        # todo: if F and/or H are not time-varying, cheaper to build mat for 1 timestep and return [mat]*out_timesteps
         ms = self._get_measure_scaling()
 
         Fs = torch.zeros(

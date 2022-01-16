@@ -1,4 +1,5 @@
-from typing import Tuple, Union, Optional, Dict, Iterator
+from functools import cached_property
+from typing import Tuple, Union, Optional, Dict, Iterator, Sequence
 from warnings import warn
 
 import torch
@@ -18,33 +19,26 @@ class Predictions(nn.Module):
     """
 
     def __init__(self,
-                 state_means: Tensor,
-                 state_covs: Tensor,
-                 R: Tensor,
-                 H: Tensor,
+                 state_means: Sequence[Tensor],
+                 state_covs: Sequence[Tensor],
+                 R: Sequence[Tensor],
+                 H: Sequence[Tensor],
                  model: Union['StateSpaceModel', dict],
-                 update_means: Optional[Tensor] = None,
-                 update_covs: Optional[Tensor] = None):
+                 update_means: Optional[Sequence[Tensor]] = None,
+                 update_covs: Optional[Sequence[Tensor]] = None):
         super().__init__()
 
         # predictions state:
-        self.state_means = state_means
-        if torch.isnan(self.state_means).any():
-            raise ValueError("`nans` in `state_means`")
-        self.state_covs = state_covs
-        if torch.isnan(self.state_covs).any():
-            raise ValueError("`nans` in `state_covs`")
+        self._state_means = state_means
+        self._state_covs = state_covs
 
         # updates state:
-        if update_means is not None:
-            assert update_means.shape == self.state_means.shape
-            assert update_covs.shape == self.state_covs.shape
-        self.update_means = update_means
-        self.update_covs = update_covs
+        self._update_means = update_means
+        self._update_covs = update_covs
 
         # design mats:
-        self.H = H
-        self.R = R
+        self._H = H
+        self._R = R
 
         # some model attributes are needed for `log_prob` method and for names for plotting
         if not isinstance(model, dict):
@@ -63,11 +57,48 @@ class Predictions(nn.Module):
         self.all_state_elements = model['all_state_elements']
 
         # for lazily populated properties:
-        self._means = None
-        self._covs = None
+        self._means = self._covs = None
 
         # useful to have:
         self.num_groups, self.num_timesteps, self.state_size = self.state_means.shape
+
+    @cached_property
+    def R(self) -> torch.Tensor:
+        return torch.stack(self._R, 1)
+
+    @cached_property
+    def H(self) -> torch.Tensor:
+        return torch.stack(self._H, 1)
+
+    @cached_property
+    def state_means(self) -> torch.Tensor:
+        state_means = torch.stack(self._state_means, 1)
+        if torch.isnan(state_means).any():
+            raise ValueError("`nans` in `state_means`")
+        return state_means
+
+    @cached_property
+    def state_covs(self) -> torch.Tensor:
+        state_covs = torch.stack(self._state_covs, 1)
+        if torch.isnan(state_covs).any():
+            raise ValueError("`nans` in `state_covs`")
+        return state_covs
+
+    @cached_property
+    def update_means(self) -> Optional[torch.Tensor]:
+        if self._update_means is None:
+            return self._update_means
+        update_means = torch.stack(self._update_means, 1)
+        assert update_means.shape == self.state_means.shape
+        return update_means
+
+    @cached_property
+    def update_covs(self) -> Optional[torch.Tensor]:
+        if self._update_covs is None:
+            return self._update_covs
+        update_covs = torch.stack(self._update_covs, 1)
+        assert update_covs.shape == self.state_covs.shape
+        return update_covs
 
     def get_state_at_times(self,
                            times: Union[np.ndarray, np.datetime64],
@@ -130,6 +161,9 @@ class Predictions(nn.Module):
     @property
     def means(self) -> Tensor:
         if self._means is None:
+            # TODO: in ExpSmoth, _state_covs, _R, and _H will often not be time-varying. if we could generate them s.t.
+            #  we could perform a fast check of this (self._R[0] is self._R[1]) then could speed up slowest step:
+            #  `H.matmul(state_covs).matmul(Ht) + R`
             self._means, self._covs = self.observe(self.state_means, self.state_covs, self.R, self.H)
         return self._means
 

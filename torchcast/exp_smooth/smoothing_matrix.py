@@ -89,18 +89,17 @@ class SmoothingMatrix(torch.nn.Module):
                 num_groups: int,
                 num_times: int,
                 _ignore_input: bool = False) -> Tensor:
-        if len(inputs) > 0:
+        if len(inputs) > 0 and not _ignore_input:
             raise NotImplementedError
 
         if self.method == 'full':
             K = torch.zeros(
-                (num_groups, num_times, self.state_rank, self.measure_rank),
+                (self.state_rank, self.measure_rank),
                 dtype=self.unconstrained_params.dtype,
                 device=self.unconstrained_params.device
             )
             k_full = torch.sigmoid(self.unconstrained_params + self.init_bias)
-            K[:, :, self.full_states, :] = k_full.view(len(self.full_states), self.measure_rank)
-            return K
+            K[self.full_states, :] = k_full.view(len(self.full_states), self.measure_rank)
         else:
             assert self.method == 'low_rank'
             assert self.lr1 is not None
@@ -118,9 +117,9 @@ class SmoothingMatrix(torch.nn.Module):
             # "there may be matmul-ordering optimizations to keeping lr1 and lr2 separate" -- in theory, yes.
             # in practice haven't gotten to work -- may revisit, for now they are pre-multiplied
             K = lr1 @ lr2
-            K = K.unsqueeze(0).expand(num_groups, -1, -1)
-            K = K.unsqueeze(1).expand(-1, num_times, -1, -1)
-            return K
+        K = K.unsqueeze(0).expand(num_groups, -1, -1)
+        K = K.unsqueeze(1).expand(-1, num_times, -1, -1)
+        return K
 
     @jit.ignore
     def set_id(self, id: str) -> 'SmoothingMatrix':
