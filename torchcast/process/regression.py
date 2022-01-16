@@ -66,3 +66,60 @@ class LinearModel(Process):
         # note: trailing_dim is really (self.rank, self.measures), but currently processes can only have one measure
 
         return X
+
+    @staticmethod
+    def _l2_solve(y: torch.Tensor,
+                  X: torch.Tensor,
+                  prior_precision: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Given tensors y,X in the format expected by ``StateSpaceModel`` -- 3D arrays with groups*times*measures --
+        return the solutions to a linear-model for each group.
+
+        See :func:`~torchcast.process.LinearModel.solve_and_predict()`
+
+        :param y: A 3d tensor of time-series values.
+        :param X: A 3d tensor of predictors.
+        :param prior_precision: Optional. A penalty matrix.
+        :return: The solution.
+        """
+
+        # XtX:
+        XtX = (X.transpose(-1, -2) @ X)
+        XtXp = XtX
+        if prior_precision is not None:
+            XtXp = XtXp + prior_precision
+
+        # Xty requires handling nans in y (ragged arrays):
+        num_groups, num_times, num_preds = X.shape
+        X = X.view(-1, X.shape[-1])
+        y = y.view(-1, y.shape[-1])
+        is_valid = ~torch.isnan(y).squeeze()
+        group_ids_broad = torch.repeat_interleave(torch.arange(num_groups), num_times).unsqueeze(-1)
+        X = X[is_valid]
+        y = y[is_valid]
+        group_ids_broad = group_ids_broad[is_valid]
+        Xty_els = X * y
+        Xty = torch.zeros(num_groups, num_preds).scatter_add(0, group_ids_broad.expand_as(Xty_els), Xty_els)
+
+        return torch.linalg.solve(XtXp, Xty.unsqueeze(-1))
+
+    @classmethod
+    def solve_and_predict(cls,
+                          y: torch.Tensor,
+                          X: torch.Tensor,
+                          prior_precision: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Given tensors y,X in the format expected by ``StateSpaceModel`` -- 3D arrays with groups*times*measures --
+        solve the linear-model for each group, then generate predictions from these.
+
+        This can be useful for pretraining a ``StateSpaceModel`` which uses the ``LinearModel`` class:
+
+        TODO example
+
+        :param y: A 3d tensor of time-series values.
+        :param X: A 3d tensor of predictors.
+        :param prior_precision: Optional. A penalty matrix.
+        :return: A tensor with the same dimensions as ``y`` with the predictions.
+        """
+        coefs = cls._l2_solve(y=y, X=X, prior_precision=prior_precision)
+        return (coefs.transpose(-1, -2) * X).sum(-1).unsqueeze(-1)
