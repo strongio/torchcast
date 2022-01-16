@@ -360,12 +360,21 @@ class TimeSeriesDataset(TensorDataset):
         if 'dtype' not in kwargs:
             kwargs['dtype'] = torch.float32
 
+        if X_colnames is not None:
+            X_colnames = list(X_colnames)
+        if y_colnames is not None:
+            y_colnames = list(y_colnames)
+        if measure_colnames is not None:
+            measure_colnames = list(measure_colnames)
+
         if measure_colnames is None:
-            if X_colnames is None or y_colnames is None:
+            if y_colnames is None:
                 raise ValueError("Must pass either `measure_colnames` or `X_colnames` & `y_colnames`")
             if isinstance(y_colnames, str):
                 y_colnames = [y_colnames]
                 warn(f"`y_colnames` should be a list of strings not a string; interpreted as `{y_colnames}`.")
+
+            X_colnames = X_colnames or []
 
             measure_colnames = list(y_colnames) + list(X_colnames)
         else:
@@ -426,7 +435,7 @@ class TimeSeriesDataset(TensorDataset):
             dt_unit=dt_unit
         )
 
-        if X_colnames is not None:
+        if len(X_colnames):
             dataset = dataset.split_measures(y_colnames, X_colnames)
             y, X = dataset.tensors
             # don't use nan-padding on the y tensor:
