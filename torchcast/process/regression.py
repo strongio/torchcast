@@ -94,7 +94,7 @@ class LinearModel(Process):
         X = X.view(-1, X.shape[-1])
         y = y.view(-1, y.shape[-1])
         is_valid = ~torch.isnan(y).squeeze()
-        group_ids_broad = torch.repeat_interleave(torch.arange(num_groups), num_times).unsqueeze(-1)
+        group_ids_broad = torch.repeat_interleave(torch.arange(num_groups, device=y.device), num_times).unsqueeze(-1)
         X = X[is_valid]
         y = y[is_valid]
         group_ids_broad = group_ids_broad[is_valid]
