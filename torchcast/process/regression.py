@@ -99,7 +99,8 @@ class LinearModel(Process):
         y = y[is_valid]
         group_ids_broad = group_ids_broad[is_valid]
         Xty_els = X * y
-        Xty = torch.zeros(num_groups, num_preds).scatter_add(0, group_ids_broad.expand_as(Xty_els), Xty_els)
+        Xty = torch.zeros(num_groups, num_preds, dtype=y.dtype, device=y.device). \
+            scatter_add(0, group_ids_broad.expand_as(Xty_els), Xty_els)
 
         return torch.linalg.solve(XtXp, Xty.unsqueeze(-1))
 
