@@ -84,6 +84,7 @@ torch.manual_seed(2021 - 1 - 21)
 # -
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+DEVICE
 
 # ## Data-Cleaning
 #
@@ -361,7 +362,7 @@ from torchcast.process import LinearModel, LocalTrend, Season
 from torchcast.covariance import Covariance
 from torchcast.kalman_filter import KalmanFilter
 
-calendar_features_num_latent_dim = 10
+calendar_features_num_latent_dim = 15
 
 calendar_feature_nn = torch.nn.Sequential(
     torch.nn.Linear(len(season_cols), 64),
@@ -447,7 +448,8 @@ class CalendarFeaturePretrainer(TimeSeriesLightningModule):
     def configure_optimizers(self) -> torch.optim.Optimizer:
         return torch.optim.Adam(self.parameters(), lr=1e-3)
 
-calender_feature_pretrainer = CalendarFeaturePretrainer(calendar_feature_nn)
+
+calender_feature_pretrainer = CalendarFeaturePretrainer(calendar_feature_nn).to(DEVICE)
 calender_feature_pretrainer
 # -
 
@@ -469,6 +471,8 @@ except FileNotFoundError:
 
 
 # +
+calendar_feature_nn.to(DEVICE)
+
 eval_MT_052 = TimeSeriesDataset.from_dataframe(
     df_elec.query("group == 'MT_052'"),
     group_colname='group',
@@ -519,7 +523,7 @@ class KalmanFilterLightningModule(TimeSeriesLightningModule):
         )
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
-        return torch.optim.Adam([p for p in self.parameters() if p.requires_grad], lr=.1)
+        return torch.optim.Adam([p for p in self.parameters() if p.requires_grad], lr=.01)
 
 
 # +
