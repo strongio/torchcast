@@ -636,16 +636,22 @@ def complete_times(data: 'DataFrame',
     return df_cj.merge(data, how='left', on=[group_colname, time_colname])
 
 
-def nanmean(v: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+def chunk_grouped_data(*tensors, group_ids: Sequence) -> Sequence[Tuple[Tensor]]:
     """
-    https://github.com/pytorch/pytorch/issues/21987#issuecomment-539402619
+    much faster approach to chunking than something like ``[X[gid==group_ids] for gid in np.unique(group_ids)]``
+    """
+    group_ids = np.asanyarray(group_ids)
 
-    :param v: A tensor
-    :param args: Arguments one might pass to `mean` like `dim`.
-    :param kwargs: Arguments one might pass to `mean` like `dim`.
-    :return: The mean, excluding nans.
-    """
-    v = v.clone()
-    is_nan = torch.isnan(v)
-    v[is_nan] = 0
-    return v.sum(*args, **kwargs) / (~is_nan).float().sum(*args, **kwargs)
+    # torch.split requires we put groups into contiguous chunks:
+    sort_idx = np.argsort(group_ids)
+    group_ids = group_ids[sort_idx]
+    tensors = [x[sort_idx] for x in tensors]
+
+    # much faster approach to chunking than something like `[X[gid==group_ids] for gid in np.unique(group_ids)]`:
+    _, counts_per_group = np.unique(group_ids, return_counts=True)
+    counts_per_group = counts_per_group.tolist()
+
+    group_data = []
+    for chunk_tensors in zip(*(torch.split(x, counts_per_group) for x in tensors)):
+        group_data.append(chunk_tensors)
+    return group_data

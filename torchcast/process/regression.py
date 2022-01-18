@@ -6,6 +6,7 @@ import torch
 from torchcast.internals.utils import validate_gt_shape
 from torchcast.process.base import Process
 from torchcast.process.utils import Bounded, SingleOutput
+from torchcast.utils.data import chunk_grouped_data
 
 
 class LinearModel(Process):
@@ -83,24 +84,26 @@ class LinearModel(Process):
         :return: The solution.
         """
 
-        # XtX:
-        XtX = (X.transpose(-1, -2) @ X)
-        XtXp = XtX
-        if prior_precision is not None:
-            XtXp = XtXp + prior_precision
-
-        # Xty requires handling nans in y (ragged arrays):
+        # handling nans requires flattening + scatter_add:
         num_groups, num_times, num_preds = X.shape
         X = X.view(-1, X.shape[-1])
         y = y.view(-1, y.shape[-1])
         is_valid = ~torch.isnan(y).squeeze()
-        group_ids_broad = torch.repeat_interleave(torch.arange(num_groups, device=y.device), num_times).unsqueeze(-1)
+        group_ids_broad = torch.repeat_interleave(torch.arange(num_groups, device=y.device), num_times)
         X = X[is_valid]
         y = y[is_valid]
         group_ids_broad = group_ids_broad[is_valid]
+
+        # Xty:
         Xty_els = X * y
         Xty = torch.zeros(num_groups, num_preds, dtype=y.dtype, device=y.device). \
-            scatter_add(0, group_ids_broad.expand_as(Xty_els), Xty_els)
+            scatter_add(0, group_ids_broad.unsqueeze(-1).expand_as(Xty_els), Xty_els)
+
+        # XtX:
+        XtX = torch.stack([Xg.t() @ Xg for Xg, in chunk_grouped_data(X, group_ids=group_ids_broad)])
+        XtXp = XtX
+        if prior_precision is not None:
+            XtXp = XtXp + prior_precision
 
         return torch.linalg.solve(XtXp, Xty.unsqueeze(-1))
 
@@ -124,3 +127,4 @@ class LinearModel(Process):
         """
         coefs = cls._l2_solve(y=y, X=X, prior_precision=prior_precision)
         return (coefs.transpose(-1, -2) * X).sum(-1).unsqueeze(-1)
+
