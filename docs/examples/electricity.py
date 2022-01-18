@@ -139,7 +139,6 @@ train_groups = sorted(df_group_summary.query("history_len >= 365")['group'])
 if SUBSET:
     train_groups = train_groups[:SUBSET]
 df_elec = df_elec.loc[df_elec['group'].isin(train_groups), :].reset_index(drop=True)
-# -
 
 # + [markdown] id="f9c827e5"
 # We'll split the data at 2013. For half the groups, this will be used as validation data; for the other half, it will be used as test data.
@@ -151,6 +150,7 @@ df_elec['dataset'] = 'train'
 df_elec.loc[(df_elec['time'] >= SPLIT_DT) & df_elec['_use_holdout_as_test'], 'dataset'] = 'test'
 df_elec.loc[(df_elec['time'] >= SPLIT_DT) & ~df_elec.pop('_use_holdout_as_test'), 'dataset'] = 'val'
 # df_elec['dataset'].value_counts()
+# -
 
 # ## A Standard Forecasting Approach
 #
@@ -504,7 +504,9 @@ plot_2x2(df_MT_052, actual_colname='kW_sqrt', pred_colname='predicted_sqrt')
 #
 # **TODO:** callout box that this is faster on GPU
 
+# +
 names_to_idx = {nm:i for i,nm in enumerate(df_elec['group'].unique())}
+
 class KalmanFilterLightningModule(TimeSeriesLightningModule):
     def _get_loss(self, predicted, actual) -> torch.Tensor:
         return -predicted.log_prob(actual).mean()
@@ -562,6 +564,7 @@ except FileNotFoundError:
         callbacks=[EarlyStopping(monitor="epoch_train_loss", patience=2, min_delta=0.005, verbose=True)]
     ).fit(kf_nn_lightning, train_batches)
     torch.save(kf_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", f"kf_nn{calendar_features_num_latent_dim}_pvar.pt"))
+# -
 
 # ### Model Evaluation
 #

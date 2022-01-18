@@ -82,8 +82,8 @@ def validate_gt_shape(
 
     if list(tensor.shape[-ntrailing:]) != trailing_dim:
         if ntrailing == 1 and tensor.shape[-1] == 1:
-            # if input has singleton trailing dim, expand
-            tensor = tensor.expand(torch.Size([-1, -1] + trailing_dim))
+            # if input has singleton trailing dim, expand to match expected `trailing_dim`
+            tensor = tensor.expand(torch.Size(list(tensor.shape[:-ntrailing]) + trailing_dim))
         else:
             raise ValueError(f"Expected `x.shape[-{ntrailing}:]` to be {trailing_dim}, got {tensor.shape[-ntrailing:]}")
     ndim = len(tensor.shape)
