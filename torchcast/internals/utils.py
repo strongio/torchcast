@@ -81,7 +81,11 @@ def validate_gt_shape(
     ntrailing = len(trailing_dim)
 
     if list(tensor.shape[-ntrailing:]) != trailing_dim:
-        raise ValueError(f"Expected `x.shape[-{ntrailing}:]` to be {trailing_dim}, got {tensor.shape[-ntrailing:]}")
+        if ntrailing == 1 and tensor.shape[-1] == 1:
+            # if input has singleton trailing dim, expand
+            tensor = tensor.expand(torch.Size([-1, -1] + trailing_dim))
+        else:
+            raise ValueError(f"Expected `x.shape[-{ntrailing}:]` to be {trailing_dim}, got {tensor.shape[-ntrailing:]}")
     ndim = len(tensor.shape)
     if ndim == ntrailing:
         # insert dims for group and time:
