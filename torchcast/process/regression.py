@@ -1,7 +1,6 @@
 from typing import Tuple, Sequence, Optional, Dict
 from warnings import warn
 
-import numpy as np
 import torch
 
 from torchcast.internals.utils import validate_gt_shape
@@ -90,17 +89,18 @@ class LinearModel(Process):
         X = X.view(-1, X.shape[-1])
         y = y.view(-1, y.shape[-1])
         is_valid = ~torch.isnan(y).squeeze()
+        group_ids_broad = torch.repeat_interleave(torch.arange(num_groups, device=y.device), num_times)
         X = X[is_valid]
         y = y[is_valid]
-        group_ids = np.repeat(np.arange(num_groups), num_times)[is_valid]
+        group_ids_broad = group_ids_broad[is_valid]
 
         # Xty:
         Xty_els = X * y
         Xty = torch.zeros(num_groups, num_preds, dtype=y.dtype, device=y.device). \
-            scatter_add(0, torch.as_tensor(group_ids, device=y.device).unsqueeze(-1).expand_as(Xty_els), Xty_els)
+            scatter_add(0, group_ids_broad.unsqueeze(-1).expand_as(Xty_els), Xty_els)
 
         # XtX:
-        XtX = torch.stack([Xg.t() @ Xg for Xg, in chunk_grouped_data(X, group_ids=group_ids)])
+        XtX = torch.stack([Xg.t() @ Xg for Xg, in chunk_grouped_data(X, group_ids=group_ids_broad.cpu())])
         XtXp = XtX
         if prior_precision is not None:
             XtXp = XtXp + prior_precision
@@ -127,3 +127,4 @@ class LinearModel(Process):
         """
         coefs = cls._l2_solve(y=y, X=X, prior_precision=prior_precision)
         return (coefs.transpose(-1, -2) * X).sum(-1).unsqueeze(-1)
+
