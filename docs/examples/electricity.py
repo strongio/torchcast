@@ -77,8 +77,8 @@ except FileNotFoundError:
 
     df_elec = pd.read_csv(os.path.join(BASE_DIR, "df_electricity.csv.gz"), parse_dates=['time'])
 
-BATCH_SIZE = 15
-SUBSET = BATCH_SIZE * 10
+BATCH_SIZE = 12
+SUBSET = False
 np.random.seed(2021 - 1 - 21)
 torch.manual_seed(2021 - 1 - 21)
 # -
@@ -134,20 +134,22 @@ df_group_summary = df_elec. \
     reset_index(). \
     assign(history_len=lambda df: (df['max'] - df['min']).dt.days)
 
-train_groups = sorted(df_group_summary.query("history_len >= 730")['group'])
+train_groups = sorted(df_group_summary.query("history_len >= 365")['group'])
 
 if SUBSET:
     train_groups = train_groups[:SUBSET]
 df_elec = df_elec.loc[df_elec['group'].isin(train_groups), :].reset_index(drop=True)
 # -
 
-# We'll split the data at 2014. For half the groups, this will be used as validation data; for the other half, it will be used as test data.
+# + [markdown] id="f9c827e5"
+# We'll split the data at 2013. For half the groups, this will be used as validation data; for the other half, it will be used as test data.
 
-SPLIT_DT = np.datetime64('2014-01-01')
-df_elec['_use_2014_as_test'] = (df_elec['group'].str.replace('MT_', '').astype('int') % 2) == 0
+# + id="01ea1964"
+SPLIT_DT = np.datetime64('2013-01-01')
+df_elec['_use_holdout_as_test'] = (df_elec['group'].str.replace('MT_', '').astype('int') % 2) == 0
 df_elec['dataset'] = 'train'
-df_elec.loc[(df_elec['time'] >= SPLIT_DT) & df_elec['_use_2014_as_test'], 'dataset'] = 'test'
-df_elec.loc[(df_elec['time'] >= SPLIT_DT) & ~df_elec.pop('_use_2014_as_test'), 'dataset'] = 'val'
+df_elec.loc[(df_elec['time'] >= SPLIT_DT) & df_elec['_use_holdout_as_test'], 'dataset'] = 'test'
+df_elec.loc[(df_elec['time'] >= SPLIT_DT) & ~df_elec.pop('_use_holdout_as_test'), 'dataset'] = 'val'
 # df_elec['dataset'].value_counts()
 
 # ## A Standard Forecasting Approach
@@ -277,7 +279,6 @@ train_MT_052_2 = TimeSeriesDataset.from_dataframe(
     group_colname='gyq',
     **from_dataframe_kwargs
 ).to(DEVICE)
-train_MT_052_2
 
 # +
 try:
@@ -298,7 +299,7 @@ with torch.no_grad():
     _pred = es(
         _y,
         start_offsets=eval_MT_052.start_datetimes,
-        out_timesteps=_y.shape[1] + 24 * 365.25,
+        out_timesteps=_y.shape[1] + 24 * 365.25 * 2,
     )
     df_pred52_take2 = _pred.to_dataframe(eval_MT_052)
 df_pred52_take2 = df_pred52_take2.loc[~df_pred52_take2['actual'].isnull(),:].reset_index(drop=True)
@@ -371,18 +372,19 @@ calendar_feature_nn = torch.nn.Sequential(
     torch.nn.Tanh(),
     torch.nn.Linear(64, calendar_features_num_latent_dim)
 )
-
-kf_nn = KalmanFilter(
-    measures=['kW_sqrt'],
-    processes=[
+processes = [
         # trend:
         LocalTrend(id='trend'),
         # static seasonality:
         LinearModel(id='season', predictors=[f'nn{i}' for i in range(calendar_features_num_latent_dim)]),
         # deviations from typical hour-in-day cycle:
         Season(id='hour_in_day', period=24, dt_unit='h', K=6, decay=True),
-    ],
+    ]
+kf_nn = KalmanFilter(
+    measures=['kW_sqrt'],
+    processes=processes,
     measure_covariance=Covariance.from_measures(['kW_sqrt'], predict_variance=True),
+    process_covariance=Covariance.from_processes(processes, predict_variance=True),
 )
 # -
 
@@ -413,13 +415,15 @@ class TimeSeriesLightningModule(LightningModule):
 
     def training_step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
         loss = self._step(batch, **kwargs)
-        self.log("train_loss", loss)
+        self.log("step_train_loss", loss, on_step=True, on_epoch=False)
+        self.log("epoch_train_loss", loss, on_step=False, on_epoch=True)
         return loss
 
     @torch.no_grad()
     def validation_step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
         loss = self._step(batch, **kwargs)
-        self.log("val_loss", loss)
+        self.log("step_val_loss", loss, on_step=True, on_epoch=False)
+        self.log("epoch_val_loss", loss, on_step=False, on_epoch=True)
         return loss
 
     def _get_loss(self, predicted, actual) -> torch.Tensor:
@@ -456,7 +460,7 @@ calender_feature_pretrainer
 
 try:
     calender_feature_pretrainer.load_state_dict(
-        torch.load(os.path.join(BASE_DIR, "electricity_models", "calender_feature_pretrainer.pt"))
+        torch.load(os.path.join(BASE_DIR, "electricity_models", f"calender_feature_pretrainer{calendar_features_num_latent_dim}.pt"))
     )
 except FileNotFoundError:
 #     %reload_ext tensorboard
@@ -464,10 +468,10 @@ except FileNotFoundError:
     Trainer(
         gpus=int(str(DEVICE)=='cuda'),
         log_every_n_steps=1,
-        callbacks=[EarlyStopping(monitor="val_loss", patience=10, min_delta=0.0001)]
+        callbacks=[EarlyStopping(monitor="epoch_val_loss", patience=10, min_delta=0.0001)]
     ).fit(calender_feature_pretrainer, train_batches, val_batches)
     torch.save(calender_feature_pretrainer.state_dict(), 
-               os.path.join(BASE_DIR, "electricity_models", "calender_feature_pretrainer.pt"))
+               os.path.join(BASE_DIR, "electricity_models", f"calender_feature_pretrainer{calendar_features_num_latent_dim}.pt"))
 
 
 # +
@@ -500,6 +504,7 @@ plot_2x2(df_MT_052, actual_colname='kW_sqrt', pred_colname='predicted_sqrt')
 #
 # **TODO:** callout box that this is faster on GPU
 
+names_to_idx = {nm:i for i,nm in enumerate(df_elec['group'].unique())}
 class KalmanFilterLightningModule(TimeSeriesLightningModule):
     def _get_loss(self, predicted, actual) -> torch.Tensor:
         return -predicted.log_prob(actual).mean()
@@ -518,12 +523,17 @@ class KalmanFilterLightningModule(TimeSeriesLightningModule):
         return self._module(
             y,
             season__X=self._module.calendar_feature_nn(X),
-            measure_var_multi=self._module.measure_var_nn(X),
+            measure_var_multi=self._module.measure_var_nn(
+                torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
+            ),
+            process_var_multi=self._module.process_var_nn(
+                torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
+            ),
             start_offsets=batch.start_offsets
         )
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
-        return torch.optim.Adam([p for p in self.parameters() if p.requires_grad], lr=.01)
+        return torch.optim.Adam([p for p in self.parameters() if p.requires_grad], lr=.05)
 
 
 # +
@@ -533,26 +543,25 @@ class KalmanFilterLightningModule(TimeSeriesLightningModule):
 # deepcopy:
 kf_nn.calendar_feature_nn = copy.deepcopy(calendar_feature_nn)
 
-# same except last layer:
-kf_nn.measure_var_nn = torch.nn.Sequential(
-    *copy.deepcopy(calendar_feature_nn), 
-    torch.nn.Linear(calendar_features_num_latent_dim, 1),
-    torch.nn.Softplus()
+
+kf_nn.measure_var_nn = kf_nn.measure_var_nn = torch.nn.Sequential(
+      torch.nn.Embedding(num_embeddings=len(names_to_idx), embedding_dim=1),
+      torch.nn.Softplus()
 )
 
+kf_nn.process_var_nn = copy.deepcopy(kf_nn.measure_var_nn)
+
 kf_nn_lightning = KalmanFilterLightningModule(kf_nn)
-kf_nn_lightning
-# -
 
 try:
-    kf_nn.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", "kf_nnX.pt")))
+    kf_nn.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", f"kf_nn{calendar_features_num_latent_dim}_pvar.pt")))
 except FileNotFoundError:
     Trainer(
         gpus=int(str(DEVICE)=='cuda'),
         log_every_n_steps=1,
-        callbacks=[EarlyStopping(monitor="val_loss", patience=2, min_delta=0.0001, verbose=True)]
-    ).fit(kf_nn_lightning, train_batches, val_batches)
-    torch.save(kf_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", "kf_nn.pt"))
+        callbacks=[EarlyStopping(monitor="epoch_train_loss", patience=2, min_delta=0.005, verbose=True)]
+    ).fit(kf_nn_lightning, train_batches)
+    torch.save(kf_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", f"kf_nn{calendar_features_num_latent_dim}_pvar.pt"))
 
 # ### Model Evaluation
 #
