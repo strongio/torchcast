@@ -155,7 +155,9 @@ df_elec = df_elec.loc[df_elec['group'].isin(train_groups), :].reset_index(drop=T
 # -
 
 # TODO
-df_ex = df_elec.query("group==group.sample().item()").query("time.between('2013-03-01','2013-03-02')")
+example_group = 'MT_005'
+
+df_ex = df_elec.query("group==@example_group").query("time.between('2013-03-01','2013-03-02')")
 df_ex.plot('time', 'kW', figsize=(20, 5), title=df_ex['group'].iloc[0]);
 
 # + [markdown] tags=[]
@@ -188,15 +190,15 @@ from_dataframe_kwargs = {
     'time_colname': 'time'
 }
 
-train_MT_052 = TimeSeriesDataset.from_dataframe(
+train_example = TimeSeriesDataset.from_dataframe(
     df_elec. \
-        query("group == 'MT_052'"). \
+        query("group == @example_group"). \
         query("dataset == 'train'"),
     group_colname='group',
     **from_dataframe_kwargs
 )
-train_MT_052 = train_MT_052.to(DEVICE)
-print(train_MT_052)
+train_example = train_example.to(DEVICE)
+print(train_example)
 
 # +
 es.to(DEVICE)
@@ -205,8 +207,8 @@ try:
     es.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", "es_standard.pt"), map_location=DEVICE))
 except FileNotFoundError:
     es.fit(
-        train_MT_052.tensors[0],
-        start_offsets=train_MT_052.start_datetimes,
+        train_example.tensors[0],
+        start_offsets=train_example.start_datetimes,
     )
     os.makedirs(os.path.join(BASE_DIR, "electricity_models"), exist_ok=True)
     torch.save(es.state_dict(), os.path.join(BASE_DIR, "electricity_models", "es_standard.pt"))
@@ -216,19 +218,19 @@ except FileNotFoundError:
 #
 # How does this standard model perform? Plotting the forecasts vs. actual suggests serious issues:
 
-eval_MT_052 = TimeSeriesDataset.from_dataframe(
-    df_elec.query("group == 'MT_052'"),
+eval_example = TimeSeriesDataset.from_dataframe(
+    df_elec.query("group == @example_group"),
     **from_dataframe_kwargs,
     group_colname='group',
 ).to(DEVICE)
 with torch.no_grad():
-    _y = eval_MT_052.train_val_split(dt=SPLIT_DT)[0].tensors[0]
+    _y = eval_example.train_val_split(dt=SPLIT_DT)[0].tensors[0]
     _pred = es(
         _y,
-        start_offsets=eval_MT_052.start_datetimes,
+        start_offsets=eval_example.start_datetimes,
         out_timesteps=_y.shape[1] + 24 * 365.25 * 2,
     )
-    df_pred52 = _pred.to_dataframe(eval_MT_052)
+    df_pred52 = _pred.to_dataframe(eval_example)
 df_pred52 = df_pred52.loc[~df_pred52['actual'].isnull(), :].reset_index(drop=True)
 _pred.plot(df_pred52, split_dt=SPLIT_DT)
 
@@ -281,9 +283,9 @@ df_elec['gyq'] = \
 # since TimeSeriesDataset pads short series, drop incomplete groups:
 df_elec.loc[df_elec.groupby('gyq')['kW_sqrt'].transform('count') < 2160,'gyq'] = float('nan')
 
-train_MT_052_2 = TimeSeriesDataset.from_dataframe(
+train_example_2 = TimeSeriesDataset.from_dataframe(
     df_elec. \
-        query("group == 'MT_052'"). \
+        query("group == @example_group"). \
         query("dataset == 'train'"),
     group_colname='gyq',
     **from_dataframe_kwargs
@@ -296,21 +298,21 @@ try:
     )
 except FileNotFoundError:
     es.fit(
-        train_MT_052_2.tensors[0],
-        start_offsets=train_MT_052_2.start_datetimes,
+        train_example_2.tensors[0],
+        start_offsets=train_example_2.start_datetimes,
         n_step=int(24 * 7.5),
         every_step=False
     )
     torch.save(es.state_dict(), os.path.join(BASE_DIR, "electricity_models", "es_standard2.pt"))
 
 with torch.no_grad():
-    _y = eval_MT_052.train_val_split(dt=SPLIT_DT)[0].tensors[0]
+    _y = eval_example.train_val_split(dt=SPLIT_DT)[0].tensors[0]
     _pred = es(
         _y,
-        start_offsets=eval_MT_052.start_datetimes,
+        start_offsets=eval_example.start_datetimes,
         out_timesteps=_y.shape[1] + 24 * 365.25 * 2,
     )
-    df_pred52_take2 = _pred.to_dataframe(eval_MT_052)
+    df_pred52_take2 = _pred.to_dataframe(eval_example)
 df_pred52_take2 = df_pred52_take2.loc[~df_pred52_take2['actual'].isnull(),:].reset_index(drop=True)
 _pred.plot(df_pred52_take2, split_dt=SPLIT_DT)
 # -
@@ -393,12 +395,13 @@ kf_nn = KalmanFilter(
     measures=['kW_sqrt'],
     processes=processes,
     measure_covariance=Covariance.from_measures(['kW_sqrt'], predict_variance=True),
-    #process_covariance=Covariance.from_processes(processes, predict_variance=True),
+    process_covariance=Covariance.from_processes(processes, predict_variance=True),
 )
 # -
 
 LinearModel.solve_and_predict(-torch.arange(4.)[None,:,None], torch.randn((1,4,1)))
 
+# + [markdown] tags=[]
 # ### Pre-Training
 #
 # _(we have to pre-train)_
@@ -484,36 +487,26 @@ except FileNotFoundError:
 
 
 # +
-# TimeSeriesDataset(
-#     eval_MT_052.tensors[0],
-#     calendar_feature_nn(eval_MT_052.tensors[1]),
-#     group_names=eval_MT_052.group_names,
-#     start_times=eval_MT_052.start_times,
-#     measures=[['kW_sqrt'],[f'f{i}' for i in range(calendar_features_num_latent_dim)]],
-#     dt_unit='h'
-# ).to_dataframe().assign(time=eval_MT_052.times().squeeze()).to_csv("~/Downloads/test.csv", index=False)
-
-# +
 calendar_feature_nn.to(DEVICE)
 
-eval_MT_052 = TimeSeriesDataset.from_dataframe(
+eval_example = TimeSeriesDataset.from_dataframe(
     # prevent LinearModel from seeing validation kW
-    df_elec.query("group == 'MT_052'").assign(kW_sqrt=lambda df: df['kW_sqrt'].where(df['time']<=SPLIT_DT)),
+    df_elec.query("group == @example_group").assign(kW_sqrt=lambda df: df['kW_sqrt'].where(df['time']<=SPLIT_DT)),
     group_colname='group',
     **from_dataframe_kwargs,
     X_colnames=season_cols
 ).to(DEVICE)
 
 with torch.no_grad():
-    df_MT_052 = TimeSeriesDataset.tensor_to_dataframe(
-        calender_feature_pretrainer(eval_MT_052),
-        times=eval_MT_052.times(),
-        group_names=eval_MT_052.group_names,
+    df_example = TimeSeriesDataset.tensor_to_dataframe(
+        calender_feature_pretrainer(eval_example),
+        times=eval_example.times(),
+        group_names=eval_example.group_names,
         time_colname='time', group_colname='group',
         measures=['predicted_sqrt']
-    ).merge(df_elec.query("group == 'MT_052'"), how='left')
+    ).merge(df_elec.query("group == @example_group"), how='left')
 
-plot_2x2(df_MT_052, actual_colname='kW_sqrt', pred_colname='predicted_sqrt')
+plot_2x2(df_example, actual_colname='kW_sqrt', pred_colname='predicted_sqrt')
 
 
 # + [markdown] tags=[]
@@ -545,9 +538,9 @@ class KalmanFilterLightningModule(TimeSeriesLightningModule):
             measure_var_multi=self._module.measure_var_nn(
                 torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
             ),
-            # process_var_multi=self._module.process_var_nn(
-            #     torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
-            # ),
+            process_var_multi=self._module.process_var_nn(
+                torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
+            ),
             start_offsets=batch.start_offsets
         )
 
@@ -568,7 +561,7 @@ kf_nn.measure_var_nn = kf_nn.measure_var_nn = torch.nn.Sequential(
       torch.nn.Softplus()
 )
 
-#kf_nn.process_var_nn = copy.deepcopy(kf_nn.measure_var_nn)
+kf_nn.process_var_nn = copy.deepcopy(kf_nn.measure_var_nn)
 
 kf_nn_lightning = KalmanFilterLightningModule(kf_nn)
 # -
@@ -583,18 +576,19 @@ except FileNotFoundError:
     ).fit(kf_nn_lightning, train_batches)
     torch.save(kf_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", f"kf_nn{calendar_features_num_latent_dim}.pt"))
 
+# + [markdown] tags=[]
 # ### Model Evaluation
 #
 # Reviewing the same example-building from before, we see the forecasts are more closely hewing to the actual seasonal structure for each time of day/week. Instead of the forecasts in each panel being essentially identical, each differs in shape. 
 
 # + nbsphinx="hidden"
-# withtest_batches = TimeSeriesDataLoader.from_dataframe(
-#     df_elec,
-#     group_colname='group',
-#     **from_dataframe_kwargs,
-#     X_colnames=season_cols,
-#     batch_size=5
-# )
+withtest_batches = TimeSeriesDataLoader.from_dataframe(
+    df_elec,
+    group_colname='group',
+    **from_dataframe_kwargs,
+    X_colnames=season_cols,
+    batch_size=5
+)
 df_pred_nn = []
 with torch.no_grad():
     for batch in tqdm(withtest_batches):
@@ -607,9 +601,9 @@ with torch.no_grad():
             measure_var_multi=kf_nn.measure_var_nn(
                 torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
             ),
-            # process_var_multi=kf_nn.process_var_nn(
-            #     torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
-            # ),
+            process_var_multi=kf_nn.process_var_nn(
+                torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
+            ),
             start_offsets=batch.start_offsets,
             out_timesteps=_X.shape[1]
         )
@@ -619,18 +613,13 @@ df_pred_nn = pd.concat(df_pred_nn)
 df_pred_nn = df_pred_nn.loc[~df_pred_nn['actual'].isnull(), :].reset_index(drop=True)
 # -
 
-# TODO
-df_pred_nn = df_pred_nn.\
-    query("~group.isin(['MT_012','MT_030','MT_039','MT_041','MT_092','MT_165','MT_170','MT_179','MT_185','MT_186','MT_224','MT_289','MT_305','MT_322'])").\
-    reset_index()
-
 pred_nn.plot(pred_nn.to_dataframe(batch, type='components'), split_dt=SPLIT_DT)
 
-plot_2x2(df_pred_nn.query("group=='MT_369'"))
+plot_2x2(df_pred_nn.query("group==@example_group"))
 
 # +
 # df_pred52_nn = df_pred_nn. \
-#     query("group=='MT_052'"). \
+#     query("group==@example_group"). \
 #     query("(time.dt.hour==8) | (time.dt.hour==20)"). \
 #     assign(weekend=lambda df: df['time'].dt.weekday.isin([5, 6]).astype('int'),
 #            night=lambda df: (df['time'].dt.hour == 8).astype('int')). \
