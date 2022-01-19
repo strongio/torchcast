@@ -195,8 +195,7 @@ class TimeSeriesDataset(TensorDataset):
         Get the subset of the batch corresponding to groups. Note that the ordering in the output will match the
         original ordering (not that of `group`), and that duplicates will be dropped.
         """
-        group_idx = true1d_idx(np.isin(self.group_names, groups))
-        return self[group_idx]
+        return self[np.isin(self.group_names, groups)]
 
     def split_measures(self, *measure_groups, which: Optional[int] = None) -> 'TimeSeriesDataset':
         """
