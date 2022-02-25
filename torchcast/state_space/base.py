@@ -60,8 +60,8 @@ class StateSpaceModel(nn.Module):
     @torch.jit.ignore()
     def fit(self,
             *args,
-            tol: float = .001,
-            patience: int = 3,
+            tol: float = .0001,
+            patience: int = 1,
             max_iter: int = 200,
             optimizer: Optional[torch.optim.Optimizer] = None,
             verbose: int = 2,
@@ -75,9 +75,9 @@ class StateSpaceModel(nn.Module):
         which the number of parameters is moderate and the data fit in memory. For other cases you are encouraged to
         roll your own training loop.
 
-        :param args: A tensor containing the batch of time-series(es), see :func:`KalmanFilter.forward()`.
+        :param args: A tensor containing the batch of time-series(es), see :func:`StateSpaceModel.forward()`.
         :param tol: Stopping tolerance.
-        :param patience: Patience: if loss changes by less than `tol` for this many epochs, then training will be
+        :param patience: Patience: if loss changes by less than ``tol`` for this many epochs, then training will be
          stopped.
         :param max_iter: The maximum number of iterations after which training will stop regardless of loss.
         :param optimizer: The optimizer to use. Default is to create an instance of :class:`torch.optim.LBFGS` with
@@ -88,15 +88,13 @@ class StateSpaceModel(nn.Module):
          epoch's loss value.
         :param loss_callback: A callback that takes the loss and returns a modified loss, called before each call to
          `backward()`. This can be used for example to add regularization.
-        :param callable_kwargs: Some keyword-arguments to :func:`KalmanFilter.forward()` aren't static, but need to be
-         recomputed every time. ``callable_kwargs`` is a dictionary where the keys are keyword-names and the values
-         are no-argument functions that will be called each iteration to recompute the corresponding arguments. For
-         example, ``callable_kwargs={'initial_state' : lambda: my_initial_state_nn(group_ids)``.
+        :param callable_kwargs: A dictionary where the keys are keyword-names and the values are no-argument functions
+         that will be called each iteration to recompute the corresponding arguments.
         :param set_initial_values: Default is to set ``initial_mean`` to sensible value given ``y``. This helps speed
          up training if the data are not centered. Set to ``False`` if you're resuming training from a previous
          ``fit()`` call.
-        :param kwargs: Further keyword-arguments passed to :func:`KalmanFilter.forward()`.
-        :return: This `KalmanFilter` instance.
+        :param kwargs: Further keyword-arguments passed to :func:`StateSpaceModel.forward()`.
+        :return: This ``StateSpaceModel`` instance.
         """
 
         # this may change in the future
