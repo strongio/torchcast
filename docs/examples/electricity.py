@@ -32,7 +32,7 @@ from tqdm.auto import tqdm
 import numpy as np
 import pandas as pd
 
-BASE_DIR = './'  # drive/MyDrive'
+BASE_DIR = 'drive/MyDrive'
 
 import os
 
@@ -77,11 +77,9 @@ except FileNotFoundError:
 
     df_elec = pd.read_csv(os.path.join(BASE_DIR, "df_electricity.csv.gz"), parse_dates=['time'])
 
-BATCH_SIZE = 12
 SUBSET = False
 np.random.seed(2021 - 1 - 21)
 torch.manual_seed(2021 - 1 - 21)
-# -
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 DEVICE
@@ -121,14 +119,22 @@ df_elec.loc[df_elec.pop('roll_std') < .25, 'kW'] = float('nan')
 group_missingness = df_elec.assign(missing=lambda df: df['kW'].isnull()).groupby('group')['missing'].mean()
 
 df_elec = df_elec.loc[df_elec['group'].map(group_missingness) < .01, :].reset_index(drop=True)
-# -
 
+# + [markdown] id="-XZIttQyetx0"
+# **TODO**
+
+# + colab={"base_uri": "https://localhost:8080/"} id="ZBgxPMOsesPh" outputId="317866c2-59ee-46eb-a5d2-7de1e371459f"
+zero_counts = df_elec.query("kW==0")['time'].value_counts()
+print(zero_counts)
+df_elec.loc[df_elec['time'].isin(zero_counts.index[zero_counts>100]),'kW'] = float('nan')
+
+# + [markdown] id="3b9bed7b"
 # For simplicity we'll just drop buildings that are flat in this way for a non-trivial amount of time.
 #
-# We'll split the data at 2013. For half the groups, this will be used as validation data; for the other half, it will be used as test data.
+# We'll split the data **XXX**. For half the groups, this will be used as validation data; for the other half, it will be used as test data.
 
 # + id="01ea1964"
-SPLIT_DT = np.datetime64('2013-01-01')
+SPLIT_DT = np.datetime64('2013-06-01')
 df_elec['_use_holdout_as_test'] = (df_elec['group'].str.replace('MT_', '').astype('int') % 2) == 0
 df_elec['dataset'] = 'train'
 df_elec.loc[(df_elec['time'] >= SPLIT_DT) & df_elec['_use_holdout_as_test'], 'dataset'] = 'test'
@@ -155,13 +161,17 @@ df_elec = df_elec.loc[df_elec['group'].isin(train_groups), :].reset_index(drop=T
 # -
 
 # TODO
-example_group = 'MT_005'
+example_group = 'MT_052'
 
-df_ex = df_elec.query("group==@example_group").query("time.between('2013-03-01','2013-03-02')")
-df_ex.plot('time', 'kW', figsize=(20, 5), title=df_ex['group'].iloc[0]);
+# + colab={"base_uri": "https://localhost:8080/", "height": 360} id="52d1daed" outputId="bf4c04da-1fd6-45ec-a109-2c6fb396f29d"
+df_ex = df_elec.query("group==@example_group")
+df_ex.loc[df_ex['time'].between('2013-05-01','2013-05-02'),:].plot('time', 'kW', figsize=(20, 5), title=df_ex['group'].iloc[0]);
 
-# + [markdown] tags=[]
+# + [markdown] tags=[] id="c1ea8dcd-43cd-4216-bcca-3c248f35a4c1"
 # ## A Standard Forecasting Approach
+
+# + [markdown] id="niU-YrfdpEYy"
+# ### Attempt 1
 #
 # First, let's try a standard exponential-smoothing algorithm on one of the series. This intentionally doesn't leverage `torchcast`'s ability to train on batches of series, so is quite slow, but will help us have a base case to improve on.
 
@@ -169,7 +179,7 @@ df_ex.plot('time', 'kW', figsize=(20, 5), title=df_ex['group'].iloc[0]);
 from torchcast.process import LocalTrend, Season
 
 es = ExpSmoother(
-    measures=['kW_sqrt'],
+    measures=['kW_sqrt_c'],
     processes=[
         # seasonal processes:
         Season(id='day_in_week', period=24 * 7, dt_unit='h', K=3, fixed=True),
@@ -180,13 +190,17 @@ es = ExpSmoother(
     ]
 )
 
-# +
-# build our dataset
+# + id="ifgdUy1uNQLk"
+# transform and center:
 df_elec['kW_sqrt'] = np.sqrt(df_elec['kW'])
+group_means = df_elec.query("dataset=='train'").groupby('group')['kW_sqrt'].mean().to_dict()
+df_elec['kW_sqrt_c'] = df_elec['kW_sqrt'] - df_elec['group'].map(group_means) 
 
+# + colab={"base_uri": "https://localhost:8080/"} id="441291b1" outputId="4cd9ff18-9556-480c-b1ce-e1f972f11936"
+# build our dataset
 from_dataframe_kwargs = {
     'dt_unit': 'h',
-    'y_colnames': ['kW_sqrt'],
+    'y_colnames': ['kW_sqrt_c'],
     'time_colname': 'time'
 }
 
@@ -200,7 +214,7 @@ train_example = TimeSeriesDataset.from_dataframe(
 train_example = train_example.to(DEVICE)
 print(train_example)
 
-# +
+# + id="4aa3b95f" colab={"base_uri": "https://localhost:8080/", "height": 49, "referenced_widgets": ["ecc350a5583942e2a86041ff5b17fc85", "88e97e9a884545629c627d9ca04ae982", "4bc2ae7dd62046be9e601bdc4f9e212d", "273fce2b4367401b9b4e536fc2c1d8f8", "89eeac40db5a439f97869cb80754c734", "c5806e23bd2047e891b9b2233401d725", "4f38e0667cb444db842d9a4bb22eb516", "e2aea428d3894e09a151ce4cf0689247", "d881c181bbfd4f26ace0cae049f5ecfb", "63cf707b3b6547fea4c2bcaa45f1683f", "4d65e5826a784839aef8c44ab58834ee"]} outputId="5ff4feb9-9f22-4b71-e2fa-a200cabf86ca"
 es.to(DEVICE)
 
 try:
@@ -212,12 +226,11 @@ except FileNotFoundError:
     )
     os.makedirs(os.path.join(BASE_DIR, "electricity_models"), exist_ok=True)
     torch.save(es.state_dict(), os.path.join(BASE_DIR, "electricity_models", "es_standard.pt"))
-# -
 
-# ### Model-Evaluation
-#
+# + [markdown] id="ce66af6b"
 # How does this standard model perform? Plotting the forecasts vs. actual suggests serious issues:
 
+# + colab={"base_uri": "https://localhost:8080/", "height": 550} id="4f0bc6e7" outputId="07e237de-00f8-44ce-b286-94058b2c3109"
 eval_example = TimeSeriesDataset.from_dataframe(
     df_elec.query("group == @example_group"),
     **from_dataframe_kwargs,
@@ -234,39 +247,11 @@ with torch.no_grad():
 df_pred52 = df_pred52.loc[~df_pred52['actual'].isnull(), :].reset_index(drop=True)
 _pred.plot(df_pred52, split_dt=SPLIT_DT)
 
-
-# Unfortunately, with hourly data, visualizing long-range forecasts in this way isn't very illuminating: it's just really hard to see the data! Let's try splitting it into weekdays vs. weekends and daytimes vs. nightimes:
-
-def plot_2x2(df: pd.DataFrame,
-             time_colname: str = 'time',
-             pred_colname: str = 'mean',
-             actual_colname: str = 'actual'):
-    """
-    Plot predicted vs. actual for a single group, splitting into 2x2 facets of weekday/end * day/night.
-    """
-    assert pred_colname in df.columns
-    assert actual_colname in df.columns
-    day_hour = 12
-    night_hour = 0
-    df_split = df. \
-        query(f"({time_colname}.dt.hour=={day_hour}) | ({time_colname}.dt.hour=={night_hour})"). \
-        assign(weekend=lambda df: df[time_colname].dt.weekday.isin([5, 6]).astype('int'),
-               night=lambda df: (df[time_colname].dt.hour == day_hour).astype('int')). \
-        reset_index(drop=True). \
-        rename(columns={pred_colname: 'forecast', actual_colname: 'actual'})
-
-    _, axes = plt.subplots(ncols=2, nrows=2, figsize=(15, 10))
-    for (wknd, night), df in df_split.groupby(['weekend', 'night']):
-        df.plot(time_colname, 'actual', ax=axes[wknd, night], linewidth=.5, color='black')
-        df.plot(time_colname, 'forecast', ax=axes[wknd, night], alpha=.75, color='red')
-        axes[wknd, night].axvline(x=SPLIT_DT, color='black', ls='dashed')
-        axes[wknd, night].set_title("{}, {}".format('Weekend' if wknd else 'Weekday', 'Night' if night else 'Day'))
-    plt.tight_layout()
-
-
-plot_2x2(df_pred52)
-
+# + [markdown] id="72b64170"
 # The most obvious issue here is the discrepancy between the predictions on the training data (which look sane) and the validation data (which look insane). This isn't overfitting, but instead the difference between one-step-ahead predictions vs. long-range forecasts. One possibility for why the model does so poorly on the latter is that it wasn't actually trained to generate these predictions: the standard approach has us train on one-step-ahead predictions.
+
+# + [markdown] id="ZCmH_vByo2M6"
+# ### Attempt 2
 #
 # Let's see if we can improve on this. We'll leave the model unchanged but make two changes:
 #
@@ -315,91 +300,117 @@ with torch.no_grad():
     df_pred52_take2 = _pred.to_dataframe(eval_example)
 df_pred52_take2 = df_pred52_take2.loc[~df_pred52_take2['actual'].isnull(),:].reset_index(drop=True)
 _pred.plot(df_pred52_take2, split_dt=SPLIT_DT)
-# -
 
-# Massive improvement! What about the other view?
+
+# + [markdown] id="d54b5e0f"
+# Massive improvement! Unfortunately, with hourly data, visualizing long-range forecasts in this way isn't very illuminating: it's just really hard to see the data! Let's try splitting it into weekdays vs. weekends and daytimes vs. nightimes:
+
+# + id="be3744d7"
+def plot_2x2(df: pd.DataFrame,
+             time_colname: str = 'time',
+             pred_colname: str = 'mean',
+             actual_colname: str = 'actual',
+             day_hour: int = 14,
+             night_hour: int = 2):
+    """
+    Plot predicted vs. actual for a single group, splitting into 2x2 facets of weekday/end * day/night.
+    """
+    assert pred_colname in df.columns
+    assert actual_colname in df.columns
+    df_split = df. \
+        query(f"({time_colname}.dt.hour=={day_hour}) | ({time_colname}.dt.hour=={night_hour})"). \
+        assign(weekend=lambda df: df[time_colname].dt.weekday.isin([5, 6]).astype('int'),
+               night=lambda df: (df[time_colname].dt.hour == night_hour).astype('int')). \
+        reset_index(drop=True). \
+        rename(columns={pred_colname: 'forecast', actual_colname: 'actual'})
+
+    _, axes = plt.subplots(ncols=2, nrows=2, figsize=(15, 10))
+    for (wknd, night), df in df_split.groupby(['weekend', 'night']):
+        df.plot(time_colname, 'actual', ax=axes[wknd, night], linewidth=.5, color='black')
+        df.plot(time_colname, 'forecast', ax=axes[wknd, night], alpha=.75, color='red')
+        axes[wknd, night].axvline(x=SPLIT_DT, color='black', ls='dashed')
+        axes[wknd, night].set_title("{}, {}".format('Weekend' if wknd else 'Weekday', 'Night' if night else 'Day'))
+    plt.tight_layout()
+
 
 plot_2x2(df_pred52_take2)
 
+# + [markdown] id="7840bc87"
 # Viewing the forecastsing this way helps us see a lingering serious issue: the annual seasonal pattern is very different for daytimes and nighttimes, but the model isn't (and can't be) capturing that. For example, it incorrectly forecasts a 'hump' during summer days and weekend nights, even though this hump is really only present on weekday nights. The model only allows for a single seasonal pattern, rather than a separate one for different times of the day and days of the week.
 
+# + [markdown] id="71398c7f"
 # ## Incorporating a Neural Network
 #
 # If the problem is that our time-series model isn't allowing for interactions among the components of our time-series model, then a natural approach to allowing for these interactions is a neural network.
 #
 # To make this work, we likely don't want build a model of a single series. Instead, we want to learn across multiple series, so that our network can build representations of patterns that are shared across multiple buildings.
 
+# + [markdown] id="c9d7a811"
 # First, we'll use `torchcast.utils.add_season_features` to add dummy features that capture the annual, weekly, and daily seasonal patterns:
 
-# +
+# + id="2442c37c"
 from torchcast.utils import add_season_features
 
 df_elec = df_elec. \
     pipe(add_season_features, K=3, period='weekly'). \
     pipe(add_season_features, K=8, period='yearly'). \
-    pipe(add_season_features, K=8, period='daily')
+    pipe(add_season_features, K=10, period='daily')
 
 season_cols = \
     df_elec.columns[df_elec.columns.str.endswith('_sin') | df_elec.columns.str.endswith('_cos')].tolist()
 
 
-# -
-
+# + [markdown] id="6317f3b6"
 # Create dataloaders:
 
-# +
-train_batches = TimeSeriesDataLoader.from_dataframe(
-    df_elec.query("dataset == 'train'"),
-    group_colname='group',
-    X_colnames=season_cols,
-    **from_dataframe_kwargs,
-    batch_size=BATCH_SIZE
-)
+# + id="c89c2fe6"
+def make_dataloader(type: str, 
+                    batch_size: int,
+                    group_colname: str = 'group',
+                    frac: float = 1,
+                    **kwargs) -> TimeSeriesDataLoader:
+    assert type in {'train','val','all'}
+    data = df_elec if type == 'all' else df_elec.query(f"dataset == '{type}'")
+    if frac < 1:
+        _keep = data[group_colname].isin(data[group_colname].drop_duplicates().sample(frac=frac))
+        data = data.loc[_keep, :]
+    kwargs = {**from_dataframe_kwargs, **kwargs}
+    return TimeSeriesDataLoader.from_dataframe(
+        data,
+        group_colname=group_colname,
+        X_colnames=season_cols,
+        **kwargs,
+        batch_size=batch_size
+    )
 
-val_batches = TimeSeriesDataLoader.from_dataframe(
-    df_elec.query("dataset == 'val'"),
-    group_colname='group',
-    X_colnames=season_cols,
-    **from_dataframe_kwargs,
-    batch_size=BATCH_SIZE
-)
-# -
 
+# + [markdown] id="ab89e8c0"
 # ### A Hybrid Model
 #
 # Below we specify our hybrid model. TODO EXPLAIN
 
-# +
+# + id="Y47xgP3MSTKA"
+calendar_features_num_latent_dim = 15
+
+# + id="5e4fd4d9"
 from torchcast.process import LinearModel, LocalTrend, Season
 from torchcast.covariance import Covariance
 from torchcast.kalman_filter import KalmanFilter
 
-calendar_features_num_latent_dim = 15
-
-calendar_feature_nn = torch.nn.Sequential(
-    torch.nn.Linear(len(season_cols), 64),
-    torch.nn.Tanh(),
-    torch.nn.Linear(64, 64),
-    torch.nn.Tanh(),
-    torch.nn.Linear(64, calendar_features_num_latent_dim)
-)
-processes = [
+es_nn = ExpSmoother(
+#kf_nn = KalmanFilter(
+    measures=['kW_sqrt_c'],
+    processes=[
         # trend:
         LocalTrend(id='trend'),
         # static seasonality:
-        LinearModel(id='season', predictors=[f'nn{i}' for i in range(calendar_features_num_latent_dim)]),
+        LinearModel(id='season', predictors=['nn_output']),
+        #LinearModel(id='season', predictors=[f'nn_output{i}' for i in range(calendar_features_num_latent_dim)]),
         # deviations from typical hour-in-day cycle:
         Season(id='hour_in_day', period=24, dt_unit='h', K=6, decay=True),
-    ]
-kf_nn = KalmanFilter(
-    measures=['kW_sqrt'],
-    processes=processes,
-    measure_covariance=Covariance.from_measures(['kW_sqrt'], predict_variance=True),
-    process_covariance=Covariance.from_processes(processes, predict_variance=True),
+    ],
+    measure_covariance=Covariance.from_measures(['kW_sqrt_c'], predict_variance=True),
 )
-# -
-
-LinearModel.solve_and_predict(-torch.arange(4.)[None,:,None], torch.randn((1,4,1)))
 
 # + [markdown] tags=[]
 # ### Pre-Training
@@ -414,26 +425,27 @@ LinearModel.solve_and_predict(-torch.arange(4.)[None,:,None], torch.randn((1,4,1
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import CSVLogger
+from torch_optimizer import Adahessian
 
 class TimeSeriesLightningModule(LightningModule):
     def __init__(self, module: torch.nn.Module):
         super().__init__()
         self._module = module
 
-    def _step(self, batch: TimeSeriesDataset, **kwargs) -> torch.Tensor:
+    def _step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
         batch = batch.to(DEVICE) 
         pred = self(batch, **kwargs)
         return self._get_loss(pred, batch.tensors[0])
 
     def training_step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
-        loss = self._step(batch, **kwargs)
+        loss = self._step(batch, batch_idx=batch_idx, **kwargs)
         self.log("step_train_loss", loss, on_step=True, on_epoch=False)
         self.log("epoch_train_loss", loss, on_step=False, on_epoch=True)
         return loss
 
     @torch.no_grad()
     def validation_step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
-        loss = self._step(batch, **kwargs)
+        loss = self._step(batch, batch_idx=batch_idx, **kwargs)
         self.log("step_val_loss", loss, on_step=True, on_epoch=False)
         self.log("epoch_val_loss", loss, on_step=False, on_epoch=True)
         return loss
@@ -447,51 +459,89 @@ class TimeSeriesLightningModule(LightningModule):
 
 # Now we'll make a class that's more specific to the current task.
 
-# +
-class CalendarFeaturePretrainer(TimeSeriesLightningModule):
+# + colab={"base_uri": "https://localhost:8080/"} id="b6cf75c5" outputId="e62fd1f0-400e-4670-ff59-f06dd06131d2"
+names_to_idx = {nm:i for i,nm in enumerate(df_elec['group'].unique())}
+
+class CalendarFeatureNN(TimeSeriesLightningModule):
+    def __init__(self, module: torch.nn.Module):
+        super().__init__(module=module)
+        with torch.no_grad():
+            self._module.emb_nn.weight *= .1
+    
     def _get_loss(self, predicted, actual) -> torch.Tensor:
         is_valid = ~torch.isnan(actual)
         sq_err = (actual[is_valid] - predicted[is_valid]) ** 2
         return sq_err.mean()
+    
+    def backward(self,
+                loss: torch.Tensor,
+                optimizer: torch.optim.Optimizer,
+                optimizer_idx: int,
+                *args,
+                **kwargs):
+                return super().backward(loss, optimizer, optimizer_idx, create_graph=True)
 
     def forward(self, batch: TimeSeriesDataset, **kwargs) -> torch.Tensor:
         y, X = batch.tensors
-        y_means = torch.nanmean(y, 1, keepdim=True)
-        y_cent = y - y_means
-        pred_cent = LinearModel.solve_and_predict(y=y_cent, X=self._module(X))
-        return pred_cent + y_means
+
+        #pred = LinearModel.solve_and_predict(y=y, X=self._module(X))
+        group_names = [gn.split(":")[0] for gn in batch.group_names]
+        group_ids = [names_to_idx[gn] for gn in group_names]
+
+        # use NNs to get latent features and group-specific coefs on those features:
+        coefs = self._module.emb_nn(torch.tensor(group_ids, device=DEVICE))
+        feats = self._module.features_nn(X)
+
+        # multiply features by coefs (as in a linear-model)
+        # NOTE: no bias term -- assumes centered y
+        pred = (coefs.unsqueeze(1) * feats).sum(-1, keepdim=True)
+
+        return pred
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
-        return torch.optim.Adam(self.parameters(), lr=1e-3)
+        pars = [p for p in self.parameters() if p.requires_grad]
+        return Adahessian(pars, lr=.15)
 
-
-calender_feature_pretrainer = CalendarFeaturePretrainer(calendar_feature_nn).to(DEVICE)
-calender_feature_pretrainer
-# -
-
+calendar_feature_nn = CalendarFeatureNN(
+    torch.nn.ModuleDict({'features_nn': 
+                         torch.nn.Sequential(
+                            torch.nn.Linear(len(season_cols), 48),
+                            torch.nn.Tanh(),
+                            torch.nn.Linear(48, 48),
+                            torch.nn.Tanh(),
+                            torch.nn.Linear(48, calendar_features_num_latent_dim)
+            )
+        ,'emb_nn': 
+        torch.nn.Embedding(num_embeddings=len(names_to_idx), embedding_dim=calendar_features_num_latent_dim)
+    })
+).to(DEVICE)
 
 try:
-    calender_feature_pretrainer.load_state_dict(
-        torch.load(os.path.join(BASE_DIR, "electricity_models", f"calender_feature_pretrainer{calendar_features_num_latent_dim}.pt"))
+    calendar_feature_nn.load_state_dict(
+        torch.load(
+            os.path.join(BASE_DIR, "electricity_models", f"calendar_feature_nn{calendar_features_num_latent_dim}.pt"))
     )
 except FileNotFoundError:
 #     %reload_ext tensorboard
 #     %tensorboard --logdir=lightning_logs/
     Trainer(
-        gpus=int(str(DEVICE)=='cuda'),
+        gpus=int(str(DEVICE) == 'cuda'),
+        logger=CSVLogger(os.path.join(BASE_DIR, "electricity_models"), f'calendar_feature_nn{calendar_features_num_latent_dim}'),
         log_every_n_steps=1,
-        callbacks=[EarlyStopping(monitor="epoch_val_loss", patience=10, min_delta=0.0001)]
-    ).fit(calender_feature_pretrainer, train_batches, val_batches)
-    torch.save(calender_feature_pretrainer.state_dict(), 
-               os.path.join(BASE_DIR, "electricity_models", f"calender_feature_pretrainer{calendar_features_num_latent_dim}.pt"))
+        min_epochs=100,
+        callbacks=[EarlyStopping(monitor="epoch_val_loss", patience=10, min_delta=.0001, verbose=False)]
+    ).fit(calendar_feature_nn, make_dataloader('train', batch_size=45), make_dataloader('val', batch_size=55))
+    calendar_feature_nn.trainer = None
+    torch.save(calendar_feature_nn.state_dict(),
+               os.path.join(BASE_DIR, "electricity_models", f"calendar_feature_nn{calendar_features_num_latent_dim}.pt"))
+
 
 
 # +
 calendar_feature_nn.to(DEVICE)
 
 eval_example = TimeSeriesDataset.from_dataframe(
-    # prevent LinearModel from seeing validation kW
-    df_elec.query("group == @example_group").assign(kW_sqrt=lambda df: df['kW_sqrt'].where(df['time']<=SPLIT_DT)),
+    df_elec.query("group == @example_group"),#.assign(kW_sqrt_c=lambda df: df['kW_sqrt_c'].where(df['time']<=SPLIT_DT)),
     group_colname='group',
     **from_dataframe_kwargs,
     X_colnames=season_cols
@@ -499,125 +549,148 @@ eval_example = TimeSeriesDataset.from_dataframe(
 
 with torch.no_grad():
     df_example = TimeSeriesDataset.tensor_to_dataframe(
-        calender_feature_pretrainer(eval_example),
+        calendar_feature_nn(eval_example),
         times=eval_example.times(),
         group_names=eval_example.group_names,
         time_colname='time', group_colname='group',
         measures=['predicted_sqrt']
     ).merge(df_elec.query("group == @example_group"), how='left')
 
-plot_2x2(df_example, actual_colname='kW_sqrt', pred_colname='predicted_sqrt')
+# from plotnine import *
+# print(
+#     ggplot(df_example.loc[df_example['time'].dt.year==2013,:].assign(month=lambda df: df['time'].dt.month), 
+#            aes(x='time.dt.hour', y='kW_sqrt_c', color='time.dt.day_name()')) +
+#     stat_summary(fun_y=np.mean, geom='line') +
+#     stat_summary(aes(y='predicted_sqrt'), linetype='dashed', size=1.5, fun_y=np.mean, geom='line') +
+#     facet_wrap("~month") +
+#     theme(figure_size=(10,10))
+# )
 
+plot_2x2(df_example, actual_colname='kW_sqrt_c', pred_colname='predicted_sqrt')
 
 # + [markdown] tags=[]
 # ### Training the Hybrid Model
 #
 # **TODO:** callout box that this is faster on GPU
 
-# +
-names_to_idx = {nm:i for i,nm in enumerate(df_elec['group'].unique())}
+# + id="AXvwLsaScg0l"
+_df_train = df_elec.query("dataset=='train'").reset_index(drop=True)
+_df_train['_diff'] = _df_train.groupby('group')['kW_sqrt'].diff()
+group_resid_devs = _df_train.groupby('group')['_diff'].std().to_dict()
 
-class KalmanFilterLightningModule(TimeSeriesLightningModule):
+
+# + id="1c-0M6tTlqty"
+class HybridForecaster(TimeSeriesLightningModule):
     def _get_loss(self, predicted, actual) -> torch.Tensor:
         return -predicted.log_prob(actual).mean()
-    
-    def training_step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
-        return super().training_step(
-            batch=batch, 
-            batch_idx=batch_idx,
-            n_step=int(24 * 7.5),
-            every_step=False,
-            **kwargs
-        )
+
+    def _step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
+        # self.print(batch_idx)
+        return super()._step(batch=batch, batch_idx=batch_idx, n_step=int(24 * 15), every_step=False, **kwargs)
 
     def forward(self, batch: TimeSeriesDataset, **kwargs) -> torch.Tensor:
         y, X = batch.tensors
+        group_names = [gn.split(":")[0] for gn in batch.group_names]
+        group_ids = [names_to_idx[gn] for gn in group_names]
+        
+        # features of the time-series predict mvar:
+        means = torch.as_tensor([group_means[gn] for gn in group_names], device=DEVICE)
+        devs = torch.as_tensor([group_resid_devs[gn] for gn in group_names], device=DEVICE)
+        cvs = devs / means
+        mvar_X = torch.stack([means, devs, cvs], 1).log()
+
         return self._module(
             y,
-            season__X=self._module.calendar_feature_nn(X),
-            measure_var_multi=self._module.measure_var_nn(
-                torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
-            ),
-            process_var_multi=self._module.process_var_nn(
-                torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
-            ),
-            start_offsets=batch.start_offsets
+            season__X=self._module.calendar_feature_nn(batch),
+            #season__X=self._module.calendar_feature_nn.features_nn(X),
+            measure_var_multi=self._module.measure_var_nn(mvar_X),
+            start_offsets=batch.start_offsets,
+            **kwargs
         )
+    
+    def backward(self,
+                loss: torch.Tensor,
+                optimizer: torch.optim.Optimizer,
+                optimizer_idx: int,
+                *args,
+                **kwargs):
+                return super().backward(loss, optimizer, optimizer_idx, create_graph=True)
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
-        return torch.optim.Adam([p for p in self.parameters() if p.requires_grad], lr=.05)
+        return Adahessian([p for p in self.parameters() if p.requires_grad], lr=.10)
+        
+# # freeze the "features" while keeping the per-building embeddings unfrozen:
+[p.requires_grad_(False) for p in calendar_feature_nn._module.features_nn.parameters()]
+# [p.requires_grad_(False) for p in calendar_feature_nn.parameters()]
 
+# XXX:
+es_nn.calendar_feature_nn = copy.deepcopy(calendar_feature_nn)
 
-# +
-# freeze:
-[p.requires_grad_(False) for p in calendar_feature_nn.parameters()]
-
-# deepcopy:
-kf_nn.calendar_feature_nn = copy.deepcopy(calendar_feature_nn)
-
-
-kf_nn.measure_var_nn = kf_nn.measure_var_nn = torch.nn.Sequential(
-      torch.nn.Embedding(num_embeddings=len(names_to_idx), embedding_dim=1),
-      torch.nn.Softplus()
+# XXX
+# es_nn.measure_var_nn = torch.nn.Sequential(
+#     torch.nn.Embedding(num_embeddings=len(names_to_idx), embedding_dim=1),
+#     torch.nn.Softplus()
+# )
+# with torch.no_grad():
+#     es_nn.measure_var_nn[0].weight /= 10
+es_nn.measure_var_nn = torch.nn.Sequential(
+    torch.nn.Linear(3,1),
+    torch.nn.Softplus()
 )
 
-kf_nn.process_var_nn = copy.deepcopy(kf_nn.measure_var_nn)
+es_nn_lightning = HybridForecaster(es_nn)
 
-kf_nn_lightning = KalmanFilterLightningModule(kf_nn)
 # -
 
 try:
-    kf_nn.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", f"kf_nn{calendar_features_num_latent_dim}.pt")))
+    es_nn.load_state_dict(
+        torch.load(os.path.join(BASE_DIR, "electricity_models", f"es_nn{calendar_features_num_latent_dim}X.pt"))
+    )
 except FileNotFoundError:
     Trainer(
-        gpus=int(str(DEVICE)=='cuda'),
+        gpus=int(str(DEVICE) == 'cuda'),
+        logger=CSVLogger(os.path.join(BASE_DIR, "electricity_models"), f'es_nn{calendar_features_num_latent_dim}', flush_logs_every_n_steps=1),
         log_every_n_steps=1,
-        callbacks=[EarlyStopping(monitor="epoch_train_loss", patience=2, min_delta=0.005, verbose=True)]
-    ).fit(kf_nn_lightning, train_batches)
-    torch.save(kf_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", f"kf_nn{calendar_features_num_latent_dim}.pt"))
-
-# + [markdown] tags=[]
+        min_epochs=10,
+        callbacks=[EarlyStopping(monitor="epoch_val_loss", patience=10, min_delta=0.001, verbose=True)]
+    ).fit(es_nn_lightning, 
+          make_dataloader('train', batch_size=144, group_colname='gyq', shuffle=True), 
+          make_dataloader('val', batch_size=55)
+          )
+    torch.save(es_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", f"es_nn{calendar_features_num_latent_dim}.pt"))
 # ### Model Evaluation
 #
 # Reviewing the same example-building from before, we see the forecasts are more closely hewing to the actual seasonal structure for each time of day/week. Instead of the forecasts in each panel being essentially identical, each differs in shape. 
 
 # + nbsphinx="hidden"
-withtest_batches = TimeSeriesDataLoader.from_dataframe(
-    df_elec,
-    group_colname='group',
-    **from_dataframe_kwargs,
-    X_colnames=season_cols,
-    batch_size=5
-)
+es_nn_lightning.to(DEVICE)
 df_pred_nn = []
 with torch.no_grad():
-    for batch in tqdm(withtest_batches):
+    for batch in tqdm(make_dataloader('all', batch_size=50)):
         batch = batch.to(DEVICE)
         _y = batch.train_val_split(dt=SPLIT_DT)[0].tensors[0]
         _X = batch.tensors[1]
-        pred_nn = kf_nn(
-            _y,
-            season__X=kf_nn.calendar_feature_nn(_X),
-            measure_var_multi=kf_nn.measure_var_nn(
-                torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
-            ),
-            process_var_multi=kf_nn.process_var_nn(
-                torch.tensor([names_to_idx[gn] for gn in batch.group_names], device=DEVICE)
-            ),
-            start_offsets=batch.start_offsets,
+        pred_nn = es_nn_lightning(
+            batch.with_new_tensors(_y, _X), 
             out_timesteps=_X.shape[1]
         )
         df_pred_nn.append(pred_nn.to_dataframe(batch))
 df_pred_nn = pd.concat(df_pred_nn)
 
 df_pred_nn = df_pred_nn.loc[~df_pred_nn['actual'].isnull(), :].reset_index(drop=True)
-# -
 
-pred_nn.plot(pred_nn.to_dataframe(batch, type='components'), split_dt=SPLIT_DT)
 
 plot_2x2(df_pred_nn.query("group==@example_group"))
 
 # +
+#pred_nn.plot(pred_nn.to_dataframe(batch, type='components'), split_dt=SPLIT_DT)
+
+# # MT_363 is has nice season-structure, better example to use?
+# # MT_276 looks good
+# _df = df_pred_nn.query("group=='MT_363'")
+# print(_df['group'].iloc[0])
+# plot_2x2(_df)
+
 # df_pred52_nn = df_pred_nn. \
 #     query("group==@example_group"). \
 #     query("(time.dt.hour==8) | (time.dt.hour==20)"). \
