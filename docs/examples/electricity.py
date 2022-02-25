@@ -14,7 +14,6 @@
 # ---
 
 # + nbsphinx="hidden"
-# # !pip install git+https://github.com/strongio/torchcast.git#egg=torchcast
 from typing import Sequence, Optional
 
 import torch
@@ -32,7 +31,7 @@ from tqdm.auto import tqdm
 import numpy as np
 import pandas as pd
 
-BASE_DIR = 'drive/MyDrive'
+BASE_DIR = './'#drive/MyDrive'
 
 import os
 
@@ -243,9 +242,9 @@ with torch.no_grad():
         start_offsets=eval_example.start_datetimes,
         out_timesteps=_y.shape[1] + 24 * 365.25 * 2,
     )
-    df_pred52 = _pred.to_dataframe(eval_example)
-df_pred52 = df_pred52.loc[~df_pred52['actual'].isnull(), :].reset_index(drop=True)
-_pred.plot(df_pred52, split_dt=SPLIT_DT)
+    df_pred_ex = _pred.to_dataframe(eval_example)
+df_pred_ex = df_pred_ex.loc[~df_pred_ex['actual'].isnull(), :].reset_index(drop=True)
+_pred.plot(df_pred_ex, split_dt=SPLIT_DT)
 
 # + [markdown] id="72b64170"
 # The most obvious issue here is the discrepancy between the predictions on the training data (which look sane) and the validation data (which look insane). This isn't overfitting, but instead the difference between one-step-ahead predictions vs. long-range forecasts. One possibility for why the model does so poorly on the latter is that it wasn't actually trained to generate these predictions: the standard approach has us train on one-step-ahead predictions.
@@ -297,9 +296,9 @@ with torch.no_grad():
         start_offsets=eval_example.start_datetimes,
         out_timesteps=_y.shape[1] + 24 * 365.25 * 2,
     )
-    df_pred52_take2 = _pred.to_dataframe(eval_example)
-df_pred52_take2 = df_pred52_take2.loc[~df_pred52_take2['actual'].isnull(),:].reset_index(drop=True)
-_pred.plot(df_pred52_take2, split_dt=SPLIT_DT)
+    df_pred_ex2 = _pred.to_dataframe(eval_example)
+df_pred_ex2 = df_pred_ex2.loc[~df_pred_ex2['actual'].isnull(),:].reset_index(drop=True)
+_pred.plot(df_pred_ex2, split_dt=SPLIT_DT)
 
 
 # + [markdown] id="d54b5e0f"
@@ -333,7 +332,7 @@ def plot_2x2(df: pd.DataFrame,
     plt.tight_layout()
 
 
-plot_2x2(df_pred52_take2)
+plot_2x2(df_pred_ex2)
 
 # + [markdown] id="7840bc87"
 # Viewing the forecastsing this way helps us see a lingering serious issue: the annual seasonal pattern is very different for daytimes and nighttimes, but the model isn't (and can't be) capturing that. For example, it incorrectly forecasts a 'hump' during summer days and weekend nights, even though this hump is really only present on weekday nights. The model only allows for a single seasonal pattern, rather than a separate one for different times of the day and days of the week.
@@ -398,14 +397,12 @@ from torchcast.covariance import Covariance
 from torchcast.kalman_filter import KalmanFilter
 
 es_nn = ExpSmoother(
-#kf_nn = KalmanFilter(
     measures=['kW_sqrt_c'],
     processes=[
         # trend:
         LocalTrend(id='trend'),
         # static seasonality:
         LinearModel(id='season', predictors=['nn_output']),
-        #LinearModel(id='season', predictors=[f'nn_output{i}' for i in range(calendar_features_num_latent_dim)]),
         # deviations from typical hour-in-day cycle:
         Season(id='hour_in_day', period=24, dt_unit='h', K=6, decay=True),
     ],
@@ -515,6 +512,8 @@ calendar_feature_nn = CalendarFeatureNN(
         torch.nn.Embedding(num_embeddings=len(names_to_idx), embedding_dim=calendar_features_num_latent_dim)
     })
 ).to(DEVICE)
+# -
+
 
 try:
     calendar_feature_nn.load_state_dict(
@@ -522,8 +521,6 @@ try:
             os.path.join(BASE_DIR, "electricity_models", f"calendar_feature_nn{calendar_features_num_latent_dim}.pt"))
     )
 except FileNotFoundError:
-#     %reload_ext tensorboard
-#     %tensorboard --logdir=lightning_logs/
     Trainer(
         gpus=int(str(DEVICE) == 'cuda'),
         logger=CSVLogger(os.path.join(BASE_DIR, "electricity_models"), f'calendar_feature_nn{calendar_features_num_latent_dim}'),
@@ -534,8 +531,6 @@ except FileNotFoundError:
     calendar_feature_nn.trainer = None
     torch.save(calendar_feature_nn.state_dict(),
                os.path.join(BASE_DIR, "electricity_models", f"calendar_feature_nn{calendar_features_num_latent_dim}.pt"))
-
-
 
 # +
 calendar_feature_nn.to(DEVICE)
@@ -573,19 +568,16 @@ plot_2x2(df_example, actual_colname='kW_sqrt_c', pred_colname='predicted_sqrt')
 #
 # **TODO:** callout box that this is faster on GPU
 
-# + id="AXvwLsaScg0l"
+# + id="1c-0M6tTlqty"
 _df_train = df_elec.query("dataset=='train'").reset_index(drop=True)
 _df_train['_diff'] = _df_train.groupby('group')['kW_sqrt'].diff()
 group_resid_devs = _df_train.groupby('group')['_diff'].std().to_dict()
 
-
-# + id="1c-0M6tTlqty"
 class HybridForecaster(TimeSeriesLightningModule):
     def _get_loss(self, predicted, actual) -> torch.Tensor:
         return -predicted.log_prob(actual).mean()
 
     def _step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
-        # self.print(batch_idx)
         return super()._step(batch=batch, batch_idx=batch_idx, n_step=int(24 * 15), every_step=False, **kwargs)
 
     def forward(self, batch: TimeSeriesDataset, **kwargs) -> torch.Tensor:
@@ -602,7 +594,6 @@ class HybridForecaster(TimeSeriesLightningModule):
         return self._module(
             y,
             season__X=self._module.calendar_feature_nn(batch),
-            #season__X=self._module.calendar_feature_nn.features_nn(X),
             measure_var_multi=self._module.measure_var_nn(mvar_X),
             start_offsets=batch.start_offsets,
             **kwargs
@@ -627,12 +618,6 @@ class HybridForecaster(TimeSeriesLightningModule):
 es_nn.calendar_feature_nn = copy.deepcopy(calendar_feature_nn)
 
 # XXX
-# es_nn.measure_var_nn = torch.nn.Sequential(
-#     torch.nn.Embedding(num_embeddings=len(names_to_idx), embedding_dim=1),
-#     torch.nn.Softplus()
-# )
-# with torch.no_grad():
-#     es_nn.measure_var_nn[0].weight /= 10
 es_nn.measure_var_nn = torch.nn.Sequential(
     torch.nn.Linear(3,1),
     torch.nn.Softplus()
@@ -644,7 +629,7 @@ es_nn_lightning = HybridForecaster(es_nn)
 
 try:
     es_nn.load_state_dict(
-        torch.load(os.path.join(BASE_DIR, "electricity_models", f"es_nn{calendar_features_num_latent_dim}X.pt"))
+        torch.load(os.path.join(BASE_DIR, "electricity_models", f"es_nn{calendar_features_num_latent_dim}.pt"))
     )
 except FileNotFoundError:
     Trainer(
@@ -658,6 +643,8 @@ except FileNotFoundError:
           make_dataloader('val', batch_size=55)
           )
     torch.save(es_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", f"es_nn{calendar_features_num_latent_dim}.pt"))
+
+
 # ### Model Evaluation
 #
 # Reviewing the same example-building from before, we see the forecasts are more closely hewing to the actual seasonal structure for each time of day/week. Instead of the forecasts in each panel being essentially identical, each differs in shape. 
@@ -666,8 +653,9 @@ except FileNotFoundError:
 es_nn_lightning.to(DEVICE)
 df_pred_nn = []
 with torch.no_grad():
-    for batch in tqdm(make_dataloader('all', batch_size=50)):
+    for batch in tqdm(make_dataloader('all', batch_size=25)):
         batch = batch.to(DEVICE)
+        # TODO
         _y = batch.train_val_split(dt=SPLIT_DT)[0].tensors[0]
         _X = batch.tensors[1]
         pred_nn = es_nn_lightning(
@@ -676,9 +664,8 @@ with torch.no_grad():
         )
         df_pred_nn.append(pred_nn.to_dataframe(batch))
 df_pred_nn = pd.concat(df_pred_nn)
-
 df_pred_nn = df_pred_nn.loc[~df_pred_nn['actual'].isnull(), :].reset_index(drop=True)
-
+# -
 
 plot_2x2(df_pred_nn.query("group==@example_group"))
 
@@ -737,7 +724,7 @@ df_nn_err = df_pred_nn. \
     agg(error=('error', 'mean')). \
     reset_index()
 
-df_pred52. \
+df_pred_ex2. \
     pipe(inverse_transform). \
     assign(error=lambda df: (df['mean'] - df['actual']).abs(),
            validation=lambda df: df['time'] > SPLIT_DT). \
@@ -745,3 +732,6 @@ df_pred52. \
     agg(error=('error', 'mean')). \
     reset_index(). \
     merge(df_nn_err, on=['group', 'validation'], suffixes=('_es', '_es_nn'))
+# -
+
+
