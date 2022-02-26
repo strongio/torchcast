@@ -367,13 +367,11 @@ class TimeSeriesDataset(TensorDataset):
             measure_colnames = list(measure_colnames)
 
         if measure_colnames is None:
-            if y_colnames is None:
+            if y_colnames is None or X_colnames is None:
                 raise ValueError("Must pass either `measure_colnames` or `X_colnames` & `y_colnames`")
             if isinstance(y_colnames, str):
                 y_colnames = [y_colnames]
                 warn(f"`y_colnames` should be a list of strings not a string; interpreted as `{y_colnames}`.")
-
-            X_colnames = X_colnames or []
 
             measure_colnames = list(y_colnames) + list(X_colnames)
         else:
@@ -434,7 +432,7 @@ class TimeSeriesDataset(TensorDataset):
             dt_unit=dt_unit
         )
 
-        if len(X_colnames):
+        if X_colnames is not None:
             dataset = dataset.split_measures(y_colnames, X_colnames)
             y, X = dataset.tensors
             # don't use nan-padding on the y tensor:
