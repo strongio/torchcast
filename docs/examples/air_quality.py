@@ -62,7 +62,7 @@ kf_pm_univariate = KalmanFilter(
     measures=['PM_log10'], 
     processes=[
         LocalTrend(id='trend'),
-        Season(id='day_in_year', period=365.25 / 7, dt_unit='W', K=5)
+        Season(id='day_in_year', period=365.25 / 7, dt_unit='W', K=5, fixed=True)
     ]
 )
 
@@ -151,7 +151,7 @@ _processes = []
 for m in dataset_pm_multivariate.measures[0]:
     _processes.extend([
         LocalTrend(id=f'{m}_trend', measure=m),
-        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=5, measure=m)
+        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=5, measure=m, fixed=True)
     ])
 kf_pm_multivariate = KalmanFilter(measures=dataset_pm_multivariate.measures[0], processes=_processes)
 

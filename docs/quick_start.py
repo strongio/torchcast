@@ -74,7 +74,7 @@ processes = []
 for m in dataset_train.measures[0]:
     processes.extend([
         LocalTrend(id=f'{m}_trend', measure=m),
-        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=4, measure=m)
+        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=4, measure=m, fixed=True)
     ])
 kf_first = KalmanFilter(measures=dataset_train.measures[0], processes=processes)
 
