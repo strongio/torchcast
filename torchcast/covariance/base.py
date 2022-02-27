@@ -270,7 +270,6 @@ class Covariance(nn.Module):
                 raise RuntimeError(f"{self.id}'s `predict_variance` produced nans/infs")
             if (pred < 0).any():
                 raise RuntimeError(f"{self.id}'s `predict_variance` produced values <0; needs exp/softplus layer.")
-            pred = pred * self.var_predict_multi
             pred = validate_gt_shape(pred, num_groups=num_groups, num_times=num_times, trailing_dim=[self.param_rank])
 
         if pred is not None:
