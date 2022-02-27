@@ -18,6 +18,6 @@ Getting Started
 
     pip install git+https://github.com/strongio/torchcast.git#egg=torchcast
 
-``torchcast`` requires Python >= 3.6 and PyTorch >= 1.7.
+``torchcast`` requires Python >= 3.6 and PyTorch >= 1.8.
 
 See the `Quick Start <https://torchcast.readthedocs.io/en/latest/quick_start.html>`_ for a simple example that will get you up to speed, or delve into the `examples <https://torchcast.readthedocs.io/en/latest/examples/examples.html>`_ or the `API <https://torchcast.readthedocs.io/en/latest/api/api.html>`_.
