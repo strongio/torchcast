@@ -78,7 +78,7 @@ class KalmanStep(StateSpaceStep):
         system_covariance = H @ cov @ Ht + R
         A = system_covariance.permute(0, 2, 1)
         B = covs_measured.permute(0, 2, 1)
-        Kt, _ = torch.solve(B, A)
+        Kt = torch.linalg.solve(A, B)
         K = Kt.permute(0, 2, 1)
         return K
 

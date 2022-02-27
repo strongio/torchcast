@@ -65,41 +65,51 @@ class Predictions(nn.Module):
 
     @cached_property
     def R(self) -> torch.Tensor:
-        return torch.stack(self._R, 1)
+        if not isinstance(self._R, torch.Tensor):
+            self._R = torch.stack(self._R, 1)
+        return self._R
 
     @cached_property
     def H(self) -> torch.Tensor:
-        return torch.stack(self._H, 1)
+        if not isinstance(self._H, torch.Tensor):
+            self._H = torch.stack(self._H, 1)
+        return self._H
 
     @cached_property
     def state_means(self) -> torch.Tensor:
-        state_means = torch.stack(self._state_means, 1)
-        if torch.isnan(state_means).any():
+        if not isinstance(self._state_means, torch.Tensor):
+            self._state_means = torch.stack(self._state_means, 1)
+        if torch.isnan(self._state_means).any():
             raise ValueError("`nans` in `state_means`")
-        return state_means
+        return self._state_means
 
     @cached_property
     def state_covs(self) -> torch.Tensor:
-        state_covs = torch.stack(self._state_covs, 1)
-        if torch.isnan(state_covs).any():
+        if not isinstance(self._state_covs, torch.Tensor):
+            self._state_covs = torch.stack(self._state_covs, 1)
+        if torch.isnan(self._state_covs).any():
             raise ValueError("`nans` in `state_covs`")
-        return state_covs
+        return self._state_covs
 
     @cached_property
     def update_means(self) -> Optional[torch.Tensor]:
         if self._update_means is None:
-            return self._update_means
-        update_means = torch.stack(self._update_means, 1)
-        assert update_means.shape == self.state_means.shape
-        return update_means
+            return None
+        if not isinstance(self._update_means, torch.Tensor):
+            self._update_means = torch.stack(self._update_means, 1)
+        if torch.isnan(self._update_means).any():
+            raise ValueError("`nans` in `state_means`")
+        return self._update_means
 
     @cached_property
-    def update_covs(self) -> Optional[torch.Tensor]:
+    def update_covs(self) -> torch.Tensor:
         if self._update_covs is None:
-            return self._update_covs
-        update_covs = torch.stack(self._update_covs, 1)
-        assert update_covs.shape == self.state_covs.shape
-        return update_covs
+            return None
+        if not isinstance(self._update_covs, torch.Tensor):
+            self._update_covs = torch.stack(self._update_covs, 1)
+        if torch.isnan(self._update_covs).any():
+            raise ValueError("`nans` in `update_covs`")
+        return self._update_covs
 
     def get_state_at_times(self,
                            times: Union[np.ndarray, np.datetime64],
@@ -162,7 +172,7 @@ class Predictions(nn.Module):
     @property
     def means(self) -> Tensor:
         if self._means is None:
-            # TODO: in ExpSmoth, _state_covs, _R, and _H will often not be time-varying. if we could generate them s.t.
+            # TODO: in ExpSmooth, _state_covs, _R, and _H will often not be time-varying. if we could generate them s.t.
             #  we could perform a fast check of this (self._R[0] is self._R[1]) then could speed up slowest step:
             #  `H.matmul(state_covs).matmul(Ht) + R`
             self._means, self._covs = self.observe(self.state_means, self.state_covs, self.R, self.H)
@@ -172,13 +182,6 @@ class Predictions(nn.Module):
     def covs(self) -> Tensor:
         if self._covs is None:
             self._means, self._covs = self.observe(self.state_means, self.state_covs, self.R, self.H)
-            if (self._covs.diagonal(dim1=-2, dim2=-1) < 0).any():
-                warn(
-                    f"Negative variance. This can be caused by "
-                    f"`{type(self).__name__}().covs` not being positive-definite. Try stepping through each (group,time) "
-                    f"of this matrix to find the offending matrix (e.g. torch.cholesky returns an error); then inspect "
-                    f"the observations around this group/time."
-                )
         return self._covs
 
     def sample(self) -> Tensor:
