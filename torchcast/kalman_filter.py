@@ -75,7 +75,7 @@ class KalmanStep(StateSpaceStep):
     def _kalman_gain(cov: Tensor, H: Tensor, R: Tensor) -> Tensor:
         Ht = H.permute(0, 2, 1)
         covs_measured = cov @ Ht
-        system_covariance = H @ cov @ Ht + R
+        system_covariance = torch.baddbmm(R, H @ cov, Ht)
         A = system_covariance.permute(0, 2, 1)
         B = covs_measured.permute(0, 2, 1)
         Kt = torch.linalg.solve(A, B)
