@@ -59,5 +59,5 @@ intersphinx_mapping = {
 }
 
 nbsphinx_custom_formats = {
-    '.py': ['jupytext.reads', {'fmt': 'py:light'}],
+    '.py': ['jupytext.reads', {'fmt': 'py:percent'}],
 }
