@@ -721,7 +721,7 @@ with torch.no_grad():
 df_forecast_nn = pd.concat(df_forecast_nn).query("actual.notnull()").reset_index(drop=True)
 
 # %%
-plot_forecasts(df_forecast_nn.query("time.dt.year==2013 & time.dt.month==6"), split_dt=SPLIT_DT)
+plot_forecasts(df_forecast_nn.query("group==@example_group & time.dt.year==2013 & time.dt.month==6"), split_dt=SPLIT_DT)
 
 # %%
 plot_2x2(df_forecast_nn.query("group==@example_group"))
