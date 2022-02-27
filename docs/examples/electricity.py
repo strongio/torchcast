@@ -207,7 +207,6 @@ except FileNotFoundError:
         train_example.tensors[0],
         start_offsets=train_example.start_datetimes,
     )
-    os.makedirs(os.path.join(BASE_DIR, "electricity_models"), exist_ok=True)
     torch.save(es.state_dict(), os.path.join(BASE_DIR, f"es_{example_group}.pt"))
 
 
@@ -239,7 +238,7 @@ def make_forecast_df(
         **kwargs
     )
     # convert to df:
-    return pred.to_dataframe(batch).query("actual.notnull()").reset_index(drop=True)
+    return pred.to_dataframe(batch).query("actual.notnull()", engine='python').reset_index(drop=True)
 
 
 def plot_forecasts(df: pd.DataFrame, **kwargs):
@@ -424,7 +423,6 @@ es_nn = ExpSmoother(
         # static seasonality:
         LinearModel(id='season', predictors=['nn_output']),
         # local deviations from typical behavior:
-        # LocalLevel TODO
         Season(id='hour_in_day', period=24, dt_unit='h', K=6, decay=True),
     ]
 )
@@ -441,8 +439,9 @@ es_nn = ExpSmoother(
 # %%
 # GPU will be useful if we have one:
 maybe_cuda = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+maybe_cuda
 
-# create our pytorch-lightning wrapper class:
+# %%
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import CSVLogger
@@ -613,6 +612,7 @@ plot_2x2(df_cal_nn_example, actual_colname='kW_sqrt_c', pred_colname='predicted_
 # by adding it as an attribute; among other things this means that calendar_feature_nn's params
 # will be included in the state-dict:
 es_nn.calendar_feature_nn = copy.deepcopy(calendar_feature_nn)
+
 
 # %% [markdown]
 # #### One More Thing: Predict Variance

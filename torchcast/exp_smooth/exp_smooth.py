@@ -29,8 +29,8 @@ class ExpSmoothStep(StateSpaceStep):
         if val_idx is None:
             return input[groups], {k: v[groups] for k, v in kwargs.items()}
         else:
-            m1d = torch.meshgrid(groups, val_idx)
-            m2d = torch.meshgrid(groups, val_idx, val_idx)
+            m1d = torch.meshgrid(groups, val_idx, indexing='ij')
+            m2d = torch.meshgrid(groups, val_idx, val_idx, indexing='ij')
             masked_input = input[m1d[0], m1d[1]]
             masked_kwargs = {
                 'H': kwargs['H'][m1d[0], m1d[1]],

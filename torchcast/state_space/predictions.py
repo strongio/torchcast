@@ -214,8 +214,8 @@ class Predictions(nn.Module):
                 gt_means_flat = self.means.view(-1, n_measure_dim)[gt_idx]
                 gt_covs_flat = self.covs.view(-1, n_measure_dim, n_measure_dim)[gt_idx]
             else:
-                mask1d = torch.meshgrid(gt_idx, valid_idx)
-                mask2d = torch.meshgrid(gt_idx, valid_idx, valid_idx)
+                mask1d = torch.meshgrid(gt_idx, valid_idx, indexing='ij')
+                mask2d = torch.meshgrid(gt_idx, valid_idx, valid_idx, indexing='ij')
                 gt_means_flat, gt_covs_flat = self.observe(
                     state_means=state_means_flat[gt_idx],
                     state_covs=state_covs_flat[gt_idx],
