@@ -482,16 +482,6 @@ class TimeSeriesDataset(TensorDataset):
     def start_offsets(self) -> np.ndarray:
         return self.start_times
 
-    def last_measured_times(self) -> np.ndarray:
-        """
-        :return: The datetimes (or integers if dt_unit is None) for the last measurement in the first tensor, where a
-         measurement is any non-nan value in at least one dimension.
-        """
-        times = self.times(which=0)
-        last_measured_idx = self._last_measured_idx()
-        raise NotImplementedError
-        # return np.array([t[idx] for t, idx in zip(times, last_measured_idx)], dtype=f'datetime64[{self.dt_unit}]')
-
     def _last_measured_idx(self) -> np.ndarray:
         """
         :return: The indices of the last measurement in the first tensor, where a measurement is any non-nan value in at

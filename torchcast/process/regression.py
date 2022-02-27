@@ -116,9 +116,7 @@ class LinearModel(Process):
         Given tensors y,X in the format expected by ``StateSpaceModel`` -- 3D arrays with groups*times*measures --
         solve the linear-model for each group, then generate predictions from these.
 
-        This can be useful for pretraining a ``StateSpaceModel`` which uses the ``LinearModel`` class:
-
-        TODO example
+        This can be useful for pretraining a ``StateSpaceModel`` which uses the ``LinearModel`` class.
 
         :param y: A 3d tensor of time-series values.
         :param X: A 3d tensor of predictors.
