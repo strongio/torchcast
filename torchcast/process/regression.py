@@ -1,60 +1,28 @@
-from typing import Tuple, Sequence, Optional, Union
+from typing import Tuple, Sequence, Optional, Dict
+from warnings import warn
 
 import torch
 
-from torch import nn
-
+from torchcast.internals.utils import validate_gt_shape
 from torchcast.process.base import Process
-from torchcast.process.utils import Identity, Bounded, SingleOutput
+from torchcast.process.utils import Bounded, SingleOutput
+from torchcast.utils.data import chunk_grouped_data
 
 
-class _RegressionBase(Process):
-    def __init__(self,
-                 id: str,
-                 predictors: Sequence[str],
-                 h_module: torch.nn.Module,
-                 measure: Optional[str] = None,
-                 process_variance: bool = False,
-                 decay: Optional[Union[nn.Module, Tuple[float, float]]] = None,
-                 **kwargs):
-
-        predictors = list(predictors)
-
-        if decay is None:
-            transitions = {'all_self': torch.ones(len(predictors))}
-        else:
-            if decay is True:
-                decay = (.98, 1.0)
-            if isinstance(decay, tuple):
-                decay = SingleOutput(numel=len(predictors), transform=Bounded(*decay))
-            transitions = nn.ModuleDict({'all_self': decay})
-
-        super().__init__(
-            id=id,
-            measure=measure,
-            state_elements=predictors,
-            f_tensors=transitions if decay is None else None,
-            f_modules=None if decay is None else transitions,
-            h_module=h_module,
-            h_kwarg='X',
-            no_pcov_state_elements=[] if process_variance else predictors,
-            **kwargs
-        )
-
-
-class LinearModel(_RegressionBase):
+class LinearModel(Process):
     """
     A process which takes a model-matrix of predictors, and each state corresponds to the coefficient on each.
 
     :param id: Unique identifier for the process
     :param predictors: A sequence of strings with predictor-names.
     :param measure: The name of the measure for this process.
-    :param process_variance: By default, the regression-coefficients are assumed to be fixed: we are initially
+    :param fixed: By default, the regression-coefficients are assumed to be fixed: we are initially
      uncertain about their value at the start of each series, but we gradually grow more confident. If
-     ``process_variance=True`` then we continue to inject uncertainty at each timestep so that uncertainty asymptotes
-     at some nonzero value. This amounts to dynamic-regression where the coefficients evolve over-time.
-    :param decay: By default, the seasonal structure will remain as the forecast horizon increases. An alternative is
-     to allow this structure to decay (i.e. pass ``True``). If you'd like more fine-grained control over this decay,
+     ``fixed=False`` then we continue to inject uncertainty at each timestep so that uncertainty asymptotes
+     at some nonzero value. This amounts to dynamic-regression where the coefficients evolve over-time. Note only
+     ``KalmanFilter`` (but not ``ExpSmoother``) supports this.
+    :param decay: By default, the coefficient-values will remain as the forecast horizon increases. An alternative is
+     to allow these to decay (i.e. pass ``True``). If you'd like more fine-grained control over this decay,
      you can specify the min/max decay as a tuple (passing ``True`` uses a default value of ``(.98, 1.0)``).
     """
 
@@ -62,72 +30,99 @@ class LinearModel(_RegressionBase):
                  id: str,
                  predictors: Sequence[str],
                  measure: Optional[str] = None,
-                 process_variance: bool = False,
+                 fixed: bool = True,
                  decay: Optional[Tuple[float, float]] = None):
+
         super().__init__(
             id=id,
-            predictors=predictors,
+            state_elements=predictors,
             measure=measure,
-            h_module=Identity(),
-            process_variance=process_variance,
-            decay=decay
+            fixed_state_elements=predictors if fixed else []
         )
 
+        if decay is None:
+            self.f_tensors['all_self'] = torch.ones(len(predictors))
+        else:
+            if fixed:
+                warn("decay=True, fixed=True not recommended.")
+            if decay is True:
+                decay = (.98, 1.0)
+            if isinstance(decay, tuple):
+                decay = SingleOutput(numel=len(predictors), transform=Bounded(*decay))
+            self.f_modules['all_self'] = decay
+        self.expected_kwargs = ['X']
 
-class NN(_RegressionBase):
-    """
-    A process which takes a model-matrix of predictors and feeds them into a neural-network; the output of this is then
-    used in the KalmanFilter's observation matrix. This allows the KalmanFilter to have states corresponding to
-    arbitrary combinations of predictors.
+    def _build_h_mat(self, inputs: Dict[str, torch.Tensor], num_groups: int, num_times: int) -> torch.Tensor:
+        # if not torch.jit.is_scripting():
+        #     try:
+        #         X = inputs['X']
+        #     except KeyError as e:
+        #         raise TypeError(f"Missing required keyword-arg `X` (or `{self.id}__X`).") from e
+        # else:
+        X = inputs['X']
+        assert not torch.isnan(X).any()
+        assert not torch.isinf(X).any()
 
-    :param id: Unique identifier for the process
-    :param nn: A `nn.Module` that takes inputs from a model-matrix and tranlates them into entries in the
-     observation matrix H.
-    :param measure: The name of the measure for this process.
-    :param process_variance: By default, the state of each output is assumed to be fixed: we are initially
-     uncertain about their value at the start of each series, but we gradually grow more confident. If
-     ``process_variance=True`` then we continue to inject uncertainty at each timestep so that uncertainty asymptotes
-     at some nonzero value.
-    :param decay: By default, the seasonal structure will remain as the forecast horizon increases. An alternative is
-     to allow this structure to decay (i.e. pass ``True``). If you'd like more fine-grained control over this decay,
-     you can specify the min/max decay as a tuple (passing ``True`` uses a default value of ``(.98, 1.0)``).
-    """
+        X = validate_gt_shape(X, num_groups, num_times, trailing_dim=[self.rank])
+        # note: trailing_dim is really (self.rank, self.measures), but currently processes can only have one measure
 
-    def __init__(self,
-                 id: str,
-                 nn: torch.nn.Module,
-                 measure: Optional[str] = None,
-                 process_variance: bool = False,
-                 decay: Optional[Tuple[float, float]] = None):
-        num_outputs = self._infer_num_outputs(nn)
-        super().__init__(
-            id=id,
-            predictors=[f'nn{i}' for i in range(num_outputs)],
-            h_module=nn,
-            measure=measure,
-            process_variance=process_variance,
-            decay=decay
-        )
+        return X
 
     @staticmethod
-    def _infer_num_outputs(nn: torch.nn.Module) -> int:
-        num_weights = False
-        if hasattr(nn, 'out_features'):
-            return nn.out_features
-        try:
-            reversed_nn = reversed(nn)
-        except TypeError as e:
-            if 'not reversible' not in str(e):
-                raise e
-            reversed_nn = []
-        for layer in reversed_nn:
-            try:
-                num_weights = layer.out_features
-                break
-            except AttributeError:
-                pass
-        if num_weights is not False:
-            return num_weights
-        raise TypeError(
-            f"Unable to infer num-outputs of {nn} by iterating over it and looking for the final `out_features`."
-        )
+    def _l2_solve(y: torch.Tensor,
+                  X: torch.Tensor,
+                  prior_precision: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Given tensors y,X in the format expected by ``StateSpaceModel`` -- 3D arrays with groups*times*measures --
+        return the solutions to a linear-model for each group.
+
+        See :func:`~torchcast.process.LinearModel.solve_and_predict()`
+
+        :param y: A 3d tensor of time-series values.
+        :param X: A 3d tensor of predictors.
+        :param prior_precision: Optional. A penalty matrix.
+        :return: The solution.
+        """
+
+        # handling nans requires flattening + scatter_add:
+        num_groups, num_times, num_preds = X.shape
+        X = X.view(-1, X.shape[-1])
+        y = y.view(-1, y.shape[-1])
+        is_valid = ~torch.isnan(y).squeeze()
+        group_ids_broad = torch.repeat_interleave(torch.arange(num_groups, device=y.device), num_times)
+        X = X[is_valid]
+        y = y[is_valid]
+        group_ids_broad = group_ids_broad[is_valid]
+
+        # Xty:
+        Xty_els = X * y
+        Xty = torch.zeros(num_groups, num_preds, dtype=y.dtype, device=y.device). \
+            scatter_add(0, group_ids_broad.unsqueeze(-1).expand_as(Xty_els), Xty_els)
+
+        # XtX:
+        XtX = torch.stack([Xg.t() @ Xg for Xg, in chunk_grouped_data(X, group_ids=group_ids_broad.cpu())])
+        XtXp = XtX
+        if prior_precision is not None:
+            XtXp = XtXp + prior_precision
+
+        return torch.linalg.solve(XtXp, Xty.unsqueeze(-1))
+
+    @classmethod
+    def solve_and_predict(cls,
+                          y: torch.Tensor,
+                          X: torch.Tensor,
+                          prior_precision: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Given tensors y,X in the format expected by ``StateSpaceModel`` -- 3D arrays with groups*times*measures --
+        solve the linear-model for each group, then generate predictions from these.
+
+        This can be useful for pretraining a ``StateSpaceModel`` which uses the ``LinearModel`` class.
+
+        :param y: A 3d tensor of time-series values.
+        :param X: A 3d tensor of predictors.
+        :param prior_precision: Optional. A penalty matrix.
+        :return: A tensor with the same dimensions as ``y`` with the predictions.
+        """
+        coefs = cls._l2_solve(y=y, X=X, prior_precision=prior_precision)
+        return (coefs.transpose(-1, -2) * X).sum(-1).unsqueeze(-1)
+

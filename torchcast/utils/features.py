@@ -33,7 +33,7 @@ def add_season_features(data: 'DataFrame',
         raise RuntimeError(
             f"Some, but not all, of the following columns are already in `data`:\n{df_season.columns.tolist()}"
         )
-    # TODO: check that `data` has default index
+    df_season.index = data.index
     return concat([data, df_season], axis=1)
 
 
@@ -45,8 +45,6 @@ def fourier_model_mat(datetimes: np.ndarray,
     :param datetimes: An array of datetimes.
     :param K: The expansion integer.
     :param period: Either a np.timedelta64, or one of {'weekly','yearly','daily'}
-    :param start_datetime: A np.datetime64 on which to consider the season-start; useful for aligning (e.g) weekly
-    seasons to start on Monday, or daily seasons to start on a particular hour. Default is first monday after epoch.
     :param output_fmt: A numpy dtype, or 'dataframe' to output a dataframe.
     :return: A numpy array (or dataframe) with the expanded fourier series.
     """

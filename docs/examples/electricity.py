@@ -1,95 +1,99 @@
 # ---
 # jupyter:
 #   jupytext:
-#     formats: py:light
+#     formats: py:percent
 #     text_representation:
 #       extension: .py
-#       format_name: light
-#       format_version: '1.5'
-#       jupytext_version: 1.11.0
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.13.0
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
 
-# + nbsphinx="hidden"
-# # !pip install git+https://github.com/strongio/torch-kalman.git@feature/rename#egg=torchcast
-# # !pip install torch_optimizer
+# %% nbsphinx="hidden"
+from typing import Sequence
 
 import torch
 import copy
 
 import matplotlib.pyplot as plt
 
-from torchcast.kalman_filter import KalmanFilter
-from torchcast.utils.data import (
-    TimeSeriesDataset, TimeSeriesDataLoader, complete_times, nanmean
-)
+from torchcast.exp_smooth import ExpSmoother
+from torchcast.utils.data import TimeSeriesDataset, TimeSeriesDataLoader
 
 from tqdm.auto import tqdm
 
 import numpy as np
 import pandas as pd
 
-BASE_DIR = './'#drive/MyDrive'
+BASE_DIR = 'electricity'
 
 import os
+
 if 'drive/MyDrive' in BASE_DIR and not os.path.exists(BASE_DIR):
     from google.colab import drive
-    drive.mount('/content/drive')
-# -
 
+    drive.mount('/content/drive')
+
+# %% [markdown]
 # # Using NN's for Long-Range Forecasts: Electricity Data
 #
-# In this example we'll show how to handle complex series, in which we don't want to treat individual components of the series as independent. For this example (electricity data) there is no 'hour-in-day' component that's independent of the 'day-of-week' or 'day-in-year' component -- everything is interrelated. Here we'll show how to do this by leveraging `torchcast`'s ability to integrate with any PyTorch neural-network. 
-#
-# This example will also showcase how to handle a very large number of series. We will train in batches, and use supporting `torch.nn.Embedding` models to allow the model to express differences across different series.
+# In this example we'll show how to handle complex series. For this example (electricity data) there is no 'hour-in-day' component that's independent of the 'day-of-week' or 'day-in-year' component -- everything is interrelated. Here we'll show how to do this by leveraging `torchcast`'s ability to integrate with any PyTorch neural-network.
 #
 # We'll use a dataset from the [UCI Machine Learning Data Repository](https://archive.ics.uci.edu/ml/datasets/ElectricityLoadDiagrams20112014), which consists of electricity-usage for 370 locations, taken every 15 minutes (we'll downsample to hourly).
 
-# + nbsphinx="hidden"
+# %% nbsphinx="hidden"
 try:
     df_elec = pd.read_csv(os.path.join(BASE_DIR, "df_electricity.csv.gz"), parse_dates=['time'])
 except FileNotFoundError:
     import requests
     from zipfile import ZipFile
     from io import BytesIO
-    response =\
+
+    response = \
         requests.get('https://archive.ics.uci.edu/ml/machine-learning-databases/00321/LD2011_2014.txt.zip')
 
     with ZipFile(BytesIO(response.content)) as f:
         df_raw = pd.read_table(f.open('LD2011_2014.txt'), sep=";", decimal=",")
 
     # melt, collect to hourly:
-    df_elec = df_raw.\
-        melt(id_vars=['Unnamed: 0'], value_name='kW', var_name='group').\
-        assign(time = lambda df_elec: df_elec['Unnamed: 0'].astype('datetime64[h]')).\
-        groupby(['group','time'])\
-        ['kW'].mean().\
+    df_elec = df_raw. \
+        melt(id_vars=['Unnamed: 0'], value_name='kW', var_name='group'). \
+        assign(time=lambda df_elec: df_elec['Unnamed: 0'].astype('datetime64[h]')). \
+        groupby(['group', 'time']) \
+        ['kW'].mean(). \
         reset_index()
 
-    df_elec.\
-        loc[df_elec['time']>=df_elec['group'].map(df_elec.query("kW>0").groupby('group')['time'].min().to_dict()),:].\
-        reset_index(drop=True).\
-        to_csv(os.path.join(BASE_DIR, "df_electricity.csv.gz"), index=False)
-        
-    df_elec = pd.read_csv(os.path.join(BASE_DIR, "df_electricity.csv.gz"), parse_dates=['time'])
+    # find start time for each group:
+    group_starts = df_elec['group'].map(df_elec.query("kW>0").groupby('group')['time'].min().to_dict())
+    
+    # filter to start time:
+    df_elec = df_elec.loc[df_elec['time'] >= group_starts, :].reset_index(drop=True)
+    
+    # "Every year in March time change day (which has only 23 hours) the values between 1:00 am and 2:00 am are zero for all points"
+    zero_counts = df_elec.query("kW==0")['time'].value_counts()
+    df_elec.loc[df_elec['time'].isin(zero_counts.index[zero_counts>100]),'kW'] = float('nan')
+    
+    # save
+    df_elec.to_csv(os.path.join(BASE_DIR, "df_electricity.csv.gz"), index=False)
 
-SUBSET = 50
-np.random.seed(2021-1-21)
-torch.manual_seed(2021-1-21)
-# -
+SUBSET = False
+np.random.seed(2021 - 1 - 21)
+torch.manual_seed(2021 - 1 - 21)
 
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-# ## Data-Cleaning
+# %% [markdown]
+# ## Data-Prep
 #
 # Our dataset consists of hourly kW readings for multiple buildings:
 
+# %%
 df_elec.head()
 
-# Electricity-demand data can be challenging because of its complexity. In traditional forecasting applications, we divide our model into siloed processes that each contribute to separate 'behaviors' of the time-series. For example:
+# %% [markdown]
+# Electricity-demand data can be challenging because of its complexity. In traditional forecasting applications, we divide our model into siloed processes that each contribute to separate behaviors of the time-series. For example:
 #
 # - Hour-in-day effects
 # - Day-in-week effects
@@ -100,504 +104,657 @@ df_elec.head()
 #
 # We can plot some examples to get an initial glance at this complexity.
 
-df_elec.query("group=='MT_001'").plot('time','kW',figsize=(20,5))
+# %%
+df_elec.query("group=='MT_001'").plot('time', 'kW', figsize=(20, 5))
 
+# %% [markdown]
 # Some groups have data that isn't really appropriate for modeling -- for example, exhibiting near-zero variation:
 
-df_elec.query("group=='MT_003'").plot('time','kW',figsize=(20,5))
+# %%
+df_elec.query("group=='MT_003'").plot('time', 'kW', figsize=(20, 5))
 
-# For some rudimentary cleaning, we'll remove these kinds of regions of 'flatness':
+# %% [markdown]
+# For some rudimentary cleaning, we'll remove these kinds of regions of 'flatness'. For simplicity we'll just drop buildings that are flat in this way for a non-trivial amount of time.
 
-# +
+# %%
 # calculate rolling std-dev:
-df_elec['roll_std'] = 0
-for g, df in tqdm(df_elec.groupby('group')):
-    df_elec.loc[df.index, 'roll_std'] = df['kW'].rolling(48).std()
+df_elec['roll_std'] = df_elec.groupby('group')['kW'].rolling(48).std().reset_index(0, drop=True)
+# set to missing when it's low
 df_elec.loc[df_elec.pop('roll_std') < .25, 'kW'] = float('nan')
-
+# drop groups with nontrivial amount of missings (for simplicity)
 group_missingness = df_elec.assign(missing=lambda df: df['kW'].isnull()).groupby('group')['missing'].mean()
+df_elec = df_elec.loc[df_elec['group'].map(group_missingness) < .01, :].reset_index(drop=True)
 
-df_elec = df_elec.loc[df_elec['group'].map(group_missingness) < .01,:].reset_index(drop=True)
-# -
+# %% [markdown]
+# We'll split the data at mid-2013. For half the groups, the holdout will be used as validation data; for the other half, it will be used as test data.
 
-# For simplicity we'll just drop buildings that are flat in this way for a non-trivial amount of time.
-#
-# We'll also subset to groups with at least 2 years of data, so we're guaranteed enough data for forecasting:
-
-# +
-df_group_summary = df_elec.\
-  groupby('group')\
-    ['time'].agg(['min','max']).\
-    reset_index().\
-    assign(history_len = lambda df: (df['max'] - df['min']).dt.days)
-
-train_groups = sorted(df_group_summary.query("history_len >= 730")['group'])
-
-#
-train_groups = train_groups[:SUBSET or -1]
-df_elec = df_elec.loc[df_elec['group'].isin(train_groups),:].reset_index(drop=True)
-# -
-
-# We'll split the data at 2014. For half the groups, this will be used as validation data; for the other half, it will be used as test data.
-
-SPLIT_DT = np.datetime64('2014-01-01')
-df_elec['_use_2014_as_test'] = (df_elec['group'].str.replace('MT_','').astype('int') % 2) == 0
+# %%
+SPLIT_DT = np.datetime64('2013-06-01')
+df_elec['_use_holdout_as_test'] = (df_elec['group'].str.replace('MT_', '').astype('int') % 2) == 0
 df_elec['dataset'] = 'train'
-df_elec.loc[(df_elec['time'] >= SPLIT_DT) & df_elec['_use_2014_as_test'],'dataset'] = 'test'
-df_elec.loc[(df_elec['time'] >= SPLIT_DT) & ~df_elec.pop('_use_2014_as_test'),'dataset'] = 'val'
-#df_elec['dataset'].value_counts()
+df_elec.loc[(df_elec['time'] >= SPLIT_DT) & df_elec['_use_holdout_as_test'], 'dataset'] = 'test'
+df_elec.loc[(df_elec['time'] >= SPLIT_DT) & ~df_elec.pop('_use_holdout_as_test'), 'dataset'] = 'val'
 
+# %% [markdown]
+# Finally, drop groups without enough data:
+
+# %%
+df_group_summary = df_elec. \
+    groupby(['group','dataset']) \
+    ['time'].agg(['min', 'max']). \
+    reset_index(). \
+    assign(history_len=lambda df: (df['max'] - df['min']).dt.days)
+
+all_groups = set(df_group_summary['group'])
+train_groups = sorted(df_group_summary.query("(dataset=='train') & (history_len >= 365)")['group'])
+print(f"Dropping {len(all_groups - set(train_groups)):,} groups")
+
+if SUBSET:
+    train_groups = train_groups[:SUBSET]
+df_elec = df_elec.loc[df_elec['group'].isin(train_groups), :].reset_index(drop=True)
+
+# %% [markdown]
+# Let's pick an example group to focus on, for demonstrative purposes:
+
+# %%
+example_group = 'MT_358'
+
+# %% [markdown]
 # ## A Standard Forecasting Approach
-#
-# First, let's try a forecasting approach that's fairly 'standard':
-#
-# - We'll build a model for a single series (instead of sharing a model across multiple series)
-# - Each 'process' (e.g. day-in-week, day-in-year, hour-in-day) we'll be assumed to have a separate, independent influence on the data.
 
-# +
-from torchcast.process import LocalLevel, LocalTrend, Season
+# %% [markdown]
+# ### Attempt 1
+#
+# First, let's try a standard exponential-smoothing algorithm on one of the series. This intentionally doesn't leverage `torchcast`'s ability to train on batches of series, so is quite slow, but will help us have a base case to improve on.
 
-kf = KalmanFilter(
-    measures=['kW_sqrt'], 
+# %%
+from torchcast.process import LocalTrend, Season
+
+es = ExpSmoother(
+    measures=['kW_sqrt_c'],
     processes=[
         # seasonal processes:
-        Season(id='day_in_week', period=24*7, dt_unit='h', K=3, process_variance=False),
-        Season(id='day_in_year', period=24*365.25, dt_unit='h', K=8, process_variance=False),
-        Season(id='hour_in_day', period=24, dt_unit='h', K=8, process_variance=False),
+        Season(id='day_in_week', period=24 * 7, dt_unit='h', K=3, fixed=True),
+        Season(id='day_in_year', period=24 * 365.25, dt_unit='h', K=8, fixed=True),
+        Season(id='hour_in_day', period=24, dt_unit='h', K=8, fixed=True),
         # long-running trend:
         LocalTrend(id='trend'),
-        # 'local' processes: allow temporary deviations that decay 
-        LocalLevel(id='level', decay=True),
-        Season(id='hour_in_day2', period=24, dt_unit='h', K=6, decay=True),
     ]
 )
 
-# +
-# build our dataset
-
+# %%
+# transform and center:
 df_elec['kW_sqrt'] = np.sqrt(df_elec['kW'])
+group_means = df_elec.query("dataset=='train'").groupby('group')['kW_sqrt'].mean().to_dict()
+df_elec['kW_sqrt_c'] = df_elec['kW_sqrt'] - df_elec['group'].map(group_means) 
 
-# for efficiency of training, we split this single group into multiple groups
-df_elec['gym'] =\
-     df_elec['group'] + ":" +\
-     df_elec['time'].dt.year.astype('str') + "_" +\
-     df_elec['time'].dt.month.astype('str').str.zfill(2)
-
-train_MT_052 = TimeSeriesDataset.from_dataframe(
-    df_elec.query("group == 'MT_052'").query("dataset == 'train'"),
-    group_colname='gym', 
+# %%
+# build our dataset
+train_example = TimeSeriesDataset.from_dataframe(
+    df_elec.query("group == @example_group").query("dataset == 'train'"),
+    group_colname='group',
     time_colname='time',
-    measure_colnames=['kW_sqrt'],
-    dt_unit='h'
+    dt_unit='h',
+    measure_colnames=['kW_sqrt_c'],
 )
-train_MT_052 = train_MT_052.to(DEVICE)
-train_MT_052
+train_example
 
-# +
-kf.to(DEVICE)
-
+# %%
 try:
-    kf.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", "kf_standard.pt"), map_location=DEVICE))
+    es.load_state_dict(torch.load(os.path.join(BASE_DIR, f"es_{example_group}.pt")))
 except FileNotFoundError:
-    kf.fit(
-        train_MT_052.tensors[0],
-        start_offsets=train_MT_052.start_datetimes,
-        n_step=int(24 * 7),
+    es.fit(
+        train_example.tensors[0],
+        start_offsets=train_example.start_datetimes,
+    )
+    torch.save(es.state_dict(), os.path.join(BASE_DIR, f"es_{example_group}.pt"))
+
+
+# %% [markdown]
+# How does this standard model perform? Plotting the forecasts vs. actual suggests serious issues:
+
+# %%
+from torchcast.state_space import Predictions
+
+@torch.no_grad()
+def make_forecast_df(
+        model: ExpSmoother,
+        df_trainval: pd.DataFrame,
+        **kwargs) -> pd.DataFrame:
+    batch = TimeSeriesDataset.from_dataframe(
+        df_trainval,
+        group_colname='group',
+        time_colname='time',
+        dt_unit='h',
+        measure_colnames=['kW_sqrt_c'],
+    )
+    # subset data to just train:
+    train_y = batch.train_val_split(dt=SPLIT_DT)[0].tensors[0]
+    # generate forecast:
+    pred = model(
+        train_y,
+        start_offsets=batch.start_times,
+        out_timesteps=batch.tensors[0].shape[1],  # outputs times that include validation period,
+        **kwargs
+    )
+    # convert to df:
+    return pred.to_dataframe(batch).query("actual.notnull()", engine='python').reset_index(drop=True)
+
+
+def plot_forecasts(df: pd.DataFrame, **kwargs):
+    kwargs['split_dt'] = kwargs.get('split_dt', SPLIT_DT)
+    return Predictions.plot(df, **kwargs)
+
+
+df_forecast_ex = make_forecast_df(model=es, df_trainval=df_elec.query("group == @example_group"))
+
+plot_forecasts(df_forecast_ex)
+
+# %% [markdown]
+# The most obvious issue here is the discrepancy between the predictions on the training data (which look sane) and the validation data (which look insane). This isn't overfitting, but instead the difference between one-step-ahead predictions vs. long-range forecasts. One possibility for why the model does so poorly on the latter is that it wasn't actually trained to generate these predictions: the standard approach has us train on one-step-ahead predictions.
+
+# %% [markdown]
+# ### Attempt 2
+#
+# Let's see if we can improve on this. We'll leave the model unchanged but make two changes:
+#
+# - Use the `n_step` argument to train our model on one-week ahead forecasts, instead of one step (i.e. hour) ahead. This improves the efficiency of training by encouraging the model to 'care about' longer range forecasts vs. over-focusing on the easier problem of forecasting the next hour.
+# - Split our single series into multiple groups. This is helpful to speed up training, since pytorch has a non-trivial overhead for separate tensors -- i.e., it scales well with an increasing batch-size (fewer, but bigger, tensors), but poorly with an increasing time-series length (smaller, but more, tensors).
+
+# %%
+# for efficiency of training, we split this single group into multiple groups
+df_elec['gyq'] = \
+    df_elec['group'] + ":" + \
+    df_elec['time'].dt.year.astype('str') + "_" + \
+    df_elec['time'].dt.quarter.astype('str')
+
+# since TimeSeriesDataset pads short series, drop incomplete groups:
+df_elec.loc[df_elec.groupby('gyq')['kW_sqrt'].transform('count') < 2160, 'gyq'] = float('nan')
+
+train_example_2 = TimeSeriesDataset.from_dataframe(
+    df_elec.query("group == @example_group").query("dataset == 'train'"),
+    group_colname='gyq',
+    time_colname='time',
+    dt_unit='h',
+    measure_colnames=['kW_sqrt_c'],
+)
+
+# %%
+try:
+    es.load_state_dict(torch.load(os.path.join(BASE_DIR, f"es_{example_group}_2.pt")))
+except FileNotFoundError:
+    es.fit(
+        train_example_2.tensors[0],
+        start_offsets=train_example_2.start_datetimes,
+        n_step=int(24 * 7.5),
         every_step=False
     )
-    torch.save(kf.state_dict(), os.path.join(BASE_DIR, "electricity_models", "kf_standard.pt"))
-# -
+    torch.save(es.state_dict(), os.path.join(BASE_DIR, f"es_{example_group}_2.pt"))
 
-# Despite this being the 'standard' approach, we are still using some nonstandard tricks here:
+# %%
+df_forecast_ex2 = make_forecast_df(model=es, df_trainval=df_elec.query("group == @example_group"))
+plot_forecasts(df_forecast_ex2)
+
+# %% [markdown]
+# Seems like a massive improvement... Unfortunately, with hourly data, visualizing long-range forecasts in this way isn't very illuminating: it's just really hard to see the data! 
 #
-# - We are using the `n_step` argument to train our model on one-week ahead forecasts, instead of one step (i.e. hour) ahead. This improves the efficiency of training by 'encouraging' the model to 'care about' longer range forecasts vs. over-focusing on the easier problem of forecasting the next hour.
-# - We are splitting our single series into multiple groups. This is helpful since pytorch has a non-trivial overhead for separate tensors -- i.e., it scales well with an increasing batch-size (fewer, but bigger, tensors), but poorly with an increasing time-series length (smaller, but more, tensors).
+# We can try zooming in:
 
-# ### Model-Evaluation
+# %%
+plot_forecasts(df_forecast_ex2.query("time.dt.year==2013 & time.dt.month==6"))
+
+
+# %% [markdown]
+# This is better for actually seeing the data, but ideally we'd still like to get a view of the long range. 
 #
-# How does this standard model perform? Plotting the forecasts vs. actual suggests some issues:
+# Let's instead try splitting it into weekdays vs. weekends and daytimes vs. nightimes:
 
-eval_MT_052 = TimeSeriesDataset.from_dataframe(
-    df_elec.query("group == 'MT_052'"),
-    group_colname='group', 
-    time_colname='time',
-    measure_colnames=['kW_sqrt'],
-    dt_unit='h'
-).to(DEVICE)
-with torch.no_grad():
-    y = eval_MT_052.train_val_split(dt=SPLIT_DT)[0].tensors[0]
-    pred = kf(
-            y, 
-            start_offsets=eval_MT_052.start_datetimes,
-            out_timesteps=y.shape[1] + 24*365.25,
-        ) 
-    df_pred52 = pred.to_dataframe(eval_MT_052)
-df_pred52 = df_pred52.loc[~df_pred52['actual'].isnull(),:].reset_index(drop=True)
-pred.plot(df_pred52, split_dt=SPLIT_DT)
+# %%
+def plot_2x2(df: pd.DataFrame,
+             time_colname: str = 'time',
+             pred_colname: str = 'mean',
+             actual_colname: str = 'actual',
+             day_hours: tuple = (14, 15, 16, 17, 18),
+             night_hours: tuple = (2, 3, 4, 5, 6),
+             **kwargs):
+    """
+    Plot predicted vs. actual for a single group, splitting into 2x2 facets of weekday/end * day/night.
+    """
+    assert pred_colname in df.columns
+    assert actual_colname in df.columns
+    if 'group' in df.columns:
+        assert df['group'].nunique() == 1
 
-# Unfortunately, with hourly data, visualizing long-range forecasts in this way isn't very illuminating: it's just really hard to see the data! Let's try splitting it into weekdays vs. weekends and daytimes vs. nightimes:
+    df_split = df.loc[df[time_colname].dt.hour.isin(day_hours) | df[time_colname].dt.hour.isin(night_hours), :]. \
+        assign(weekend=lambda df: df[time_colname].dt.weekday.isin([5, 6]).astype('int'),
+               night=lambda df: (df[time_colname].dt.hour.isin(night_hours)).astype('int'),
+               date=lambda df: df[time_colname].astype('datetime64[D]')). \
+        groupby(['date', 'weekend', 'night']). \
+        agg(forecast=(pred_colname, 'mean'), actual=(actual_colname, 'mean')). \
+        reset_index()
+            
+    kwargs['subplot_kw'] = kwargs.get('subplot_kw', {})
+    if 'ylim' not in kwargs['subplot_kw']:
+        kwargs['subplot_kw']['ylim'] = (df_split['actual'].min(), df_split['actual'].max())
 
-# +
-df_pred52_split = df_pred52.\
-           query("(time.dt.hour==8) | (time.dt.hour==20)").\
-           assign(weekend = lambda df: df['time'].dt.weekday.isin([5,6]).astype('int'),
-                  night = lambda df: (df['time'].dt.hour == 8).astype('int')).\
-        reset_index(drop=True)
-df_pred52_split['forecast'] = df_pred52_split.pop('mean')
+    _, axes = plt.subplots(ncols=2, nrows=2, figsize=(15, 10), **kwargs)
+    for (wknd, night), df in df_split.groupby(['weekend', 'night']):
+        df.plot('date', 'actual', ax=axes[wknd, night], linewidth=.5, color='black')
+        df.plot('date', 'forecast', ax=axes[wknd, night], alpha=.75, color='red')
+        axes[wknd, night].axvline(x=SPLIT_DT, color='black', ls='dashed')
+        axes[wknd, night].set_title("{}, {}".format('Weekend' if wknd else 'Weekday', 'Night' if night else 'Day'))
+    plt.tight_layout()
 
 
-fig, axes = plt.subplots(ncols=2, nrows=2, figsize=(15,10))
-for (weekend, night), df in df_pred52_split.groupby(['weekend','night']):
-    df.plot('time','actual', ax=axes[weekend,night], linewidth=.5, color='black')
-    df.plot('time', 'forecast', ax=axes[weekend,night], alpha=.75, color='red')
-    axes[weekend,night].axvline(x=SPLIT_DT, color='black', ls='dashed')
-    axes[weekend,night].set_title("{}, {}".format('Weekend' if weekend else 'Weekday', 'Night' if night else 'Day'))
-plt.tight_layout()
-# -
+plot_2x2(df_forecast_ex2)
 
-# Viewing the forecastsing this way helps us understand the problem: the annual seasonal pattern is very different for daytimes and nighttimes, but the model isn't (and can't be) capturing that. For example, it incorrectly forecasts a 'hump' during summer days and weekend nights, even though this hump is really only present on weekday nights. The model only allows for a single seasonal pattern, rather than a separate one for different times of the day and days of the week.
+# %% [markdown]
+# Viewing the forecasts in this way helps us see a lingering serious issue: the annual seasonal pattern is very different for daytimes and nighttimes, but the model isn't capturing that. 
+#
+# The limitation is inherent to the model: it only allows for a single seasonal pattern, rather than a separate one for different times of the day and days of the week.
 
+# %% [markdown]
 # ## Incorporating a Neural Network
 #
 # If the problem is that our time-series model isn't allowing for interactions among the components of our time-series model, then a natural approach to allowing for these interactions is a neural network.
 #
 # To make this work, we likely don't want build a model of a single series. Instead, we want to learn across multiple series, so that our network can build representations of patterns that are shared across multiple buildings.
 
-# +
-# prepare our dataset: add dummy features that capture the annual, weekly, and daily seasonal patterns:
+# %% [markdown]
+# First, we'll use `torchcast.utils.add_season_features` to add dummy features that capture the annual, weekly, and daily seasonal patterns:
+
+# %%
 from torchcast.utils import add_season_features
 
-df_elec = df_elec.\
-    pipe(add_season_features, K=3, period='weekly').\
-    pipe(add_season_features, K=8, period='yearly').\
-    pipe(add_season_features, K=8, period='daily')
+df_elec = df_elec. \
+    pipe(add_season_features, K=3, period='weekly'). \
+    pipe(add_season_features, K=8, period='yearly'). \
+    pipe(add_season_features, K=10, period='daily')
 
-season_cols =\
-    df_elec.columns[df_elec.columns.str.endswith('_sin')|df_elec.columns.str.endswith('_cos')]
-
-df_elec['kW_sqrt'] = np.sqrt(df_elec['kW'])
-
-dataset_kwargs = dict(
-    dt_unit='h',
-    y_colnames=['kW_sqrt'],
-    X_colnames=season_cols,
-    time_colname='time'
-)
-
-trainval_batches = TimeSeriesDataLoader.from_dataframe(
-    df_elec.query("dataset != 'test'"), 
-    group_colname='group', 
-    **dataset_kwargs,
-    batch_size=20
-)
-
-val_batch = TimeSeriesDataset.from_dataframe(
-    df_elec.query("dataset == 'val'"), 
-    group_colname='group', 
-    **dataset_kwargs
-)
-# -
-
-# ### Neural-Network for Time-Series
-#
-# Since `torchcast` is built on top of PyTorch, we can train a model end-to-end: i.e. we could start with a neural network with random-inits, plug it into a `KalmanFilter`, and train the whole thing.
-#
-# In practice, we'll generally want to take a neural-network that has already been partially or fully trained to generate sensible predictions. A standard feedforward network will take many many more epochs to train than a `KalmanFilter` (which itself will be slower per-epoch), so it's helpful to keep the two models separate intially.
-#
-# Here we'll use a network that combines a per-building embedding with a standard architecture that's shared across buildings. This allows the network's shared layers to find representations that are shared across many buildings.
-#
-# Note the network here uses only calendar features (fourier-transforms on daily/weekly/yearly seasonal periods) to generate predictions. This could be expanded depending on the available data: e.g. holiday-indicators, weather-data, etc.
-
-# +
-# mapping from group-names to integers for torch.nn.Embedding:
-group_id_mapping = {gn : i for i, gn in enumerate(np.unique(df_elec['group']))}
-
-def get_group_ids(dataset):
-    group_names = pd.Series(dataset.group_names).str.split(":", expand=True)[0]
-    return torch.as_tensor([group_id_mapping[gn] for gn in group_names], device=DEVICE)
-
-# scaling
-group_means = df_elec.query("time < @SPLIT_DT").groupby('group')['kW_sqrt'].mean().to_dict()
-group_stds = df_elec.query("time < @SPLIT_DT").groupby('group')['kW_sqrt'].mean().to_dict()
-def standardize_by_group(tensor, dataset):
-    group_names = pd.Series(dataset.group_names).str.split(":", expand=True)[0]
-    means = torch.as_tensor([group_means[gn] for gn in group_names], device=DEVICE)
-    stds = torch.as_tensor([group_stds[gn] for gn in group_names], device=DEVICE)
-    return (tensor - means[:,None,None]) / stds[:,None,None]
+season_cols = \
+    df_elec.columns[df_elec.columns.str.endswith('_sin') | df_elec.columns.str.endswith('_cos')].tolist()
 
 
-# +
-# helper class for combining shared layers with per-building embedding:
-class PerGroupNN(torch.nn.Module):
-    def __init__(self, shared: torch.nn.Module, embedding: torch.nn.Module):
-        super().__init__()
-        self.shared = shared
-        self.embedding = embedding
+# %% [markdown]
+# Since we're working with more data, we'll need to use a dataloader (`torchcast` provies `TimeSeriesDataLoader`):
 
-    def forward(self, X, group_ids):
-        shared_weights = self.shared(X)
-        per_group = self.embedding(group_ids)
-        per_group_w, per_group_b = torch.split(
-            per_group.unsqueeze(1), 
-            [self.embedding.embedding_dim - 1, 1], 
-            -1
-        )
-        outw = shared_weights.unsqueeze(-2) @ per_group_w.unsqueeze(-1)
-        return outw.squeeze(-1) + per_group_b 
-
-per_group_nn = PerGroupNN(
-    shared = torch.nn.Sequential(
-        torch.nn.Linear(len(season_cols), 64),
-        torch.nn.Tanh(),
-        torch.nn.Linear(64, 64),
-        torch.nn.Tanh(),
-        torch.nn.Linear(64, 20)
-    ),
-    embedding = torch.nn.Embedding(
-        num_embeddings=len(group_id_mapping),
-        embedding_dim=21
+# %%
+def make_dataloader(type_: str,
+                    batch_size: int,
+                    group_colname: str = 'group',
+                    **kwargs) -> TimeSeriesDataLoader:
+    assert type_ in {'train', 'val', 'all'}
+    data = df_elec if type_ == 'all' else df_elec.query(f"dataset == '{type_}'")
+    return TimeSeriesDataLoader.from_dataframe(
+        data,
+        group_colname=group_colname,
+        X_colnames=season_cols,
+        y_colnames=['kW_sqrt_c'],
+        time_colname='time',
+        dt_unit='h',
+        **kwargs,
+        batch_size=batch_size
     )
+
+
+# %% [markdown]
+# ### Intro
+#
+# Our goal is to make a 'hybrid' model that combines the traditional approach (here, exponential smoothing) with a neural network.
+#
+# Specifying this is straightforward. The `LinearModel` provides a catch-all for any way of passing arbitrary inputs to our model. For example, if we had weather data -- temperature, humidity, wind-speed -- we might add a process like:
+#
+# ```
+# LinearModel(id='weather', predictors=['temp','rhumidity','windspeed'])
+# ```
+#
+# And our time-series model would learn how each of these impacts our series(es).
+#
+# Here we are using `LinearModel` a little differently: rather than it taking as input predictors, it will take as input the *output* of a neural-network, which itself will take predictors (the calendar-features we just defined).
+
+# %%
+from torchcast.process import LinearModel
+
+es_nn = ExpSmoother(
+    measures=['kW_sqrt_c'],
+    processes=[
+        # trend:
+        LocalTrend(id='trend'),
+        # static seasonality:
+        LinearModel(id='season', predictors=['nn_output']),
+        # local deviations from typical behavior:
+        Season(id='hour_in_day', period=24, dt_unit='h', K=6, decay=True),
+    ]
 )
-per_group_nn.to(DEVICE)
 
-try:
-    per_group_nn.load_state_dict(torch.load(os.path.join(BASE_DIR, "electricity_models", "per_group_nn.pt"), map_location=DEVICE))
-except FileNotFoundError:
-    from IPython import display
-    per_group_nn.optimizer = torch.optim.Adam(per_group_nn.parameters())
+# %% [markdown] tags=[]
+# ### Pre-Training
+#
+# Now all we have to do is prepare a neural network that takes our annual/weekly/hourly features as inputs and produces predictions. We *could* simply define a network, pass its outputs to `es_nn`, and train the whole thing end-to-end. In practice, however, it's more efficient to first 'pre-train' our network, since it requires many more iterations than the `ExpSmoother` (and is faster per-iteration).
+#
+# To keep things (relatively) concise, we'll use [PyTorch Lightning](http://pytorch-lightning.readthedocs.io).
+#
+# Since we'll use this again later, we first make an abstract class that works on any model with a `TimeSeriesDataset` input:
 
-    per_group_nn.loss_history = []
-    per_group_nn.val_history = []
-    for epoch in range(1500):
-        epoch_loss = 0
-        for batch in trainval_batches:
-            batch, _ = batch.train_val_split(dt=SPLIT_DT)
-            y, X = batch.to(DEVICE).tensors
-            y = standardize_by_group(y, batch)
-            nan_mask = torch.isnan(y)
-            group_ids = get_group_ids(batch)
-            try:
-                pred = per_group_nn(X, group_ids=group_ids)
-                loss = torch.mean((pred[~nan_mask] - y[~nan_mask]) ** 2)
-                loss.backward()
-                per_group_nn.optimizer.step()
-                epoch_loss += loss.item()
-            finally:
-                per_group_nn.optimizer.zero_grad(set_to_none=True)
-        per_group_nn.loss_history.append(epoch_loss / len(train_batches))
+# %%
+# GPU will be useful if we have one:
+maybe_cuda = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+maybe_cuda
 
+# %%
+from pytorch_lightning import LightningModule, Trainer
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from pytorch_lightning.loggers import CSVLogger
+from torch_optimizer import Adahessian
+
+
+
+class TimeSeriesLightningModule(LightningModule):
+    def __init__(self, module: torch.nn.Module):
+        super().__init__()
+        self._module = module
+
+    def _step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
+        batch = batch.to(maybe_cuda)
+        pred = self(batch, **kwargs)
+        return self._get_loss(pred, batch.tensors[0])
+
+    def training_step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
+        loss = self._step(batch, batch_idx=batch_idx, **kwargs)
+        self.log("step_train_loss", loss, on_step=True, on_epoch=False)
+        self.log("epoch_train_loss", loss, on_step=False, on_epoch=True)
+        return loss
+
+    @torch.no_grad()
+    def validation_step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
+        loss = self._step(batch, batch_idx=batch_idx, **kwargs)
+        self.log("step_val_loss", loss, on_step=True, on_epoch=False)
+        self.log("epoch_val_loss", loss, on_step=False, on_epoch=True)
+        return loss
+
+    def _get_loss(self, predicted, actual) -> torch.Tensor:
+        raise NotImplementedError
+
+    def forward(self, batch: TimeSeriesDataset, **kwargs) -> torch.Tensor:
+        raise NotImplementedError
+
+# %% [markdown]
+# Now we'll make a class that's more specific to the current task.
+#
+# There are a variety of ways we could do this. Here, we're approaching it by combining two kinds of networks:
+#
+# 1. A multi-layer network takes the calendar-features and produces multiple outputs.
+# 2. An embedding network takes the groups and produces an embedding of the same dim.
+#
+# To generate a prediction, we multiply the two. We can almost think of this like the first network is learning dimensionality reduction -- reducing the dozens of calendar-features (and their hundreds of interactions) into an efficient low-dimensional representation -- and the second network is learning the group-specific coefficients for these derived features.
+
+# %%
+names_to_idx = {nm: i for i, nm in enumerate(sorted(df_elec['group'].unique()))}
+
+
+class CalendarFeatureNN(TimeSeriesLightningModule):
+    def __init__(self, module: torch.nn.Module):
+        super().__init__(module=module)
         with torch.no_grad():
-            y, X = val_batch.to(DEVICE).tensors
-            y = standardize_by_group(y, val_batch)
-            nan_mask = torch.isnan(y)
-            group_ids = get_group_ids(val_batch)
-            pred = per_group_nn(X, group_ids=group_ids)
-            val_loss = torch.mean((pred[~nan_mask] - y[~nan_mask]) ** 2)
-            per_group_nn.val_history.append(val_loss.item())
+            self._module.emb_nn.weight *= .1
+    
+    def _get_loss(self, predicted, actual) -> torch.Tensor:
+        is_valid = ~torch.isnan(actual)
+        sq_err = (actual[is_valid] - predicted[is_valid]) ** 2
+        return sq_err.mean()
+    
+    def backward(self,
+                loss: torch.Tensor,
+                optimizer: torch.optim.Optimizer,
+                optimizer_idx: int,
+                *args,
+                **kwargs):
+                return super().backward(loss, optimizer, optimizer_idx, create_graph=True)
 
-        if epoch > 10:
-            plt.close()
-            display.clear_output(wait=True)
-            fig, axes = plt.subplots(ncols=2, figsize=(10,5))
-            pd.Series(per_group_nn.loss_history[10:]).plot(ax=axes[0], logy=True)
-            pd.Series(per_group_nn.val_history[10:]).plot(ax=axes[1], logy=True)
-            display.display(plt.gcf())
-    torch.save(per_group_nn.state_dict(), os.path.join(BASE_DIR, "electricity_models", "per_group_nn.pt"))
-# -
+    def forward(self, batch: TimeSeriesDataset, **kwargs) -> torch.Tensor:
+        y, X = batch.tensors
+        group_names = [gn.split(":")[0] for gn in batch.group_names]
+        group_ids = [names_to_idx[gn] for gn in group_names]
 
-# ### Training our Hybrid Forecasting Model
-#
-# Now that we have a network that has the representational capacity to transform datetimes into interacting seasonal structure, we can plug this network into a new `KalmanFilter` model.
-#
-# Additionally, this model is using a few tricks to support training across the many diverse time-serieses in this dataset:
-#
-# - **Predicting Variance:** We use a `torch.nn.Embedding` model to predict a separate variance-structure for each building. This incorporates both the measure-variance -- the amount of white-noise in the data -- as well as the process-variance -- how variable each component of the series is. 
-# - **Predicting Initial Values:** We are still splitting each series into multiple sub-series to aid in efficiency of training. This means that we need to let each series start off with its own unique internal state that encodes its unique seasonal and random-walk structure. 
+        # use NNs to get latent features and group-specific coefs on those features:
+        coefs = self._module.emb_nn(torch.tensor(group_ids, device=maybe_cuda))
+        feats = self._module.features_nn(X)
 
-# +
-from torchcast.process import NN, LocalLevel, LocalTrend, Season
+        # multiply features by coefs (as in a linear-model)
+        # NOTE: no bias term -- assumes centered y
+        pred = (coefs.unsqueeze(1) * feats).sum(-1, keepdim=True)
+
+        return pred
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        pars = [p for p in self.parameters() if p.requires_grad]
+        return Adahessian(pars, lr=.15)
+
+
+# %%
+cal_features_num_latent_dim = 25
+
+calendar_feature_nn = CalendarFeatureNN(
+    torch.nn.ModuleDict({'features_nn':
+        torch.nn.Sequential(
+            torch.nn.Linear(len(season_cols), 48),
+            torch.nn.Tanh(),
+            torch.nn.Linear(48, 48),
+            torch.nn.Tanh(),
+            torch.nn.Linear(48, cal_features_num_latent_dim)
+        )
+        , 'emb_nn':
+            torch.nn.Embedding(
+                num_embeddings=len(names_to_idx),
+                embedding_dim=cal_features_num_latent_dim
+            )
+    })
+).to(maybe_cuda)
+
+# %%
+try:
+    calendar_feature_nn.load_state_dict(torch.load(os.path.join(BASE_DIR, f"calendar_feature_nn{cal_features_num_latent_dim}.pt")))
+except FileNotFoundError:
+    Trainer(
+        gpus=int(str(maybe_cuda) == 'cuda'),
+        logger=CSVLogger(BASE_DIR, f'calendar_feature_nn{cal_features_num_latent_dim}'),
+        log_every_n_steps=1,
+        min_epochs=100,
+        callbacks=[EarlyStopping(monitor="epoch_val_loss", patience=10, min_delta=.0001, verbose=False)]
+    ).fit(calendar_feature_nn, make_dataloader('train', batch_size=45), make_dataloader('val', batch_size=55))
+    calendar_feature_nn.trainer = None
+    torch.save(
+        calendar_feature_nn.state_dict(), os.path.join(BASE_DIR, f"calendar_feature_nn{cal_features_num_latent_dim}.pt")
+    )
+
+# %% [markdown]
+# #### Evaluation
+#
+# Let's return to our example group. This neural-network *only* takes calendar-features as input, so it's unable to incorporate trends or autocorrelation. Still, we can get a glimpse of whether it's able to handle the interacting seasonalities problem.
+
+# %%
+calendar_feature_nn.to(maybe_cuda)
+
+eval_example = TimeSeriesDataset.from_dataframe(
+    df_elec[df_elec['group'] == example_group],
+    group_colname='group',
+    X_colnames=season_cols,
+    y_colnames=['kW_sqrt_c'],
+    time_colname='time',
+    dt_unit='h',
+).to(maybe_cuda)
+
+with torch.no_grad():
+    df_cal_nn_example = TimeSeriesDataset.tensor_to_dataframe(
+        calendar_feature_nn(eval_example),
+        times=eval_example.times(),
+        group_names=eval_example.group_names,
+        time_colname='time', group_colname='group',
+        measures=['predicted_sqrt']
+    ).merge(df_elec[df_elec['group'] == example_group], how='left')
+
+# %%
+plot_2x2(df_cal_nn_example, actual_colname='kW_sqrt_c', pred_colname='predicted_sqrt')
+
+# %% [markdown]
+# We can see that the network correctly captures the varying seasonal patterns. 
+
+# %% [markdown]
+# ### The Hybrid Model
+#
+# Now we're reading to plug our network into our `ExpSmoother`.
+
+# %%
+# freeze the "features" while keeping the per-building embeddings unfrozen:
+[p.requires_grad_(False) for p in calendar_feature_nn._module.features_nn.parameters()]
+
+# pytorch has the handy feature that we can set calendar_feature_nn to be a child of es_nn
+# by adding it as an attribute; among other things this means that calendar_feature_nn's params
+# will be included in the state-dict:
+es_nn.calendar_feature_nn = copy.deepcopy(calendar_feature_nn)
+
+
+# %% [markdown]
+# #### One More Thing: Predict Variance
+#
+# One last complexity we're going to add: 
+#
+# Our exponential-smoothing model has the nice property that it doesn't just generate point-predictions, but also prediction intervals (the gray bands we see when we use `plot_forecasts()`).
+#
+# While we aren't using these centrally in the current example, we're still going to be responsible forecasters and try to make these generally well-calibrated. When predicting multiple series where the values can vary greatly -- as we are here, with multiple buildings whose kW usage can vary based on the building's size and other factors -- we would not generally expect the variance to be the same across series. This can be mitigated somewhat by centering/scaling the series, but this is limited (e.g. scaling a series by its std-deviation confounds variation due to inherent noise in the series and variation due to annual seasonality). A better approach is to *predict* the variance.
+#
+# Here we will set up our `ExponentialSmoother` to predict the variance. Ther are a variety of ways we could do this (e.g. an embedding to allow each series to have a separate variance; or even support time-varying variances), but here we will take a relatively simple approach of predicting based on means/std-dev.
+
+# %%
+group_resid_devs = df_elec. \
+    query("dataset=='train'"). \
+    assign(_diff=lambda df: df.groupby('group')['kW_sqrt'].diff()). \
+    pipe(lambda df: df.groupby('group')['_diff'].std().to_dict())
+
+
+def make_group_features_mat(group_names: Sequence[str]) -> torch.Tensor:
+    means = torch.as_tensor([group_means[gn] for gn in group_names], device=maybe_cuda)
+    devs = torch.as_tensor([group_resid_devs[gn] for gn in group_names], device=maybe_cuda)
+    cvs = devs / means
+    return torch.stack([means, devs, cvs], 1).log()
+
+make_group_features_mat([example_group])
+
+# %%
 from torchcast.covariance import Covariance
 
-shared_nn = copy.deepcopy(per_group_nn.shared)
+es_nn.measure_covariance = Covariance.from_measures(['kW_sqrt_c'], predict_variance=True)
 
-processes = [
-    LocalTrend(id='trend'),
-    LocalLevel(id='level', decay=True),
-    Season(id='hour_in_day', period=24, dt_unit='h', K=6, decay=True),
-    NN(id='nn', nn=shared_nn)
-]
-
-mvar_nn = torch.nn.Embedding(
-    len(group_id_mapping),
-    embedding_dim=1,
-)
-pvar_nn = torch.nn.Embedding(
-    len(group_id_mapping),
-    embedding_dim=Covariance.for_processes(processes).param_rank,
+es_nn.measure_var_nn = torch.nn.Sequential(
+    torch.nn.Linear(3,1),
+    torch.nn.Softplus()
 )
 
-kf_nn = KalmanFilter(
-    measures=['kW_sqrt'], 
-    processes=processes,
-    measure_covariance=Covariance.for_measures(['kW_sqrt'], predict_variance=mvar_nn),
-    process_covariance=Covariance.for_processes(processes, predict_variance=pvar_nn)
-)
 
-kf_nn.initial_state_nn = torch.nn.Embedding(
-    len(group_id_mapping),
-    embedding_dim=len(kf_nn.initial_mean),
-)
-with torch.no_grad():
-    kf_nn.initial_state_nn.weight[:] *= .01
-kf_nn.initial_mean = None
+# %% [markdown]
+# #### Training
+#
+# We'll again create a lightning class to help with training:
 
-kf_nn.to(DEVICE)
-# -
+# %%
+class HybridForecaster(TimeSeriesLightningModule):
+    def _get_loss(self, predicted, actual) -> torch.Tensor:
+        return -predicted.log_prob(actual).mean()
 
+    def _step(self, batch: TimeSeriesDataset, batch_idx: int, **kwargs) -> torch.Tensor:
+        return super()._step(batch=batch, batch_idx=batch_idx, n_step=int(24 * 15), every_step=False, **kwargs)
+
+    def forward(self, batch: TimeSeriesDataset, **kwargs) -> torch.Tensor:
+        y, X = batch.tensors
+        group_names = [gn.split(":")[0] for gn in batch.group_names]
+        mvar_X = make_group_features_mat(group_names)
+
+        return self._module(
+            y,
+            season__X=self._module.calendar_feature_nn(batch),
+            measure_var_multi=self._module.measure_var_nn(mvar_X),
+            start_offsets=batch.start_offsets,
+            **kwargs
+        )
+
+    def backward(self, *args, **kwargs):
+        return super().backward(*args, **kwargs, create_graph=True)
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        return Adahessian([p for p in self.parameters() if p.requires_grad], lr=.10)
+
+es_nn_lightning = HybridForecaster(es_nn)
+
+# %%
 try:
-    kf_nn.load_state_dict(torch.load(os.path.join(BASE_DIR,"electricity_models", "kf_nn.pt"), map_location=DEVICE))
+    es_nn.load_state_dict(torch.load(os.path.join(BASE_DIR, f"es_nn{cal_features_num_latent_dim}.pt")))
 except FileNotFoundError:
-    from IPython import display
-    train_batches = TimeSeriesDataLoader.from_dataframe(
-        df_elec.query("dataset == 'train'"), 
-        group_colname='subgroup', 
-        **dataset_kwargs, 
-        batch_size=100,
-        shuffle=True
-    )
+    Trainer(
+        gpus=int(str(maybe_cuda) == 'cuda'),
+        logger=CSVLogger(BASE_DIR, f'es_nn{cal_features_num_latent_dim}', flush_logs_every_n_steps=1),
+        log_every_n_steps=1,
+        min_epochs=10,
+        callbacks=[EarlyStopping(monitor="epoch_val_loss", patience=10, min_delta=0.001, verbose=True)]
+    ).fit(es_nn_lightning,
+          make_dataloader('train', batch_size=144, group_colname='gyq', shuffle=True),
+          make_dataloader('val', batch_size=55)
+          )
+    torch.save(es_nn.state_dict(), os.path.join(BASE_DIR, f"es_nn{cal_features_num_latent_dim}.pt"))
 
-    from torch_optimizer import Adahessian
-    kf_nn.optimizer = Adahessian([
-        {'params' : [p for n,p in kf_nn.named_parameters() if 'processes.nn.'     in n], 'lr' : .001},
-        {'params' : [p for n,p in kf_nn.named_parameters() if 'processes.nn.' not in n], 'lr' : .50}
-    ])
-
-    kf_nn.loss_history = []
-    kf_nn.val_history = []
-    for epoch in range(200):
-        # training:
-        train_loss = 0
-        for batch in tqdm(train_batches, total=len(train_batches), desc=f"Epoch {epoch}"):
-            y, X = batch.to(DEVICE).tensors
-            group_ids = get_group_ids(batch)
-            try:
-                pred = kf_nn(
-                    y, 
-                    X=X,
-                    measure_covariance__X=group_ids,
-                    process_covariance__X=group_ids,
-                    initial_state=kf_nn.initial_state_nn(group_ids),
-                    start_offsets=batch.start_datetimes,
-                    n_step=int(24 * 7.5),
-                    every_step=False
-                )
-                loss = -pred.log_prob(y).mean()
-                loss.backward(create_graph=True)
-                kf_nn.optimizer.step()
-                train_loss += loss.item()
-            finally:
-                kf_nn.optimizer.zero_grad(set_to_none=True)
-        train_loss /= len(train_batches)
-        kf_nn.loss_history.append(train_loss)
-
-        # validation:
-        with torch.no_grad():
-            y, X = val_batch.to(DEVICE).tensors
-            group_ids = get_group_ids(val_batch)
-            pred = kf_nn(
-                    y, 
-                    X=X,
-                    measure_covariance__X=group_ids,
-                    process_covariance__X=group_ids,
-                    initial_state=kf_nn.initial_state_nn(group_ids),
-                    start_offsets=val_batch.start_datetimes,
-                    n_step=int(24 * 7.5),
-                    every_step=False
-                )
-            val_errs = nanmean((pred.means - y).abs(), dim=1) / nanmean(y, dim=1)
-            kf_nn.val_history.append(val_errs.mean().item())
-
-        display.clear_output(wait=True)
-        if epoch > 2:
-            plt.close()
-            fig, axes = plt.subplots(ncols=2,figsize=(10,5))
-            pd.Series(kf_nn.loss_history[2:]).plot(ax=axes[0])
-            pd.Series(kf_nn.val_history[2:]).plot(ax=axes[1])
-            display.display(plt.gcf())
-        torch.save(kf_nn.state_dict(), os.path.join(BASE_DIR,"electricity_models", "kf_nn.pt"))
-
-# ### Model Evaluation
+# %% [markdown]
+# #### Evaluation
 #
 # Reviewing the same example-building from before, we see the forecasts are more closely hewing to the actual seasonal structure for each time of day/week. Instead of the forecasts in each panel being essentially identical, each differs in shape. 
 
-# + nbsphinx="hidden"
-withtest_batches = TimeSeriesDataLoader.from_dataframe(
-    df_elec,
-    group_colname='group', 
-    **dataset_kwargs,
-    batch_size=5
-)
-df_pred_nn = []
+# %% nbsphinx="hidden"
+es_nn_lightning.to(maybe_cuda)
+df_forecast_nn = []
 with torch.no_grad():
-    for eval_batch in tqdm(withtest_batches):
-        eval_batch = eval_batch.to(DEVICE)
-        y = eval_batch.train_val_split(dt=SPLIT_DT)[0].tensors[0]
-        X = eval_batch.tensors[1]
-        group_ids = get_group_ids(eval_batch)
-        pred_nn = kf_nn(
-                y, 
-                X=X,
-                measure_covariance__X=group_ids,
-                process_covariance__X=group_ids,
-                initial_state=kf_nn.initial_state_nn(group_ids),
-                start_offsets=eval_batch.start_datetimes,
-                out_timesteps=X.shape[1],
-            ) 
-        df_pred_nn.append(pred_nn.to_dataframe(eval_batch))
-df_pred_nn = pd.concat(df_pred_nn)
-df_pred_nn = df_pred_nn.loc[~df_pred_nn['actual'].isnull(),:].reset_index(drop=True)
+    for _batch in tqdm(make_dataloader('all', batch_size=25)):
+        _batch = _batch.to(maybe_cuda)
+        forecast_batch = _batch.with_new_tensors(
+            _batch.train_val_split(dt=SPLIT_DT)[0].tensors[0],
+            _batch.tensors[1]
+        )
+        forecast_nn = es_nn_lightning(forecast_batch, out_timesteps=_batch.tensors[1].shape[1])
+        df_forecast_nn.append(forecast_nn.to_dataframe(_batch))
+df_forecast_nn = pd.concat(df_forecast_nn).query("actual.notnull()").reset_index(drop=True)
 
-# +
-df_pred52_nn = df_pred_nn.\
-           query("group=='MT_052'").\
-           query("(time.dt.hour==8) | (time.dt.hour==20)").\
-           assign(weekend = lambda df: df['time'].dt.weekday.isin([5,6]).astype('int'),
-                  night = lambda df: (df['time'].dt.hour == 8).astype('int')).\
-        reset_index(drop=True)
-df_pred52_nn['forecast'] = df_pred52_nn.pop('mean')
+# %%
+plot_forecasts(df_forecast_nn.query("time.dt.year==2013 & time.dt.month==6"), split_dt=SPLIT_DT)
 
-fig, axes = plt.subplots(ncols=2, nrows=2, figsize=(15,10))
-for (weekend, night), df in df_pred52_nn.groupby(['weekend','night']):
-    df.plot('time','actual', ax=axes[weekend,night], linewidth=.5, color='black')
-    df.plot('time', 'forecast', ax=axes[weekend,night], alpha=.75, color='red')
-    axes[weekend,night].axvline(x=SPLIT_DT, color='black', ls='dashed')
-    axes[weekend,night].set_title("{}, {}".format('Weekend' if weekend else 'Weekday', 'Night' if night else 'Day'))
-plt.tight_layout()
+# %%
+plot_2x2(df_forecast_nn.query("group==@example_group"))
 
-# + nbsphinx="hidden"
-"""
-- MT_029 -- need (way) higher K for annual season?
-- MT_018, MT_024, MT_047 -- still systematic bias in certain parts of the day. why? 
-    - when we split day into 12/12 hours, don't really see it. so seems like just having trouble with *exact* shape.
-- MT_045/MT_036/MT_013 -- seems like LocalLevel should be *much* more responsive. 
-    - OTOH it's clearly just xmas, maybe exs like that are incredibly rare otherwise so training doesn't prioritze
-""";
-# -
 
-# While it's fairly obvious from looking at the forecasts, we can confirm that the 2nd model does indeed substantially reduce forecast error, relative to the 'standard' model:
+# %% [markdown]
+# Let's confirm quantitatively that the 2nd model does indeed substantially reduce forecast error, relative to the 'standard' model:
 
-# +
-df_nn_err = df_pred_nn.\
-    assign(error = lambda df: (df['mean'] - df['actual']).abs(),
-           validation = lambda df: df['time'] > SPLIT_DT).\
-    groupby(['group','validation']).\
-    agg(error = ('error', 'mean')).\
+# %%
+def inverse_transform(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for col in ['mean', 'lower', 'upper', 'actual']:
+        df[col] = df[col] + df['group'].map(group_means)
+        df[col] = df[col].clip(lower=0) ** 2
+    return df
+
+
+# %%
+df_nn_err = df_forecast_nn. \
+    pipe(inverse_transform).\
+    assign(error=lambda df: (df['mean'] - df['actual']).abs(),
+           validation=lambda df: df['time'] > SPLIT_DT). \
+    groupby(['group', 'validation']). \
+    agg(error=('error', 'mean')). \
     reset_index()
 
-df_pred52.\
-    assign(error = lambda df: (df['mean'] - df['actual']).abs(),
-           validation = lambda df: df['time'] > SPLIT_DT).\
-    groupby(['group','validation']).\
-    agg(error = ('error', 'mean')).\
-    reset_index().\
-    merge(df_nn_err, on=['group', 'validation'])
+df_forecast_ex2. \
+    pipe(inverse_transform).\
+    assign(error=lambda df: (df['mean'] - df['actual']).abs(),
+           validation=lambda df: df['time'] > SPLIT_DT). \
+    groupby(['group', 'validation']). \
+    agg(error=('error', 'mean')). \
+    reset_index(). \
+    merge(df_nn_err, on=['group', 'validation'], suffixes=('_es', '_es_nn'))
+
+

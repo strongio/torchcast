@@ -15,12 +15,13 @@ class TestCovariance(unittest.TestCase):
         expected = torch.tensor([[7.3891, 2.7183, 5.4366],
                                  [2.7183, 55.5982, 24.1672],
                                  [5.4366, 24.1672, 416.4288]])
-        diff = (expected - module(None)).abs()
+        diff = (expected - module({}, num_groups=1, num_times=1)).abs()
         self.assertTrue((diff < .0001).all())
 
     def test_empty_idx(self):
         module = torch.jit.script(Covariance(id='test', rank=3, empty_idx=[0]))
-        cov = module(None)
+        cov = module({}, num_groups=1, num_times=1)
+        cov = cov.squeeze()
         self.assertTrue((cov[0, :] == 0).all())
         self.assertTrue((cov[:, 0] == 0).all())
         self.assertTrue((cov == cov.t()).all())

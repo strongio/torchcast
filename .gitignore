@@ -108,3 +108,4 @@ docs/_html/*
 *.csv
 *.pt
 *.gz
+docs/examples/lightning_logs/*

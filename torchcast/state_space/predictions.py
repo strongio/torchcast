@@ -1,11 +1,12 @@
-import datetime
-from typing import Tuple, Union, Optional, Dict, Iterator
+from typing import Tuple, Union, Optional, Dict, Iterator, Sequence
 from warnings import warn
 
 import torch
 from torch import nn, Tensor
 
 import numpy as np
+
+from backports.cached_property import cached_property
 
 from torchcast.internals.utils import get_nan_groups, is_near_zero
 
@@ -19,49 +20,107 @@ class Predictions(nn.Module):
     """
 
     def __init__(self,
-                 state_means: Tensor,
-                 state_covs: Tensor,
-                 R: Tensor,
-                 H: Tensor,
-                 kalman_filter: Union['KalmanFilter', dict]):
+                 state_means: Sequence[Tensor],
+                 state_covs: Sequence[Tensor],
+                 R: Sequence[Tensor],
+                 H: Sequence[Tensor],
+                 model: Union['StateSpaceModel', dict],
+                 update_means: Optional[Sequence[Tensor]] = None,
+                 update_covs: Optional[Sequence[Tensor]] = None):
         super().__init__()
-        self.state_means = state_means
-        if torch.isnan(self.state_means).any():
-            raise ValueError("`nans` in `state_means`")
-        self.state_covs = state_covs
-        if torch.isnan(self.state_covs).any():
-            raise ValueError("`nans` in `state_covs`")
-        self.H = H
-        self.R = R
 
-        if not isinstance(kalman_filter, dict):
+        # predictions state:
+        self._state_means = state_means
+        self._state_covs = state_covs
+
+        # updates state:
+        self._update_means = update_means
+        self._update_covs = update_covs
+
+        # design mats:
+        self._H = H
+        self._R = R
+
+        # some model attributes are needed for `log_prob` method and for names for plotting
+        if not isinstance(model, dict):
             all_state_elements = []
-            for process_name, process in kalman_filter.named_processes():
+            for pid in model.processes:
+                process = model.processes[pid]
                 for state_element in process.state_elements:
-                    all_state_elements.append((process_name, state_element))
-            kalman_filter = {
-                'distribution_cls': kalman_filter.ss_step.get_distribution(),
-                'measures': kalman_filter.measures,
+                    all_state_elements.append((pid, state_element))
+            model = {
+                'distribution_cls': model.ss_step.get_distribution(),
+                'measures': model.measures,
                 'all_state_elements': all_state_elements
             }
-        self.distribution_cls = kalman_filter['distribution_cls']
-        self.measures = kalman_filter['measures']
-        self.all_state_elements = kalman_filter['all_state_elements']
+        self.distribution_cls = model['distribution_cls']
+        self.measures = model['measures']
+        self.all_state_elements = model['all_state_elements']
 
-        self._means = None
-        self._covs = None
+        # for lazily populated properties:
+        self._means = self._covs = None
 
+        # useful to have:
         self.num_groups, self.num_timesteps, self.state_size = self.state_means.shape
+
+    @cached_property
+    def R(self) -> torch.Tensor:
+        if not isinstance(self._R, torch.Tensor):
+            self._R = torch.stack(self._R, 1)
+        return self._R
+
+    @cached_property
+    def H(self) -> torch.Tensor:
+        if not isinstance(self._H, torch.Tensor):
+            self._H = torch.stack(self._H, 1)
+        return self._H
+
+    @cached_property
+    def state_means(self) -> torch.Tensor:
+        if not isinstance(self._state_means, torch.Tensor):
+            self._state_means = torch.stack(self._state_means, 1)
+        if torch.isnan(self._state_means).any():
+            raise ValueError("`nans` in `state_means`")
+        return self._state_means
+
+    @cached_property
+    def state_covs(self) -> torch.Tensor:
+        if not isinstance(self._state_covs, torch.Tensor):
+            self._state_covs = torch.stack(self._state_covs, 1)
+        if torch.isnan(self._state_covs).any():
+            raise ValueError("`nans` in `state_covs`")
+        return self._state_covs
+
+    @cached_property
+    def update_means(self) -> Optional[torch.Tensor]:
+        if self._update_means is None:
+            return None
+        if not isinstance(self._update_means, torch.Tensor):
+            self._update_means = torch.stack(self._update_means, 1)
+        if torch.isnan(self._update_means).any():
+            raise ValueError("`nans` in `state_means`")
+        return self._update_means
+
+    @cached_property
+    def update_covs(self) -> torch.Tensor:
+        if self._update_covs is None:
+            return None
+        if not isinstance(self._update_covs, torch.Tensor):
+            self._update_covs = torch.stack(self._update_covs, 1)
+        if torch.isnan(self._update_covs).any():
+            raise ValueError("`nans` in `update_covs`")
+        return self._update_covs
 
     def get_state_at_times(self,
                            times: Union[np.ndarray, np.datetime64],
                            start_times: Optional[np.ndarray] = None,
-                           dt_unit: Optional[str] = None) -> Tuple[Tensor, Tensor]:
+                           dt_unit: Optional[str] = None,
+                           type_: str = 'update') -> Tuple[Tensor, Tensor]:
         """
         For each group, get the state (tuple of (mean, cov)) for a timepoint. This is often useful since predictions
         are right-aligned and padded, so that the final prediction for each group is arbitrarily padded and does not
         correspond to a timepoint of interest -- e.g. for forecasting (i.e., calling
-        ``KalmanFilter.forward(initial_state=get_state_at_times(...))``).
+        ``StateSpaceModel.forward(initial_state=get_state_at_times(...))``).
 
         :param times: Either (a) indices corresponding to each group (e.g. ``times[0]`` corresponds to the timestep to
          take for the 0th group, ``times[1]`` the timestep to take for the 1th group, etc.) or (b) if ``start_times``
@@ -71,11 +130,25 @@ class Predictions(nn.Module):
         :param dt_unit: If ``times`` is an array of datetimes, must also pass ``dt_unit``, i.e. a
          :class:`numpy.timedelta64` that indicates how much time passes at each timestep. (times-start_times)/dt_unit
          should be an array of integers.
+        :param type_: What type of state? Since this method is typically used for getting an `initial_state` for
+         another call to :func:`StateSpaceModel.forward()`, this should generally be 'update' (the default); other
+         option is 'prediction'.
         :return: A tuple of state-means and state-covs, appropriate for forecasting by passing as `initial_state`
-         for :func:`KalmanFilter.forward()`.
+         for :func:`StateSpaceModel.forward()`.
         """
         sliced = self._subset_to_times(times=times, start_times=start_times, dt_unit=dt_unit)
-        return sliced.state_means.squeeze(1), sliced.state_covs.squeeze(1)
+        if type_.startswith('pred'):
+            return sliced.state_means.squeeze(1), sliced.state_covs.squeeze(1)
+        elif type_.startswith('update'):
+            if self.update_means is None:
+                raise RuntimeError(
+                    "Cannot get with ``type_='update'`` because update mean/cov was not passed when creating this "
+                    "``Predictions`` object. This usually means you have to include ``include_updates=True`` when "
+                    "calling ``StateSpaceModel``."
+                )
+            return sliced.update_means.squeeze(1), sliced.update_covs.squeeze(1)
+        else:
+            raise ValueError("Unrecognized `type_`, expected 'prediction' or 'update'.")
 
     @classmethod
     def observe(cls, state_means: Tensor, state_covs: Tensor, R: Tensor, H: Tensor) -> Tuple[Tensor, Tensor]:
@@ -99,6 +172,9 @@ class Predictions(nn.Module):
     @property
     def means(self) -> Tensor:
         if self._means is None:
+            # TODO: in ExpSmooth, _state_covs, _R, and _H will often not be time-varying. if we could generate them s.t.
+            #  we could perform a fast check of this (self._R[0] is self._R[1]) then could speed up slowest step:
+            #  `H.matmul(state_covs).matmul(Ht) + R`
             self._means, self._covs = self.observe(self.state_means, self.state_covs, self.R, self.H)
         return self._means
 
@@ -106,14 +182,12 @@ class Predictions(nn.Module):
     def covs(self) -> Tensor:
         if self._covs is None:
             self._means, self._covs = self.observe(self.state_means, self.state_covs, self.R, self.H)
-            if (self._covs.diagonal(dim1=-2, dim2=-1) < 0).any():
-                warn(
-                    f"Negative variance. This can be caused by "
-                    f"`{type(self).__name__}().covs` not being positive-definite. Try stepping through each (group,time) "
-                    f"of this matrix to find the offending matrix (e.g. torch.cholesky returns an error); then inspect "
-                    f"the observations around this group/time."
-                )
         return self._covs
+
+    def sample(self) -> Tensor:
+        with torch.no_grad():
+            dist = self.distribution_cls(self.means, self.covs)
+            return dist.rsample()
 
     def log_prob(self, obs: Tensor) -> Tensor:
         """
@@ -140,8 +214,8 @@ class Predictions(nn.Module):
                 gt_means_flat = self.means.view(-1, n_measure_dim)[gt_idx]
                 gt_covs_flat = self.covs.view(-1, n_measure_dim, n_measure_dim)[gt_idx]
             else:
-                mask1d = torch.meshgrid(gt_idx, valid_idx)
-                mask2d = torch.meshgrid(gt_idx, valid_idx, valid_idx)
+                mask1d = torch.meshgrid(gt_idx, valid_idx, indexing='ij')
+                mask2d = torch.meshgrid(gt_idx, valid_idx, valid_idx, indexing='ij')
                 gt_means_flat, gt_covs_flat = self.observe(
                     state_means=state_means_flat[gt_idx],
                     state_covs=state_covs_flat[gt_idx],
@@ -303,7 +377,9 @@ class Predictions(nn.Module):
             ggplot, aes, geom_line, geom_ribbon, facet_grid, facet_wrap, theme_bw, theme, ylab, geom_vline
         )
 
-        is_components = ('process' in df.columns and 'state_element' in df.columns)
+        is_components = 'process' in df.columns
+        if is_components and 'state_element' not in df.columns:
+            df = df.assign(state_element='all')
 
         if group_colname is None:
             group_colname = 'group'
@@ -378,13 +454,15 @@ class Predictions(nn.Module):
         """
         Return a `Predictions` object with a single timepoint for each group.
         """
+        if not isinstance(times, (list, tuple, np.ndarray)):
+            times = np.asanyarray([times] * self.num_groups)
+
         if start_times is not None:
-            if isinstance(times, (np.datetime64, datetime.datetime)):
-                times = np.full_like(start_times, fill_value=times)
-            assert dt_unit is not None
             if isinstance(dt_unit, str):
                 dt_unit = np.datetime64(1, dt_unit)
-            times = (times - start_times) / dt_unit  # todo: validate int?
+            times = times - start_times
+            if dt_unit is not None:
+                times = times // dt_unit  # todo: validate int?
 
         assert len(times.shape) == 1
         assert times.shape[0] == self.num_groups
@@ -415,6 +493,8 @@ class Predictions(nn.Module):
             'H': self.H[idx],
             'R': self.R[idx]
         }
+        if self.update_means is not None:
+            kwargs.update({'update_means': self.update_means[idx], 'update_covs': self.update_covs[idx]})
         cls = type(self)
         for k in list(kwargs):
             expected_shape = getattr(self, k).shape
@@ -427,10 +507,10 @@ class Predictions(nn.Module):
                 raise TypeError(f"Cannot index into non-batch dims of {cls.__name__}")
             if k == 'H' and v.shape[-2] != self.H.shape[-2]:
                 raise TypeError(f"Cannot index into non-batch dims of {cls.__name__}")
-        return cls(**kwargs, kalman_filter=self._kf_attributes)
+        return cls(**kwargs, model=self._model_attributes)
 
     @property
-    def _kf_attributes(self) -> dict:
+    def _model_attributes(self) -> dict:
         """
         Has the attributes of a KalmanFilter that are needed in __init__
         """

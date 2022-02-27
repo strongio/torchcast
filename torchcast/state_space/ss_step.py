@@ -1,4 +1,4 @@
-from typing import Type, Tuple
+from typing import Type, Tuple, Dict, Optional
 
 import torch
 from torch import Tensor
@@ -8,32 +8,36 @@ from torchcast.internals.utils import get_nan_groups
 
 class StateSpaceStep(torch.nn.Module):
     """
-    Used internally by `StateSpaceModel` to apply the predict/update steps.
+    Base-class for modules that handle predict/update within a state-space model.
     """
 
     # this would ideally be a class-attribute but torch.jit.trace strips them
     @torch.jit.ignore()
     def get_distribution(self) -> Type[torch.distributions.Distribution]:
-        raise NotImplementedError
+        return torch.distributions.MultivariateNormal
 
     def forward(self,
                 input: Tensor,
                 mean: Tensor,
                 cov: Tensor,
-                H: Tensor,
-                R: Tensor,
-                F: Tensor,
-                Q: Tensor) -> Tuple[Tensor, Tensor]:
-        mean, cov = self.update(input, mean, cov, H=H, R=R)
-        return self.predict(mean, cov, F=F, Q=Q)
+                predict_kwargs: Dict[str, Tensor],
+                update_kwargs: Dict[str, Tensor],
+                ) -> Tuple[Tensor, Tensor]:
+        mean, cov = self.update(input, mean, cov, update_kwargs)
+        return self.predict(mean, cov, predict_kwargs)
 
-    def predict(self, mean: Tensor, cov: Tensor, F: Tensor, Q: Tensor) -> Tuple[Tensor, Tensor]:
+    def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         raise NotImplementedError
 
-    def update(self, input: Tensor, mean: Tensor, cov: Tensor, H: Tensor, R: Tensor) -> Tuple[Tensor, Tensor]:
+    def _update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        raise NotImplementedError
+
+    def update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        """
+        Handles validation and masking of missing values. Core update logic implemented in ``_update()``.
+        """
         assert len(input.shape) > 1
-        if len(input.shape) != 2:
-            raise NotImplementedError
+        assert len(input.shape) == 2
 
         num_groups = input.shape[0]
         if mean.shape[0] != num_groups:
@@ -50,24 +54,21 @@ class StateSpaceStep(torch.nn.Module):
             new_mean = mean.clone()
             new_cov = cov.clone()
             for groups, val_idx in get_nan_groups(isnan):
-                if val_idx is None:
-                    new_mean[groups], new_cov[groups] = self._update(
-                        input=input[groups], mean=mean[groups], cov=cov[groups], H=H[groups], R=R[groups]
-                    )
-                else:
-                    # masks:
-                    m1d = torch.meshgrid(groups, val_idx)
-                    m2d = torch.meshgrid(groups, val_idx, val_idx)
-                    new_mean[groups], new_cov[groups] = self._update(
-                        input=input[m1d[0], m1d[1]],
-                        mean=mean[groups],
-                        cov=cov[groups],
-                        H=H[m1d[0], m1d[1]],
-                        R=R[m2d[0], m2d[1], m2d[2]]
-                    )
+                masked_input, masked_kwargs = self._mask_mats(groups, val_idx, input=input, kwargs=kwargs)
+                m,c = self._update(
+                    input=masked_input, mean=mean[groups], cov=cov[groups], kwargs=masked_kwargs
+                )
+                new_mean[groups] = m
+                if c is None:
+                    c = 0
+                new_cov[groups] = c
             return new_mean, new_cov
         else:
-            return self._update(input=input, mean=mean, cov=cov, H=H, R=R)
+            return self._update(input=input, mean=mean, cov=cov, kwargs=kwargs)
 
-    def _update(self, input: Tensor, mean: Tensor, cov: Tensor, H: Tensor, R: Tensor) -> Tuple[Tensor, Tensor]:
+    def _mask_mats(self,
+                   groups: Tensor,
+                   val_idx: Optional[Tensor],
+                   input: Tensor,
+                   kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Dict[str, Tensor]]:
         raise NotImplementedError

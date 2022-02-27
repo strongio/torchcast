@@ -7,7 +7,7 @@ import torch
 from parameterized import parameterized
 
 from torchcast.kalman_filter import KalmanFilter
-from torchcast.process import LocalLevel, LinearModel, LocalTrend, TBATS
+from torchcast.process import LocalLevel, LinearModel, LocalTrend, Season
 from torchcast.utils.data import TimeSeriesDataset
 
 MAX_TRIES = 3  # we set the seed but not tested across different platforms
@@ -72,7 +72,7 @@ class TestTraining(unittest.TestCase):
                 lp_method2_sum += lp_gt
         self.assertAlmostEqual(lp_method1_sum, lp_method2_sum, places=3)
 
-    def test_training1(self, ndim: int = 2, num_groups: int = 150, num_times: int = 24):
+    def test_training1(self, ndim: int = 2, num_groups: int = 150, num_times: int = 24, compile: bool = True):
         """
         simulated data with known parameters, fitted loss should approach the loss given known params
         """
@@ -81,7 +81,7 @@ class TestTraining(unittest.TestCase):
         # TODO: include nans; make sure performance doesn't take significant hit w/partial nans
 
         def _make_kf():
-            return torch.jit.script(KalmanFilter(
+            kf = KalmanFilter(
                 processes=[
                               LocalLevel(id=f'll{i + 1}', measure=str(i + 1))
                               for i in range(ndim)
@@ -92,7 +92,10 @@ class TestTraining(unittest.TestCase):
                               for i in range(ndim)
                           ],
                 measures=[str(i + 1) for i in range(ndim)]
-            ))
+            )
+            if compile:
+                kf = torch.jit.script(kf)
+            return kf
 
         # simulate:
         X = torch.randn((num_groups, num_times, 5))
@@ -133,11 +136,10 @@ class TestTraining(unittest.TestCase):
         oracle_loss = -kf_generator(y, X=X).log_prob(y).mean()
         self.assertAlmostEqual(oracle_loss.item(), loss.item(), places=1)
 
-    def test_training2(self, num_groups: int = 50):
+    def test_training2(self, num_groups: int = 50, compile: bool = True):
         """
         # manually generated data (sin-wave, trend, etc.) with virtually no noise: MSE should be near zero
         """
-        from torchcast.process.season import FourierSeason
         torch.manual_seed(123)
 
         weekly = torch.sin(2. * 3.1415 * torch.arange(0., 7.) / 7.)
@@ -147,13 +149,15 @@ class TestTraining(unittest.TestCase):
         start_datetimes = np.array([np.datetime64('2019-04-14') + np.timedelta64(i, 'D') for i in range(num_groups)])
 
         def _train(num_epochs: int = 12):
-            kf = torch.jit.script(KalmanFilter(
+            kf = KalmanFilter(
                 processes=[
                     LocalTrend(id='trend'),
-                    FourierSeason(id='day_of_week', period='7D', dt_unit='D', K=3)
+                    Season(id='day_of_week', period='7D', dt_unit='D', K=3, fixed=True)
                 ],
                 measures=['y']
-            ))
+            )
+            if compile:
+                kf = torch.jit.script(kf)
 
             # train:
             optimizer = torch.optim.LBFGS([p for n, p in kf.named_parameters() if 'measure_covariance' not in n],
@@ -164,7 +168,7 @@ class TestTraining(unittest.TestCase):
                 optimizer.zero_grad()
                 _start = time.time()
                 # print(f'[{datetime.datetime.now().time()}] forward...')
-                pred = kf(data, start_datetimes=start_datetimes)
+                pred = kf(data, start_offsets=start_datetimes)
                 loss = -pred.log_prob(data).mean()
                 _start = time.time()
                 loss.backward()
@@ -189,13 +193,13 @@ class TestTraining(unittest.TestCase):
         if kf is None:
             raise RuntimeError("MAX_TRIES exceeded")
 
-        pred = kf(data, start_datetimes=start_datetimes)
+        pred = kf(data, start_offsets=start_datetimes)
         # MSE should be virtually zero
         self.assertLess(torch.mean((pred.means - data) ** 2), .01)
         # trend should be identified:
         self.assertAlmostEqual(pred.state_means[:, :, 1].mean().item(), 5., places=1)
 
-    def test_training3(self):
+    def test_training3(self, compile: bool = True):
         """
         Test TBATS and TimeSeriesDataset integration
         """
@@ -225,12 +229,15 @@ class TestTraining(unittest.TestCase):
         )
 
         def _train(num_epochs: int = 15):
-            kf = torch.jit.script(KalmanFilter(
+
+            kf = KalmanFilter(
                 processes=[
-                    TBATS(id='day_of_week', period='7D', dt_unit='D', K=1, decay=(.85, 1.))
+                    Season(id='day_of_week', period='7D', dt_unit='D', K=1, decay=(.85, 1.))
                 ],
                 measures=['y']
-            ))
+            )
+            if compile:
+                kf = torch.jit.script(kf)
 
             # train:
             optimizer = torch.optim.LBFGS(kf.parameters(), lr=.15, max_iter=10)

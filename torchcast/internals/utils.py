@@ -1,4 +1,4 @@
-from typing import Union, Any, Tuple, Sequence, List, Optional
+from typing import Union, Any, Tuple, Sequence, List, Optional, Iterable
 
 import torch
 
@@ -32,14 +32,77 @@ def get_nan_groups(isnan: torch.Tensor) -> List[Tuple[torch.Tensor, Optional[tor
     return out
 
 
-def get_owned_kwarg(owner: str, key: str, kwargs: dict) -> tuple:
-    specific_key = f"{owner}__{key}"
-    if specific_key in kwargs:
-        return specific_key, kwargs[specific_key]
-    elif key in kwargs:
-        return key, kwargs[key]
+def get_owned_kwargs(module, kwargs: dict) -> Iterable[Tuple[str, str, Optional[torch.Tensor]]]:
+    """
+    Get keyword-arguments belonging to a module from a dictionary of kwargs passed to a multi-module container.
+
+    :param module: Any object with an ``id`` and ``expected_kwargs``.
+    :param kwargs: A dictionary of keyword arguments that are shared.
+    :return: An iterable of tuples: ``(used_key, key_name, value)``. The first is used for indicating what was used
+     (so at the end we can warn about unused keys), the second will be passed to the ``module`` later, and the last is
+     the value that will be passed to the module.
+    """
+    if module.expected_kwargs is None:
+        expected_kwargs = []
     else:
-        raise TypeError(f"Missing required keyword-arg `{key}` (or `{specific_key}`).")
+        expected_kwargs = module.expected_kwargs
+    for k in kwargs:
+        if k in expected_kwargs:
+            yield k, k, kwargs[k]
+        elif k.startswith(f'{module.id}__'):
+            owner, _, subkey = k.partition("__")
+            if subkey in expected_kwargs:
+                yield k, subkey, kwargs[k]
+            else:
+                raise ValueError(
+                    f"Found {k}, but {module.id} wasn't expecting a kwarg named '{subkey}'; expected:{expected_kwargs}"
+                )
+
+
+def validate_gt_shape(
+        tensor: torch.Tensor,
+        num_groups: int,
+        num_times: int,
+        trailing_dim: List[int]
+) -> torch.Tensor:
+    """
+    Given we expect a tensor whose batch dimensions are (group, time) and with trailing dimensions, validate and
+    standardize an input tensor. For validation, we check the shapes match the expected shapes. For standardization,
+    we use the rules (1) if neither dims are present for num_groups or num_times, insert these dims and expand these,
+    (2) if one more dim than len(trailing_dim) is present, assume it is the group dim, and expand the time dim.
+
+    :param tensor: A tensor.
+    :param num_groups: The number of group.
+    :param num_times: The number of times.
+    :param trailing_dim: Tuple with ints for trailing dim shape.
+    :return: A tensor with shape (num_groups, num_times, *trailing_dim).
+    """
+    trailing_dim = list(trailing_dim)
+    ntrailing = len(trailing_dim)
+
+    if list(tensor.shape[-ntrailing:]) != trailing_dim:
+        if ntrailing == 1 and tensor.shape[-1] == 1:
+            # if input has singleton trailing dim, expand to match expected `trailing_dim`
+            tensor = tensor.expand(torch.Size(list(tensor.shape[:-ntrailing]) + trailing_dim))
+        else:
+            raise ValueError(f"Expected `x.shape[-{ntrailing}:]` to be {trailing_dim}, got {tensor.shape[-ntrailing:]}")
+    ndim = len(tensor.shape)
+    if ndim == ntrailing:
+        # insert dims for group and time:
+        tensor = tensor.expand(torch.Size([num_groups, num_times] + trailing_dim))
+    elif ndim == ntrailing + 1:
+        # if we're only missing one dim and the first and last dims match, assume the time dim is singleton.
+        if tensor.shape[0] == num_groups:
+            tensor = tensor.unsqueeze(1).expand(torch.Size([-1, num_times] + trailing_dim))
+        else:
+            raise ValueError(f"Expected `x.shape[0]` to be ngroups, got {tensor.shape[0]}")
+    elif ndim == ntrailing + 2:
+        # note, does not allow singleton
+        if tensor.shape[0] != num_groups or tensor.shape[1] != num_times:
+            raise ValueError(f"Expected `x.shape[0:2]` to be (ngroups, ntimes), got {tensor.shape[0:2]}")
+    else:
+        raise ValueError(f"Expected len(x.shape) to be {ntrailing + 2} or {ntrailing}, got {ndim}")
+    return tensor
 
 
 def zpad(x: Any, n: int) -> str:
@@ -54,7 +117,6 @@ def ragged_cat(tensors: Sequence[torch.Tensor],
                ragged_dim: int,
                cat_dim: int = 0,
                padding: Optional[float] = None) -> torch.Tensor:
-
     max_dim_len = max(tensor.shape[ragged_dim] for tensor in tensors)
     if padding is None:
         padding = float('nan')

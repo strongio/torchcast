@@ -9,11 +9,12 @@ setup(
     packages=find_packages(include='torchcast.*'),
     zip_safe=False,
     install_requires=[
-        'torch>=1.7',
+        'backports.cached-property',
+        'torch>=1.8',
         'numpy>=1.4'
     ],
     extras_require={
-        'test': ['parameterized>=0.7', 'filterpy>=1.4', 'pandas>=1.0'],
+        'tests': ['parameterized>=0.7', 'filterpy>=1.4', 'pandas>=1.0'],
         'docs': [
             'jupytext>=1.11',
             'plotnine>=0.8',
@@ -22,7 +23,10 @@ setup(
             'tqdm>=4.59',
             'ipywidgets>=7.6.3',
             'sphinx_rtd_theme>=0.5.2',
-            'pandoc>=1.0.2'
+            'pandoc>=1.0.2',
+            'pytorch_lightning>=1.5',
+            'torch_optimizer>=0.3.0',
+            'matplotlib>=3.4.3s'
         ]
     }
 )

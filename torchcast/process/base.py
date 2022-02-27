@@ -1,9 +1,8 @@
-from typing import Tuple, Sequence, List, Dict, Optional, Iterable, Callable
+from typing import Tuple, Sequence, List, Dict, Optional, Callable
 
 import torch
 
 from torch import nn, Tensor, jit
-from torchcast.internals.utils import get_owned_kwarg
 
 
 class Process(nn.Module):
@@ -14,38 +13,16 @@ class Process(nn.Module):
     :param id: Unique identifier for the process
     :param state_elements: List of strings with the state-element names
     :param measure: The name of the measure for this process.
-    :param h_module: A torch.nn.Module which, when called (default with no input; can be overridden in subclasses
-     with self.h_kwarg), will produce the 'observation' matrix: a XXXX. Only one of h_module or h_tensor should be
-     passed.
-    :param h_tensor: A tensor that is the 'observation' matrix (see `h_module`). Only one of h_module or h_tensor
-     should be  passed.
-    :param h_kwarg: If given, indicates the name of the keyword-argument that's expected and will be passed to
-     ``h_module`` (e.g. ``X`` for a regression process).
-    :param f_modules: A torch.nn.ModuleDict; each element specifying a transition between state-elements. The keys
-     specify the state-elements in the format '{from_el}->{to_el}'. The values are torch.nn.Modules which, when
-     called (default with no input; can be overridden in subclasses with self.f_kwarg), will produce that element
-     for the transition matrix. Additionally, the key can be 'all_self', in which case the output should have
-     ``shape[-1] == len(state_elements)``; this allows specifying the transition of each state-element to itself with
-     a single call.
-    :param f_tensors: A dictionary of tensors, specifying elements of the F-matrix. See `f_modules` for key format.
-    :param f_kwarg: If given, indicates the name of the keyword-argument that's expected and will be passed to
-     ``f_modules`` (e.g. ``X`` for a regression process).
-    :param no_pcov_state_elements: Names of ``state_elements`` without process-variance.
-    :param no_icov_state_elements: Names of ``state_elements`` without initial-variance.
+    :param fixed_state_elements: Names of ``state_elements`` that are 'fixed'. In a kalman-filter these will be
+     initially responsive to the incoming data but gradually convergee over time; in an exponential-smoothing model
+     these will be fixed at their initial value.
     """
 
     def __init__(self,
                  id: str,
                  state_elements: Sequence[str],
                  measure: Optional[str] = None,
-                 h_module: Optional[nn.Module] = None,
-                 h_tensor: Optional[Tensor] = None,
-                 h_kwarg: str = '',
-                 f_modules: Optional[nn.ModuleDict] = None,
-                 f_tensors: Optional[Dict[str, Tensor]] = None,
-                 f_kwarg: str = '',
-                 no_pcov_state_elements: Optional[List[str]] = None,
-                 no_icov_state_elements: Optional[List[str]] = None):
+                 fixed_state_elements: Optional[List[str]] = None):
 
         super(Process, self).__init__()
         self.id = id
@@ -58,35 +35,96 @@ class Process(nn.Module):
         self.se_to_idx = {se: i for i, se in enumerate(self.state_elements)}
         assert len(state_elements) == len(self.se_to_idx), f"state-elements are not unique:{state_elements}"
 
-        # observation matrix:
-        if (int(h_module is None) + int(h_tensor is None)) != 1:
-            raise TypeError("Exactly one of `h_module`, `h_tensor` must be passed.")
-        self.h_module = h_module
-        self.h_tensor: Tensor
-        self.register_buffer('h_tensor', h_tensor, persistent=False)  # so that `.to()` works
-        self.h_kwarg = h_kwarg
-
-        # transition matrix:
-        self.f_tensors = f_tensors
-        if isinstance(f_modules, dict):
-            f_modules = nn.ModuleDict(f_modules)
-        self.f_modules = f_modules
-        self.f_kwarg = f_kwarg
-
-        # can be populated later, as long as its before torch.jit.script
+        # can be populated later, as long as it's before torch.jit.script
         self.measure: str = '' if measure is None else measure
 
         # elements without process covariance, defaults to none
-        self.no_pcov_state_elements: Optional[List[str]] = no_pcov_state_elements
-        # elements without initial covariance, defaults to none:
-        self.no_icov_state_elements: Optional[List[str]] = no_icov_state_elements
+        self.fixed_state_elements: Optional[List[str]] = fixed_state_elements
 
-    def _apply(self, fn: Callable) -> 'Process':
-        # can't register f_tensors as buffers, see https://github.com/pytorch/pytorch/issues/43815
-        if self.f_tensors is not None:
-            for k, v in self.f_tensors.items():
-                self.f_tensors[k] = fn(v)
-        return super()._apply(fn)
+        # can/should be overridden by subclasses:
+        self.expected_kwargs: Optional[List[str]] = None
+        self.f_modules: nn.ModuleDict = nn.ModuleDict()
+        self.f_tensors: Dict[str, torch.Tensor] = {'': torch.empty(0)}  # for jit
+
+    @jit.ignore
+    def offset_initial_state(self, initial_state: Tensor, start_offsets: Optional[Sequence] = None) -> Tensor:
+        return initial_state
+
+    def forward(self, inputs: Dict[str, Tensor], num_groups: int, num_times: int) -> Tuple[Tensor, Tensor]:
+        """
+        :param inputs: Inputs from ``forward()``
+        :param num_groups: Number of groups.
+        :param num_times: Number of timesteps.
+        :return: A tuple of tensors: the observation matrices (H) and the transition matrices (F). Each has batch-dims
+        ``(num_groups, num_times)``.
+        """
+        H = self._build_h_mat(inputs, num_groups, num_times)
+        F = self._build_f_mat(inputs, num_groups, num_times)
+        return H, F
+
+    def _build_h_mat(self, inputs: Dict[str, Tensor], num_groups: int, num_times: int) -> Tensor:
+        """
+        Construct observation matrix H.
+
+        :param inputs: Inputs from ``forward()``
+        :param num_groups: Number of groups.
+        :param num_times: Number of timesteps.
+        :return: A tensor of shape ``(num_groups, num_times, num_states)``
+        """
+        raise NotImplementedError
+
+    def _get_transitions_dict(self, inputs: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        """
+        Construct transitions dictionary which will be used by ``_build_f_mat()`` to construct transition-matrix F.
+        This default method does not make use of inputs, but subclasses can override (e.g. different decay for each
+        group).
+
+        :param inputs: Inputs from ``forward()``
+        :return: A dictionary of tensors, where keys indicate ``{from}->{to}`` transitions, and values are the
+        transition-values.
+        """
+        out = {}
+        for km, module in self.f_modules.items():
+            out[km] = module()
+        for kt, tens in self.f_tensors.items():
+            if kt == '':  # see self.f_tensors definition
+                continue
+            # can't register f_tensors as buffers, see https://github.com/pytorch/pytorch/issues/43815
+            # another approach would be override _apply, but that doesn't seem to work with torchscript
+            out[kt] = tens.to(dtype=self.dtype, device=self.device)
+        return out
+
+    def _build_f_mat(self, inputs: Dict[str, Tensor], num_groups: int, num_times: int) -> Tensor:
+        """
+        :param inputs: Inputs from ``forward()``
+        :param num_groups: Number of groups.
+        :param num_times: Number of timesteps.
+        :return:  A tensor of shape ``(num_groups, num_times, num_states, num_states)``
+        """
+        transitions = self._get_transitions_dict(inputs)
+        F = torch.zeros(num_groups, num_times, self.rank, self.rank, dtype=self.dtype, device=self.device)
+        for from__to, tens in transitions.items():
+            assert tens is not None
+            r, c = self._transition_key_to_rc(from__to)
+            F[:, :, r, c] = tens
+
+        if torch.isnan(F).any() or torch.isinf(F).any():
+            raise RuntimeError(f"{self.id} produced F with nans")
+        return F
+
+    @property
+    def rank(self) -> int:
+        return len(self.state_elements)
+
+    def _transition_key_to_rc(self, transition_key: str) -> Tuple[List[int], List[int]]:
+        from_el, sep, to_el = transition_key.partition("->")
+        if sep == '':
+            assert from_el == 'all_self', f"Expected '[from_el]->[to_el]', or 'all_self'. Got '{transition_key}'"
+            return list(range(self.rank)), list(range(self.rank))
+        else:
+            c = self.se_to_idx[from_el]
+            r = self.se_to_idx[to_el]
+            return [r], [c]
 
     @property
     def device(self) -> torch.device:
@@ -95,141 +133,6 @@ class Process(nn.Module):
     @property
     def dtype(self) -> torch.dtype:
         return self._info.dtype
-
-    @jit.ignore
-    def offset_initial_state(self, initial_state: Tensor, start_offsets: Optional[Sequence] = None) -> Tensor:
-        return initial_state
-
-    @jit.ignore
-    def get_kwargs(self, kwargs: dict) -> Iterable[Tuple[str, str, Optional[Tensor]]]:
-        for key in [self.f_kwarg, self.h_kwarg]:
-            if key == '':
-                continue
-            found_key, value = get_owned_kwarg(self.id, key, kwargs)
-            if value is not None:
-                value = torch.as_tensor(value)
-            yield found_key, key, value
-
-    def forward(self, inputs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        """
-        """
-        return self.h_forward(inputs.get(self.h_kwarg)), self.f_forward(inputs.get(self.f_kwarg))
-
-    def h_forward(self, input: Optional[Tensor]) -> Tensor:
-        if self.h_module is None:
-            assert self.h_tensor is not None
-            H = self.h_tensor
-        elif self.h_kwarg != '':
-            assert input is not None
-            H = self.h_module(input)
-        else:
-            if torch.jit.is_scripting():
-                raise NotImplementedError("h_modules that do not take inputs are currently unsupported for JIT")
-            H = self.h_module()
-        if not self._validate_h_shape(H):
-            msg = (
-                f"`Process(id='{self.id}').h_forward()` produced output with shape {H.shape}, "
-                f"but expected ({len(self.state_elements)},) or (num_groups, {len(self.state_elements)})."
-            )
-            if input is not None:
-                msg += f" Input had shape {input.shape}."
-            raise RuntimeError(msg)
-        if torch.isnan(H).any() or torch.isinf(H).any():
-            raise RuntimeError(f"{self.id} produced H with nans")
-        return H
-
-    def _validate_h_shape(self, H: torch.Tensor) -> bool:
-        # H should be:
-        # - (num_groups, state_size, 1)
-        # - (num_groups, state_size)
-        # - (state_size, 1)
-        # - (state_size, )
-        if len(H.shape) > 3:
-            return False
-        else:
-            if len(H.shape) == 3:
-                if H.shape[-1] == 1:
-                    H = H.squeeze(-1)  # handle in next case
-                else:
-                    return False
-            if len(H.shape) == 1:
-                if len(self.state_elements) == 1:
-                    H = H.unsqueeze(-1)  # handle in next case
-                elif H.shape[0] != len(self.state_elements):
-                    return False
-            if len(H.shape) == 2:
-                if H.shape[-1] != len(self.state_elements):
-                    return False
-        return True
-
-    def f_forward(self, input: Optional[Tensor]) -> Tensor:
-        diag: Optional[Tensor] = None
-        assignments: List[Tuple[Tuple[int, int], Tensor]] = []
-
-        # in first pass, convert keys to (r,c)s in the F-matrix, and establish the batch dim:
-        num_groups = 1
-        if self.f_tensors is not None:
-            for from__to, tens in self.f_tensors.items():
-                assert tens is not None
-                rc = self._transition_key_to_rc(from__to)
-                if len(tens.shape) > 1:
-                    assert num_groups == 1 or num_groups == tens.shape[0]
-                    num_groups = tens.shape[0]
-                if rc is None:
-                    assert diag is None
-                    diag = tens
-                else:
-                    assignments.append((rc, tens))
-        if self.f_modules is not None:
-            for from__to, module in self.f_modules.items():
-                rc = self._transition_key_to_rc(from__to)
-                tens = module(input)
-                # TODO: this should technically do `if f_kwarg=='': tens=module()` but this breaks JIT
-                if len(tens.shape) > 1:
-                    assert num_groups == 1 or num_groups == tens.shape[0]
-                    num_groups = tens.shape[0]
-                if rc is None:
-                    assert diag is None
-                    diag = tens
-                else:
-                    assignments.append((rc, tens))
-
-        # in the second pass, create the F-matrix and assign (r,c)s:
-        state_size = len(self.state_elements)
-        F = torch.zeros(num_groups, state_size, state_size, dtype=self.dtype, device=self.device)
-        # common application is diagonal F, efficient to store/assign that as one
-        if diag is not None:
-            if diag.shape[-1] != state_size:
-                assert len(diag.shape) == 1 and diag.shape[0] == 1
-                diag_mat = diag * torch.eye(state_size, dtype=self.dtype, device=self.device)
-            else:
-                diag_mat = torch.diag_embed(diag)
-                assert F.shape[-2:] == diag_mat.shape[-2:]
-            F = F + diag_mat
-        # otherwise, go element-by-element:
-        for (r, c), tens in assignments:
-            if diag is not None:
-                assert r != c, "cannot have transitions from {se}->{same-se} if `all_self` transition was used."
-            if len(tens.shape) == 2:
-                assert tens.shape[-1] == 1
-                tens = tens.squeeze(-1)
-            else:
-                assert len(tens.shape) <= 1
-            F[:, r, c] = tens
-
-        if torch.isnan(F).any() or torch.isinf(F).any():
-            raise RuntimeError(f"{self.id} produced F with nans")
-        return F
-
-    def _transition_key_to_rc(self, transition_key: str) -> Optional[Tuple[int, int]]:
-        from_el, sep, to_el = transition_key.partition("->")
-        if sep == '':
-            assert from_el == 'all_self', f"Expected '[from_el]->[to_el]', or 'all_self'. Got '{transition_key}'"
-            return None
-        else:
-            c = self.se_to_idx[from_el]
-            r = self.se_to_idx[to_el]
-            return r, c
 
     def __repr__(self) -> str:
         return f'{type(self).__name__}(id={repr(self.id)})'

@@ -91,7 +91,8 @@ class TimeSeriesDataset(TensorDataset):
     @torch.no_grad()
     def train_val_split(self,
                         train_frac: float = None,
-                        dt: Union[np.datetime64, dict] = None) -> Tuple['TimeSeriesDataset', 'TimeSeriesDataset']:
+                        dt: Union[np.datetime64, dict] = None,
+                        quiet: bool = False) -> Tuple['TimeSeriesDataset', 'TimeSeriesDataset']:
         """
         :param train_frac: The proportion of the data to keep for training. This is calculated on a per-group basis, by
          taking the last observation for each group (i.e., the last observation that a non-nan value on any measure). If
@@ -118,14 +119,16 @@ class TimeSeriesDataset(TensorDataset):
                                        dtype='datetime64[ns]' if self.dt_unit else 'int')
             else:
                 if self.dt_unit:
-                    if hasattr(dt, 'to_datetime64'):
+                    if isinstance(dt, datetime.datetime):  # base
+                        dt = np.datetime64(dt)
+                    if hasattr(dt, 'to_datetime64'):  # pandas
                         dt = dt.to_datetime64()
                     if not isinstance(dt, np.datetime64):
-                        dt = np.datetime64(dt, self.dt_unit)
+                        raise ValueError(f"`dt` is not datetimelike, but dataset has non-null dt_unit `{self.dt_unit}`")
                 split_times = np.full(shape=len(self.group_names), fill_value=dt)
 
         # val:
-        val_dataset = self.with_new_start_times(split_times)
+        val_dataset = self.with_new_start_times(split_times, quiet=quiet)
 
         # train:
         train_tensors = []
@@ -143,11 +146,14 @@ class TimeSeriesDataset(TensorDataset):
 
         return train_dataset, val_dataset
 
-    def with_new_start_times(self, start_times: Union[np.ndarray, Sequence]) -> 'TimeSeriesDataset':
+    def with_new_start_times(self,
+                             start_times: Union[np.ndarray, Sequence],
+                             quiet: bool = False) -> 'TimeSeriesDataset':
         """
         Subset a :class:`.TimeSeriesDataset` so that some/all of the groups have later start times.
 
         :param start_times: An array/list of new datetimes.
+        :param quiet: If True, will not emit a warning for groups having only `nan` after the start-time.
         :return: A new :class:`.TimeSeriesDataset`.
         """
         new_tensors = []
@@ -168,7 +174,8 @@ class TimeSeriesDataset(TensorDataset):
                 # drop if after last nan:
                 all_nan, _ = torch.min(torch.isnan(g_tens), 1)
                 if all_nan.all():
-                    warn(f"Group '{self.group_names[g]}' (tensor {i}) has only `nans` after {new_time}")
+                    if not quiet:
+                        warn(f"Group '{self.group_names[g]}' (tensor {i}) has only `nans` after {new_time}")
                     end_idx = 0
                 else:
                     end_idx = true1d_idx(~all_nan).max() + 1
@@ -188,8 +195,7 @@ class TimeSeriesDataset(TensorDataset):
         Get the subset of the batch corresponding to groups. Note that the ordering in the output will match the
         original ordering (not that of `group`), and that duplicates will be dropped.
         """
-        group_idx = true1d_idx(np.isin(self.group_names, groups))
-        return self[group_idx]
+        return self[np.isin(self.group_names, groups)]
 
     def split_measures(self, *measure_groups, which: Optional[int] = None) -> 'TimeSeriesDataset':
         """
@@ -353,8 +359,15 @@ class TimeSeriesDataset(TensorDataset):
         if 'dtype' not in kwargs:
             kwargs['dtype'] = torch.float32
 
+        if X_colnames is not None:
+            X_colnames = list(X_colnames)
+        if y_colnames is not None:
+            y_colnames = list(y_colnames)
+        if measure_colnames is not None:
+            measure_colnames = list(measure_colnames)
+
         if measure_colnames is None:
-            if X_colnames is None or y_colnames is None:
+            if y_colnames is None or X_colnames is None:
                 raise ValueError("Must pass either `measure_colnames` or `X_colnames` & `y_colnames`")
             if isinstance(y_colnames, str):
                 y_colnames = [y_colnames]
@@ -396,7 +409,9 @@ class TimeSeriesDataset(TensorDataset):
             if dt_unit is None:
                 time_idx = (times - min_time).astype('int64')
             else:
-                time_idx = (times - min_time).astype(f'timedelta64[{dt_unit}]').view('int64')
+                if not isinstance(dt_unit, np.timedelta64):
+                    dt_unit = np.timedelta64(1, dt_unit)
+                time_idx = (times - min_time) // dt_unit
             time_idxs.append(time_idx)
 
             # values:
@@ -466,16 +481,6 @@ class TimeSeriesDataset(TensorDataset):
     @property
     def start_offsets(self) -> np.ndarray:
         return self.start_times
-
-    def last_measured_times(self) -> np.ndarray:
-        """
-        :return: The datetimes (or integers if dt_unit is None) for the last measurement in the first tensor, where a
-         measurement is any non-nan value in at least one dimension.
-        """
-        times = self.times(which=0)
-        last_measured_idx = self._last_measured_idx()
-        raise NotImplementedError
-        # return np.array([t[idx] for t, idx in zip(times, last_measured_idx)], dtype=f'datetime64[{self.dt_unit}]')
 
     def _last_measured_idx(self) -> np.ndarray:
         """
@@ -618,16 +623,22 @@ def complete_times(data: 'DataFrame',
     return df_cj.merge(data, how='left', on=[group_colname, time_colname])
 
 
-def nanmean(v: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+def chunk_grouped_data(*tensors, group_ids: Sequence) -> Sequence[Tuple[Tensor]]:
     """
-    https://github.com/pytorch/pytorch/issues/21987#issuecomment-539402619
+    much faster approach to chunking than something like ``[X[gid==group_ids] for gid in np.unique(group_ids)]``
+    """
+    group_ids = np.asanyarray(group_ids)
 
-    :param v: A tensor
-    :param args: Arguments one might pass to `mean` like `dim`.
-    :param kwargs: Arguments one might pass to `mean` like `dim`.
-    :return: The mean, excluding nans.
-    """
-    v = v.clone()
-    is_nan = torch.isnan(v)
-    v[is_nan] = 0
-    return v.sum(*args, **kwargs) / (~is_nan).float().sum(*args, **kwargs)
+    # torch.split requires we put groups into contiguous chunks:
+    sort_idx = np.argsort(group_ids)
+    group_ids = group_ids[sort_idx]
+    tensors = [x[sort_idx] for x in tensors]
+
+    # much faster approach to chunking than something like `[X[gid==group_ids] for gid in np.unique(group_ids)]`:
+    _, counts_per_group = np.unique(group_ids, return_counts=True)
+    counts_per_group = counts_per_group.tolist()
+
+    group_data = []
+    for chunk_tensors in zip(*(torch.split(x, counts_per_group) for x in tensors)):
+        group_data.append(chunk_tensors)
+    return group_data

@@ -2,15 +2,14 @@
 # jupyter:
 #   jupytext:
 #     cell_metadata_json: true
-#     formats: py:light
 #     text_representation:
 #       extension: .py
-#       format_name: light
-#       format_version: '1.5'
-#       jupytext_version: 1.6.0
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.13.0
 # ---
 
-# + {"nbsphinx": "hidden"}
+# %% {"nbsphinx": "hidden"}
 import torch
 
 from torchcast.utils.datasets import load_air_quality_data
@@ -22,20 +21,20 @@ import numpy as np
 
 np.random.seed(2021-1-21)
 torch.manual_seed(2021-1-21)
-# -
 
+# %% [markdown]
 # # Quick Start
 #
 # `torchcast` is a python package for time-series forecasting in PyTorch. Its focus is on training and forecasting with *batches* of time-serieses, rather than training separate models for one time-series at a time. In addition, it provides robust support for *multivariate* time-series, where multiple correlated measures are being forecasted.
 #
 # To briefly provide an overview of these features, we'll use a dataset from the [UCI Machine Learning Data Repository](https://archive.ics.uci.edu/ml/datasets/Beijing+Multi-Site+Air-Quality+Data). It includes data on air pollutants and weather from 12 sites.
 
-# + {"tags": ["remove_cell"]}
+# %% {"tags": ["remove_cell"]}
 df_aq = load_air_quality_data('weekly')
 
 df_aq
 
-# + [markdown] {"hidePrompt": true}
+# %% [markdown] {"hidePrompt": true}
 # ### Prepare our Dataset
 #
 # In `torchcast` we set up our data and model with the following:
@@ -47,7 +46,7 @@ df_aq
 #
 # For a quick example, we'll focus on predicting particulate-matter (PM2.5 and PM10). We'll log-transform since this is strictly positive.
 
-# +
+# %%
 df_aq['PM2p5_log10'] = np.log10(df_aq['PM2p5'])
 df_aq['PM10_log10'] = np.log10(df_aq['PM10'])
 
@@ -64,12 +63,13 @@ dataset_all = TimeSeriesDataset.from_dataframe(
 SPLIT_DT = np.datetime64('2016-02-22') 
 dataset_train, _ = dataset_all.train_val_split(dt=SPLIT_DT)
 dataset_train
-# -
 
+# %% [markdown]
 # ### Specify our Model
 #
 # In `torchcast` our forecasting model is defined by `measures` and `processes`. The `processes` give rise to the measure-able behavior. Here we'll specify a random-walk/trend component and a yearly seasonal component for each pollutant.
 
+# %%
 processes = []
 for m in dataset_train.measures[0]:
     processes.extend([
@@ -78,18 +78,21 @@ for m in dataset_train.measures[0]:
     ])
 kf_first = KalmanFilter(measures=dataset_train.measures[0], processes=processes)
 
+# %% [markdown]
 # ### Train our Model
 #
 # The `KalmanFilter` class provides a convenient `fit()` method that's useful for avoiding standard boilerplate for full-batch training:
 
+# %%
 kf_first.fit(
     dataset_train.tensors[0], 
     start_offsets=dataset_train.start_datetimes
 )
 
+# %% [markdown]
 # Calling `forward()` on our `KalmanFilter` produces a `Predictions` object. If you're writing your own training loop, you'd simply use the `log_prob()` method as the loss function:
 
-# +
+# %%
 pred = kf_first(
         dataset_train.tensors[0], 
         start_offsets=dataset_train.start_datetimes,
@@ -98,12 +101,14 @@ pred = kf_first(
 
 loss = -pred.log_prob(dataset_train.tensors[0]).mean()
 print(loss)
-# -
 
+# %% [markdown]
 # ### Inspect & Visualize our Output
 
+# %% [markdown]
 # `Predictions` can easily be converted to Pandas `DataFrames` for ease of inspecting predictions, comparing them to actuals, and visualizing:
 
+# %%
 df_pred = pred.to_dataframe(dataset_all)
 # bias-correction for log-transform (see https://otexts.com/fpp2/transformations.html#bias-adjustments)
 df_pred['mean'] += .5 * (df_pred['upper'] - df_pred['lower']) / 1.96 ** 2
@@ -111,13 +116,18 @@ df_pred['mean'] += .5 * (df_pred['upper'] - df_pred['lower']) / 1.96 ** 2
 df_pred[['actual','mean','upper','lower']] = 10 ** df_pred[['actual','mean','upper','lower']]
 df_pred
 
+# %%
 df_pred['percent_error'] = np.abs(df_pred['mean'] - df_pred['actual']) / df_pred['actual']
 print("Percent Error: {:.1%}".format(df_pred.query("time>@SPLIT_DT")['percent_error'].mean()))
 
+# %% [markdown]
 # The `Predictions` class comes with a `plot` classmethod for getting simple plots of forecasted vs. actual:
 
+# %%
 print(pred.plot(df_pred.query("group=='Changping'"), split_dt=SPLIT_DT))
 
+# %% [markdown]
 # Finally you can produce dataframes that decompose the predictions into the underlying `processes` that produced them:
 
+# %%
 pred.plot(pred.to_dataframe(dataset_all, type='components').query("group=='Changping'"), split_dt=SPLIT_DT)
