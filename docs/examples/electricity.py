@@ -46,9 +46,13 @@ if 'drive/MyDrive' in BASE_DIR and not os.path.exists(BASE_DIR):
 # We'll use a dataset from the [UCI Machine Learning Data Repository](https://archive.ics.uci.edu/ml/datasets/ElectricityLoadDiagrams20112014), which consists of electricity-usage for 370 locations, taken every 15 minutes (we'll downsample to hourly).
 
 # %% nbsphinx="hidden"
+rtd = bool(os.environ.get('READTHEDOCS'))
 try:
-    df_elec = pd.read_csv(os.path.join(BASE_DIR, "df_electricity.csv.gz"), parse_dates=['time'])
+    _fname = 'df_electricity_rtd.csv.gz' if rtd else 'df_electricity.csv.gz'
+    df_elec = pd.read_csv(os.path.join(BASE_DIR, _fname), parse_dates=['time'])
 except FileNotFoundError:
+    if rtd:
+        raise
     import requests
     from zipfile import ZipFile
     from io import BytesIO
@@ -73,14 +77,14 @@ except FileNotFoundError:
     # filter to start time:
     df_elec = df_elec.loc[df_elec['time'] >= group_starts, :].reset_index(drop=True)
     
-    # "Every year in March time change day (which has only 23 hours) the values between 1:00 am and 2:00 am are zero for all points"
+    # "Every year in March time change day (which has only 23 hours) the values between 1:00 am and
+    # 2:00 am are zero for all points"
     zero_counts = df_elec.query("kW==0")['time'].value_counts()
     df_elec.loc[df_elec['time'].isin(zero_counts.index[zero_counts>100]),'kW'] = float('nan')
     
     # save
     df_elec.to_csv(os.path.join(BASE_DIR, "df_electricity.csv.gz"), index=False)
 
-SUBSET = False
 np.random.seed(2021 - 1 - 21)
 torch.manual_seed(2021 - 1 - 21)
 
@@ -147,10 +151,6 @@ df_group_summary = df_elec. \
 
 all_groups = set(df_group_summary['group'])
 train_groups = sorted(df_group_summary.query("(dataset=='train') & (history_len >= 365)")['group'])
-print(f"Dropping {len(all_groups - set(train_groups)):,} groups")
-
-if SUBSET:
-    train_groups = train_groups[:SUBSET]
 df_elec = df_elec.loc[df_elec['group'].isin(train_groups), :].reset_index(drop=True)
 
 # %% [markdown]
@@ -413,7 +413,7 @@ def make_dataloader(type_: str,
 # Here we are using `LinearModel` a little differently: rather than it taking as input predictors, it will take as input the *output* of a neural-network, which itself will take predictors (the calendar-features we just defined).
 
 # %%
-from torchcast.process import LinearModel
+from torchcast.process import LinearModel, LocalLevel
 
 es_nn = ExpSmoother(
     measures=['kW_sqrt_c'],
@@ -423,7 +423,8 @@ es_nn = ExpSmoother(
         # static seasonality:
         LinearModel(id='season', predictors=['nn_output']),
         # local deviations from typical behavior:
-        Season(id='hour_in_day', period=24, dt_unit='h', K=6, decay=True),
+        LocalLevel(id='local_level', decay=True),
+        Season(id='local_hour_in_day', period=24, dt_unit='h', K=6, decay=True),
     ]
 )
 
@@ -489,8 +490,7 @@ class TimeSeriesLightningModule(LightningModule):
 # To generate a prediction, we multiply the two. We can almost think of this like the first network is learning dimensionality reduction -- reducing the dozens of calendar-features (and their hundreds of interactions) into an efficient low-dimensional representation -- and the second network is learning the group-specific coefficients for these derived features.
 
 # %%
-names_to_idx = {nm: i for i, nm in enumerate(sorted(df_elec['group'].unique()))}
-
+names_to_idx = {nm: int(nm.replace('MT_','')) - 1 for nm in df_elec['group'].unique()}
 
 class CalendarFeatureNN(TimeSeriesLightningModule):
     def __init__(self, module: torch.nn.Module):
@@ -545,7 +545,7 @@ calendar_feature_nn = CalendarFeatureNN(
         )
         , 'emb_nn':
             torch.nn.Embedding(
-                num_embeddings=len(names_to_idx),
+                num_embeddings=370,
                 embedding_dim=cal_features_num_latent_dim
             )
     })
@@ -553,7 +553,9 @@ calendar_feature_nn = CalendarFeatureNN(
 
 # %%
 try:
-    calendar_feature_nn.load_state_dict(torch.load(os.path.join(BASE_DIR, f"calendar_feature_nn{cal_features_num_latent_dim}.pt")))
+    calendar_feature_nn.load_state_dict(torch.load(
+        os.path.join(BASE_DIR, f"calendar_feature_nn{cal_features_num_latent_dim}.pt")
+    ))
 except FileNotFoundError:
     Trainer(
         gpus=int(str(maybe_cuda) == 'cuda'),
@@ -710,7 +712,7 @@ except FileNotFoundError:
 es_nn_lightning.to(maybe_cuda)
 df_forecast_nn = []
 with torch.no_grad():
-    for _batch in tqdm(make_dataloader('all', batch_size=25)):
+    for _batch in make_dataloader('all', batch_size=25):
         _batch = _batch.to(maybe_cuda)
         forecast_batch = _batch.with_new_tensors(
             _batch.train_val_split(dt=SPLIT_DT)[0].tensors[0],
@@ -718,10 +720,10 @@ with torch.no_grad():
         )
         forecast_nn = es_nn_lightning(forecast_batch, out_timesteps=_batch.tensors[1].shape[1])
         df_forecast_nn.append(forecast_nn.to_dataframe(_batch))
-df_forecast_nn = pd.concat(df_forecast_nn).query("actual.notnull()").reset_index(drop=True)
+df_forecast_nn = pd.concat(df_forecast_nn).query("actual.notnull()", engine='python').reset_index(drop=True)
 
 # %%
-plot_forecasts(df_forecast_nn.query("group==@example_group & time.dt.year==2013 & time.dt.month==6"), split_dt=SPLIT_DT)
+plot_forecasts(df_forecast_nn.query("group==@example_group & time.dt.year==2013 & time.dt.month==6"))
 
 # %%
 plot_2x2(df_forecast_nn.query("group==@example_group"))

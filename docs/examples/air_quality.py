@@ -11,14 +11,17 @@
 
 # %% {"nbsphinx": "hidden"}
 import torch
-import copy
 
 from torchcast.utils.datasets import load_air_quality_data
 from torchcast.kalman_filter import KalmanFilter
 from torchcast.utils.data import TimeSeriesDataset
+import os
+
+if os.environ.get('READTHEDOCS'):
+    from torchcast.utils.rtd import wrap_fit
+    KalmanFilter.fit = wrap_fit(KalmanFilter.fit, new_tol=.001, new_patience=2)
 
 import numpy as np
-import pandas as pd
 
 np.random.seed(2021-1-21)
 torch.manual_seed(2021-1-21)

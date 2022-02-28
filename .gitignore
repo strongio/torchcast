@@ -103,7 +103,6 @@ ENV/
 .coveragerc
 *.ipynb
 *.zip
-examples/*.csv
 docs/_html/*
 *.csv
 *.pt

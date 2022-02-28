@@ -6,7 +6,6 @@ from warnings import warn
 import torch
 
 from torch import Tensor, nn, jit
-from typing_extensions import Final
 
 from torchcast.process.utils import Identity
 from torchcast.covariance.util import num_off_diag

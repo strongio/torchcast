@@ -9,7 +9,6 @@ This class inherits most of its methods from :class:`torchcast.state_space.State
 
 from typing import Sequence, Dict, List, Iterable
 
-from torchcast.state_space import Predictions
 from torchcast.covariance import Covariance
 from torchcast.process import Process
 from torchcast.state_space.base import StateSpaceModel

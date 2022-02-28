@@ -14,6 +14,12 @@ import torch
 
 from torchcast.utils.datasets import load_air_quality_data
 from torchcast.kalman_filter import KalmanFilter
+import os
+
+if os.environ.get('READTHEDOCS'):
+    from torchcast.utils.rtd import wrap_fit
+    KalmanFilter.fit = wrap_fit(KalmanFilter.fit, new_tol=.001, new_patience=2)
+
 from torchcast.process import LocalTrend, Season
 from torchcast.utils.data import TimeSeriesDataset
 
