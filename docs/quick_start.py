@@ -74,7 +74,7 @@ processes = []
 for m in dataset_train.measures[0]:
     processes.extend([
         LocalTrend(id=f'{m}_trend', measure=m),
-        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=4, measure=m)
+        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=4, measure=m, fixed=True)
     ])
 kf_first = KalmanFilter(measures=dataset_train.measures[0], processes=processes)
 
@@ -109,9 +109,11 @@ print(loss)
 # `Predictions` can easily be converted to Pandas `DataFrames` for ease of inspecting predictions, comparing them to actuals, and visualizing:
 
 # %%
-df_pred = pred.to_dataframe(dataset_all)
+df_pred = pred.to_dataframe(dataset_all, multi=None)
 # bias-correction for log-transform (see https://otexts.com/fpp2/transformations.html#bias-adjustments)
-df_pred['mean'] += .5 * (df_pred['upper'] - df_pred['lower']) / 1.96 ** 2
+df_pred['mean'] += .5 * df_pred['std'] ** 2
+df_pred['lower'] = df_pred['mean'] - 1.96 * df_pred['std']
+df_pred['upper'] = df_pred['mean'] + 1.96 * df_pred['std']
 # inverse the log10:
 df_pred[['actual','mean','upper','lower']] = 10 ** df_pred[['actual','mean','upper','lower']]
 df_pred

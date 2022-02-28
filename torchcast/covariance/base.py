@@ -44,14 +44,6 @@ class Covariance(nn.Module):
         )
 
     """
-    var_predict_multi: Final[float] = 0.1
-    """
-    :cvar var_predict_multi: If ``predict_variance`` are standard modules like :class:`torch.nn.Linear` or
-     :class:`torch.nn.Embedding`, the random inits can often result in extreme variance-multipliers; these poor
-     inits can make early optimization unstable. ``var_predict_multi`` (default 0.1) simply multiplies the output
-     of ``predict_variance``; this serves to dampen initial outputs while still allowing large predictions if these 
-     are eventually warranted.
-    """
 
     @classmethod
     def from_processes(cls,
@@ -278,7 +270,6 @@ class Covariance(nn.Module):
                 raise RuntimeError(f"{self.id}'s `predict_variance` produced nans/infs")
             if (pred < 0).any():
                 raise RuntimeError(f"{self.id}'s `predict_variance` produced values <0; needs exp/softplus layer.")
-            pred = pred * self.var_predict_multi
             pred = validate_gt_shape(pred, num_groups=num_groups, num_times=num_times, trailing_dim=[self.param_rank])
 
         if pred is not None:

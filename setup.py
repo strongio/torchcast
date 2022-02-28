@@ -26,7 +26,7 @@ setup(
             'pandoc>=1.0.2',
             'pytorch_lightning>=1.5',
             'torch_optimizer>=0.3.0',
-            'matplotlib>=3.4.3s'
+            'matplotlib'
         ]
     }
 )
