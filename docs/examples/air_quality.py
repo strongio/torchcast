@@ -10,8 +10,10 @@
 # ---
 
 # %% {"nbsphinx": "hidden"}
+import pandas as pd
 import torch
 
+from torchcast.state_space import Predictions
 from torchcast.utils.datasets import load_air_quality_data
 from torchcast.kalman_filter import KalmanFilter
 from torchcast.utils.data import TimeSeriesDataset
@@ -187,34 +189,51 @@ torch.sum(pred_4step.means, 2)
 # %%
 pred_4step.plot(pred_4step.to_dataframe(dataset_pm_multivariate, type='components').query("process=='residuals'"))
 
+
 # %% [markdown]
 # In this case, we **can't take the sum of our forecasts to get the forecast of the sum**, and [there's no simple closed-form expression for the sum of lognormals](https://scholar.google.com/scholar?hl=en&as_sdt=0%2C14&q=SUMS+OF+LOGNORMALS&btnG=).
 #
 # One option that is fairly easy in `torchcast` is to use a [Monte-Carlo](https://en.wikipedia.org/wiki/Monte_Carlo_method) approach: we'll just generate random-samples based on the means and covariances underlying our forecast. In that case, the sum of the PM2.5 + PM10 forecasted-samples *is* the forecasted PM sum we are looking for:
 
 # %%
-# generate draws from the forecast distribution:
-mc_draws = 10 ** torch.distributions.MultivariateNormal(*pred_4step).rsample((500,))
-# sum across 2.5 and 10, then mean across draws:
-mc_predictions = mc_draws.sum(-1, keepdim=True).mean(0)
-    
-# convert to a dataframe and summarize error:
-_df_pred = TimeSeriesDataset.tensor_to_dataframe(
-    mc_predictions, 
-    times=dataset_pm_multivariate.times(),
-    group_names=dataset_pm_multivariate.group_names,
+def mc_preds_to_dataframe(preds: Predictions,
+                          dataset: TimeSeriesDataset,
+                          inverse_transform_fun: callable, num_draws: int = 500,
+                          **kwargs) -> pd.DataFrame:
+    """
+    Our predictions are on the transformed scale, and we'd like to sum across measures on the original scale;
+    this function uses a monte-carlo approach to do this.
+    """
+    # generate draws from the forecast distribution, apply inverse-transform:
+    mc_draws = inverse_transform_fun(torch.distributions.MultivariateNormal(*preds).rsample((num_draws,)))
+    # sum across measures (e.g. 2.5 and 10), then mean across draws:
+    mc_predictions = mc_draws.sum(-1, keepdim=True).mean(0)
+    # convert to a dataframe
+    return TimeSeriesDataset.tensor_to_dataframe(
+        mc_predictions,
+        times=dataset.times(),
+        group_names=dataset.group_names,
+        measures=['predicted'],
+        **kwargs
+    )
+
+
+# %%
+df_mv_pred = mc_preds_to_dataframe(
+    pred_4step,
+    dataset_pm_multivariate,
+    inverse_transform_fun=lambda x: 10 ** x,
     group_colname='station',
-    time_colname='week',
-    measures=['predicted']
-)    
-df_multivariate_error = _df_pred.\
-    merge(df_aq.loc[:,['station', 'week', 'PM']]).\
+    time_colname='week'
+)
+df_multivariate_error = df_mv_pred. \
+    merge(df_aq.loc[:, ['station', 'week', 'PM']]). \
     assign(
-        error = lambda df: np.abs(df['predicted'] - df['PM']),
-        validation = lambda df: df['week'] > SPLIT_DT
-    ).\
-    groupby(['station','validation'])\
-    ['error'].mean().\
+        error=lambda df: np.abs(df['predicted'] - df['PM']),
+        validation=lambda df: df['week'] > SPLIT_DT
+    ). \
+    groupby(['station', 'validation']) \
+    ['error'].mean(). \
     reset_index()
 df_multivariate_error.groupby('validation')['error'].agg(['mean','std'])
 
@@ -227,4 +246,97 @@ df_multivariate_error.\
     assign(error_diff = lambda df: df['error_x'] - df['error_y']).\
     boxplot('error_diff', by='validation')
 
+# %% [markdown]
+# ### Adding Predictors
+#
+# In many settings we have external predictors we'd like to incorporate. Here we'll use four predictors corresponding to weather conditions. Of course, in a forecasting context, we run into the problem of needing to fill in values for these predictors for future dates. For an arbitrary forecast horizon this can be a complex issue; for simplicity here we'll focus on the 4-week-ahead predictions we used above, and simply lag our weather predictors by 4.
+
 # %%
+from torchcast.process import LinearModel
+
+# prepare external predictors:
+predictors_raw = ['TEMP', 'PRES', 'DEWP', 'RAIN', 'WSPM']
+predictors = [p.lower() + '_lag4' for p in predictors_raw]
+# standardize:
+predictor_means = df_aq.query("week<@SPLIT_DT")[predictors_raw].mean()
+predictor_stds = df_aq.query("week<@SPLIT_DT")[predictors_raw].std()
+df_aq[predictors] = (df_aq[predictors_raw] - predictor_means) / predictor_stds
+# lag:
+df_aq[predictors] = df_aq.groupby('station')[predictors].shift(4, fill_value=0)
+
+# create dataset:
+dataset_pm_lm = TimeSeriesDataset.from_dataframe(
+    dataframe=df_aq,
+    dt_unit='W',
+    y_colnames=['PM10_log10','PM2p5_log10'],
+    X_colnames=predictors,
+    group_colname='station', 
+    time_colname='week',
+)
+dataset_pm_lm_train, _ = dataset_pm_lm.train_val_split(dt=SPLIT_DT)
+dataset_pm_lm_train
+
+# %%
+# create a model:
+_processes = []
+for m in dataset_pm_lm.measures[0]:
+    _processes.extend([
+        LocalTrend(id=f'{m}_trend', measure=m),
+        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=5, measure=m, fixed=True),
+        LinearModel(id=f'{m}_lm', predictors=predictors, measure=m)
+    ])
+kf_pm_lm = KalmanFilter(measures=dataset_pm_lm.measures[0], processes=_processes)
+
+# fit:
+y, X = dataset_pm_lm_train.tensors
+kf_pm_lm.fit(
+    y,
+    X=X, # if you want to supply different predictors to different processes, you can use `{process_name}__X`
+    start_offsets=dataset_pm_lm_train.start_datetimes
+)
+
+# %% [markdown]
+# Here we show how to inspect the influence of each predictor:
+
+# %%
+# inspect components:
+with torch.no_grad():
+    y, X = dataset_pm_lm.tensors
+    pred_4step = kf_pm_lm(
+        y,
+        X=X,
+        start_offsets=dataset_pm_lm.start_datetimes,
+        n_step=4
+    )
+pred_4step.plot(pred_4step.to_dataframe(dataset_pm_lm, type='components').query("process.str.contains('lm')"))
+
+# %% [markdown]
+# Now let's look at error:
+
+# %%
+# error:
+df_lm_pred = mc_preds_to_dataframe(
+    pred_4step,
+    dataset_pm_lm,
+    inverse_transform_fun=lambda x: 10 ** x,
+    group_colname='station',
+    time_colname='week'
+)
+
+df_lm_error = df_lm_pred. \
+    merge(df_aq.loc[:, ['station', 'week', 'PM']]). \
+    assign(
+        error=lambda df: np.abs(df['predicted'] - df['PM']),
+        validation=lambda df: df['week'] > SPLIT_DT
+    ). \
+    groupby(['station', 'validation']) \
+    ['error'].mean(). \
+    reset_index()
+
+df_lm_error.\
+    merge(df_multivariate_error, on=['station', 'validation']).\
+    assign(error_diff = lambda df: df['error_x'] - df['error_y']).\
+    boxplot('error_diff', by='validation')
+
+# %% [markdown]
+# We see that, in this setting, the lagged predictors do not help: while error is substantially reduced in the training period, it is equivalent for the valition period.
