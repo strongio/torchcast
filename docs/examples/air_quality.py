@@ -19,10 +19,6 @@ from torchcast.kalman_filter import KalmanFilter
 from torchcast.utils.data import TimeSeriesDataset
 import os
 
-if os.environ.get('READTHEDOCS'):
-    from torchcast.utils.rtd import wrap_fit
-    KalmanFilter.fit = wrap_fit(KalmanFilter.fit, new_tol=.001, new_patience=2)
-
 import numpy as np
 
 np.random.seed(2021-1-21)
@@ -67,7 +63,7 @@ kf_pm_univariate = KalmanFilter(
     measures=['PM_log10'], 
     processes=[
         LocalTrend(id='trend'),
-        Season(id='day_in_year', period=365.25 / 7, dt_unit='W', K=5, fixed=True)
+        Season(id='day_in_year', period=365.25 / 7, dt_unit='W', K=2, fixed=True)
     ]
 )
 
@@ -156,7 +152,7 @@ _processes = []
 for m in dataset_pm_multivariate.measures[0]:
     _processes.extend([
         LocalTrend(id=f'{m}_trend', measure=m),
-        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=5, measure=m, fixed=True)
+        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=2, measure=m, fixed=True)
     ])
 kf_pm_multivariate = KalmanFilter(measures=dataset_pm_multivariate.measures[0], processes=_processes)
 
@@ -255,7 +251,7 @@ df_multivariate_error.\
 from torchcast.process import LinearModel
 
 # prepare external predictors:
-predictors_raw = ['TEMP', 'PRES', 'DEWP', 'RAIN', 'WSPM']
+predictors_raw = ['TEMP', 'PRES', 'DEWP']
 predictors = [p.lower() + '_lag4' for p in predictors_raw]
 # standardize:
 predictor_means = df_aq.query("week<@SPLIT_DT")[predictors_raw].mean()
@@ -282,7 +278,7 @@ _processes = []
 for m in dataset_pm_lm.measures[0]:
     _processes.extend([
         LocalTrend(id=f'{m}_trend', measure=m),
-        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=5, measure=m, fixed=True),
+        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=2, measure=m, fixed=True),
         LinearModel(id=f'{m}_lm', predictors=predictors, measure=m)
     ])
 kf_pm_lm = KalmanFilter(measures=dataset_pm_lm.measures[0], processes=_processes)
@@ -308,7 +304,7 @@ with torch.no_grad():
         start_offsets=dataset_pm_lm.start_datetimes,
         n_step=4
     )
-pred_4step.plot(pred_4step.to_dataframe(dataset_pm_lm, type='components').query("process.str.contains('lm')"))
+pred_4step.plot(pred_4step.to_dataframe(dataset_pm_lm, type='components').query("process.str.contains('lm')"), split_dt=SPLIT_DT)
 
 # %% [markdown]
 # Now let's look at error:
@@ -339,4 +335,4 @@ df_lm_error.\
     boxplot('error_diff', by='validation')
 
 # %% [markdown]
-# We see that, in this setting, the lagged predictors do not help: while error is substantially reduced in the training period, it is equivalent for the valition period.
+# In this setting, the lagged predictors do not help.
