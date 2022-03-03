@@ -14,11 +14,6 @@ import torch
 
 from torchcast.utils.datasets import load_air_quality_data
 from torchcast.kalman_filter import KalmanFilter
-import os
-
-if os.environ.get('READTHEDOCS'):
-    from torchcast.utils.rtd import wrap_fit
-    KalmanFilter.fit = wrap_fit(KalmanFilter.fit, new_tol=.001, new_patience=2)
 
 from torchcast.process import LocalTrend, Season
 from torchcast.utils.data import TimeSeriesDataset
@@ -80,7 +75,7 @@ processes = []
 for m in dataset_train.measures[0]:
     processes.extend([
         LocalTrend(id=f'{m}_trend', measure=m),
-        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=4, measure=m, fixed=True)
+        Season(id=f'{m}_day_in_year', period=365.25 / 7, dt_unit='W', K=2, measure=m, fixed=True)
     ])
 kf_first = KalmanFilter(measures=dataset_train.measures[0], processes=processes)
 
