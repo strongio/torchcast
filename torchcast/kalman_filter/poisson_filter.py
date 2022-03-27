@@ -1,4 +1,3 @@
-import pdb
 from typing import Dict, Tuple, Optional, Type, Sequence, Iterable, List
 
 import torch
@@ -14,6 +13,14 @@ from ..process import Process
 from ..state_space import StateSpaceModel, Predictions
 
 softplus = Softplus()
+
+
+def inverse_softplus(x: torch.Tensor, eps: float = .001) -> torch.Tensor:
+    not_too_big = x < 20
+    out = x.clone()
+    x = x.clamp(min=eps)
+    out[not_too_big] = torch.log(torch.exp(x[not_too_big]) - 1)
+    return out
 
 
 class PoissonStep(KalmanStep):
@@ -113,6 +120,14 @@ class PoissonFilter(StateSpaceModel):
         if updates is not None:
             kwargs.update(update_means=updates[0], update_covs=updates[1])
         return PoissonPredictions(**kwargs)
+
+    @torch.jit.ignore()
+    def set_initial_values(self, y: Tensor, n: int, ilink: Optional[callable] = None, verbose: bool = True):
+        if n is True:
+            # use a different default, only one timestep is too stringent
+            num_timesteps = y.shape[1]
+            n = max(int(num_timesteps * 0.10), 1)
+        return super().set_initial_values(y=y, n=n, ilink=inverse_softplus, verbose=verbose)
 
 
 class PoissonPredictions(Predictions):
