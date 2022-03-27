@@ -2,6 +2,7 @@ from typing import Tuple, Union, Optional, Dict, Iterator, Sequence
 from warnings import warn
 
 import torch
+from scipy.stats import norm as ScipyNorm
 from torch import nn, Tensor
 
 import numpy as np
@@ -230,19 +231,27 @@ class Predictions(nn.Module):
     def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
         return self.distribution_cls(means, covs, validate_args=False).log_prob(obs)
 
+    @classmethod
+    def _get_quantiles(cls, mean, std, conf: float, observed: bool) -> tuple:
+        assert conf >= .50
+        multi = -ScipyNorm.ppf((1 - conf) / 2)
+        lower = mean - multi * std
+        upper = mean + multi * std
+        return lower, upper
+
     def to_dataframe(self,
                      dataset: Union[TimeSeriesDataset, dict],
                      type: str = 'predictions',
                      group_colname: str = 'group',
                      time_colname: str = 'time',
-                     multi: Optional[float] = 1.96) -> 'DataFrame':
+                     conf: Optional[float] = .95) -> 'DataFrame':
         """
         :param dataset: Either a :class:`.TimeSeriesDataset`, or a dictionary with 'start_times', 'group_names', &
          'dt_unit'
         :param type: Either 'predictions' or 'components'.
         :param group_colname: Column-name for 'group'
         :param time_colname: Column-name for 'time'
-        :param multi: Multiplier on std-dev for lower/upper CIs. Default 1.96.
+        :param conf: Conf the lower/upper CIs will target. Default of 0.95 means these are 0.025 and 0.975.
         :return: A pandas DataFrame with group, 'time', 'measure', 'mean', 'lower', 'upper'. For ``type='components'``
          additionally includes: 'process' and 'state_element'.
         """
@@ -298,9 +307,8 @@ class Predictions(nn.Module):
             for i, measure in enumerate(self.measures):
                 # predicted:
                 df = _tensor_to_df(torch.stack([self.means[..., i], stds[..., i]], 2), measures=['mean', 'std'])
-                if multi is not None:
-                    df['lower'] = df['mean'] - multi * df['std']
-                    df['upper'] = df['mean'] + multi * df.pop('std')
+                if conf is not None:
+                    df['lower'], df['upper'] = self._get_quantiles(df['mean'], df.pop('std'), conf=conf, observed=True)
 
                 # actual:
                 orig_tensor = batch_info.get('named_tensors', {}).get(measure, None)
@@ -314,9 +322,8 @@ class Predictions(nn.Module):
             # components:
             for (measure, process, state_element), (m, std) in self._components().items():
                 df = _tensor_to_df(torch.stack([m, std], 2), measures=['mean', 'std'])
-                if multi is not None:
-                    df['lower'] = df['mean'] - multi * df['std']
-                    df['upper'] = df['mean'] + multi * df.pop('std')
+                if conf is not None:
+                    df['lower'], df['upper'] = self._get_quantiles(df['mean'], df.pop('std'), conf=conf, observed=False)
                 df['process'], df['state_element'], df['measure'] = process, state_element, measure
                 out.append(df)
 
@@ -355,8 +362,9 @@ class Predictions(nn.Module):
 
         return out
 
-    @staticmethod
-    def plot(df: 'DataFrame',
+    @classmethod
+    def plot(cls,
+             df: 'DataFrame',
              group_colname: str = None,
              time_colname: str = None,
              max_num_groups: int = 1,
@@ -392,8 +400,7 @@ class Predictions(nn.Module):
 
         df = df.copy()
         if 'upper' not in df.columns and 'std' in df.columns:
-            df['upper'] = df['mean'] + 1.96 * df['std']
-            df['lower'] = df['mean'] - 1.96 * df['std']
+            df['lower'], df['upper'] = cls._get_quantiles(df['mean'], df['std'], conf=.95, observed=not is_components)
         if df[group_colname].nunique() > max_num_groups:
             subset_groups = df[group_colname].drop_duplicates().sample(max_num_groups).tolist()
             if len(subset_groups) < df[group_colname].nunique():
