@@ -1,3 +1,11 @@
+"""
+The :class:`.PoissonFilter` is a :class:`torch.nn.Module` which generates forecasts using the extended kalman-filter.
+It uses a softplus link function to link the state-mean to the observed mean, and fixes the measure-variance to equal
+the mean.
+
+This class is experimental, and the log-likelihood and predictions do not currently incorporate the state-covariance.
+----------
+"""
 from typing import Dict, Tuple, Optional, Type, Sequence, Iterable, List
 from warnings import warn
 
