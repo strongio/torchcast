@@ -1,4 +1,5 @@
 from typing import Dict, Tuple, Optional, Type, Sequence, Iterable, List
+from warnings import warn
 
 import torch
 from scipy import special as scipy_special
@@ -40,6 +41,7 @@ class PoissonStep(KalmanStep):
         # use EKF:
         correction = torch.zeros_like(orig_H)
         _do_cor = orig_mmean < 10
+        # derivative of softplus:
         correction[_do_cor] = orig_H[_do_cor] / (torch.exp(orig_mmean[_do_cor]) + 1).unsqueeze(-1)
         newH = orig_H - correction
 
@@ -130,6 +132,9 @@ class PoissonFilter(StateSpaceModel):
         return super().set_initial_values(y=y, n=n, ilink=inverse_softplus, verbose=verbose)
 
 
+_warn_once = {}
+
+
 class PoissonPredictions(Predictions):
 
     @classmethod
@@ -144,6 +149,12 @@ class PoissonPredictions(Predictions):
         :return: A tuple of `means`, `covs`.
         """
         means = softplus(H.matmul(state_means.unsqueeze(-1)).squeeze(-1))
+        if _warn_once.get('poisson_predictions', False):
+            _warn_once['poisson_predictions'] = True
+            warn(
+                "Poisson implementation is experimental. Currently, uncertainty in predictions and log-prob evaluation "
+                "does not incorporate state-covariance."
+            )
         # TODO: would like self.covs to be R (i.e. this is what we expose for plotting etc.) but would like
         #  the `covs` passed to log_prob to be state-covs so that we can do things like monte-carlo likelihood
         return means, R
