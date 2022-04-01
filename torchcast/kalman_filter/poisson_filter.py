@@ -4,6 +4,7 @@ It uses a softplus link function to link the state-mean to the observed mean, an
 the mean.
 
 This class is experimental, and the log-likelihood and predictions do not currently incorporate the state-covariance.
+
 ----------
 """
 from typing import Dict, Tuple, Optional, Type, Sequence, Iterable, List

@@ -7,6 +7,7 @@ API
    state_space
    kalman_filter
    exp_smooth
+   poisson_filter
    processes
    covariance
    utils
