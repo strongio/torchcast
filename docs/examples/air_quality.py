@@ -81,7 +81,7 @@ kf_pm_univariate.fit(
 def inverse_transform(df):
     df = df.copy()
     # bias-correction for log-transform (see https://otexts.com/fpp2/transformations.html#bias-adjustments)
-    df['mean'] += .5 * df['std'] ** 2
+    df['mean'] = df['mean'] + .5 * df['std'] ** 2
     df['lower'] = df['mean'] - 1.96 * df['std']
     df['upper'] = df['mean'] + 1.96 * df['std']
     # inverse the log10:
@@ -236,7 +236,7 @@ df_multivariate_error = df_mv_pred. \
 df_multivariate_error.groupby('validation')['error'].agg(['mean','std'])
 
 # %% [markdown]
-# We see that this approach has reduced our error: substantially in the training period, and moderately in the validation period. We can look at the per-site differences to reduce common sources of noise and see that the reduction is consistent (it holds for all but one site):
+# We see that this approach has reduced our error in the validation period. We can look at the per-site differences to reduce noise:
 
 # %%
 df_multivariate_error.\
