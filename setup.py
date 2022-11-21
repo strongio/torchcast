@@ -27,6 +27,10 @@ setup(
             'pytorch_lightning>=1.5',
             'torch_optimizer>=0.3.0',
             'matplotlib'
+        ],
+        'demo': [
+            'dash',
+            'jupyter-dash',
         ]
     }
 )
