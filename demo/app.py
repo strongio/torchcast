@@ -80,6 +80,7 @@ app.layout = html.Div(
                                     {"label": "Exponential Smoothing", "value": "es"},
                                     {"label": "Neural-Network", "value": "nn"}
                                 ],
+                                value="none",
                                 className="form-item"
                             ),
                             html.H6("Time"),
@@ -112,7 +113,7 @@ app.layout = html.Div(
                     dcc.RadioItems(id="drop_irregular",
                                 options=[{"label": "No", "value": False},
                                             {"label": "Yes", "value": True}],
-                            value=False, inline=True,
+                            value=True, inline=True,
                             className="form-item"),
                 ]),
 
