@@ -42,6 +42,7 @@ app.layout = html.Div(
                 # Part 3
                 html.Div(
                     children=[
+                        html.H6("Select ML model:"),
                         dcc.RadioItems(
                             id="prediction_toggle",
                             options=[
@@ -50,10 +51,28 @@ app.layout = html.Div(
                                 {"label": "Neural-Network", "value": "nn"}
                             ]
                         ),
-
-
+                        html.H6("Time"),
+                        dcc.Checklist(
+                            id="day_night_toggle",
+                            options=[
+                                {"label": "Day", "value": "day"},
+                                {"label": "Night", "value": "night"}
+                            ],
+                            value=["day", "night"],
+                            inline=True,
+                        ),
+                        html.H6("Day"),
+                        dcc.Checklist(
+                            id="day_of_week_toggle",
+                            options=[
+                                {"label": "Weekdays", "value": "weekdays"},
+                                {"label": "Weekends", "value": "weekends"},
+                            ],
+                            value=["weekdays", "weekends"],
+                            inline=True,
+                        )
                     ],
-                    style={'padding': 10, 'display': 'flex', 'flex': 1, 'align-items': 'center', 'justify-content': 'center'}),
+                    style={'padding': 10, 'flex': 1, 'align-items': 'center', 'justify-content': 'center'}),
             ], style={'display': 'flex', 'flex-direction': 'row'}
             )
         ], style={'padding': 10, 'flex': 2.5}),
