@@ -30,7 +30,7 @@ app.layout = html.Div(
                 ],
             ),
             html.Img(
-                src='assets/logo.png',
+                src='assets/strong-dark-blue-background.png',
                 style={'width':'127px', 'height': '48px', 'position': 'absolute', 'right': '75px', 'align-self': 'center'}
             ),
             ],
