@@ -14,8 +14,9 @@ DATA_DIR = Path("docs/examples/electricity").resolve()
 
 # assume you have a "long-form" data frame
 # see https://plotly.com/python/px-arguments/ for more options
-df = pd.read_csv(DATA_DIR / "df_electricity.csv.gz")
+df: pd.DataFrame = pd.read_csv(DATA_DIR / "df_electricity.csv.gz")
 all_groups: np.ndarray = df['group'].unique()
+regular_groups: pd.DataFrame = pd.read_parquet(DATA_DIR / 'train_groups.pq')
 
 
 app.layout = html.Div(
@@ -210,7 +211,7 @@ _max_selected = 2
 def update_multi_options(groups_selected: List[str], drop_irregular: bool):
     options = all_groups
     if drop_irregular:
-        options = options[:10]
+        options = regular_groups["train_groups"].to_list()
 
     if len(groups_selected) >= _max_selected:
         options = [
