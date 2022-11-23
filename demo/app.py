@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List
 from dash import Dash, dcc, html, Input, Output
 from pathlib import Path
@@ -118,7 +119,10 @@ app.layout = html.Div(
 )
 def display_time_series(groups: List[str]):
     _df = df.loc[df['group'].isin(groups)]
+
     fig_ts = px.line(_df, x='time', y='kW', color='group')
+    fig_ts.add_vline(x=datetime(2013, 6, 1), line_width=3, line_dash="dash", line_color="green")
+
     fig_hist = px.histogram(_df, x='kW', color='group', opacity=0.8, histnorm='probability density')
 
     fig_ts.update_layout(

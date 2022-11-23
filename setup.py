@@ -30,7 +30,9 @@ setup(
         ],
         'demo': [
             'dash',
+            'dash-daq',
             'jupyter-dash',
+            'pyarrow',  # to support parquet files
         ]
     }
 )
