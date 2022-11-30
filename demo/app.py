@@ -2,8 +2,11 @@ from typing import Dict, List
 from datetime import datetime
 from functools import lru_cache
 from typing import List, Optional
+
+from plotly.graph_objs import Figure
 from dash import Dash, dcc, html, Input, Output
 from pathlib import Path
+import dash_daq as daq
 import plotly.express as px
 import pandas as pd
 import numpy as np
@@ -86,7 +89,7 @@ app.layout = html.Div(
                         dcc.Graph(
                             id="time-series-chart",
                             className="card main-card",
-                            style={"margin-bottom": "30px"},
+                            style={"flex": "1 1", "margin-bottom": "30px"},
                         ),
                         # the horizontal part with 2 parts
                         html.Div(
@@ -94,7 +97,7 @@ app.layout = html.Div(
                                 # Part 1
                                 html.Div(
                                     dcc.Graph(id="histogram-chart"),
-                                    style={"flex": 1, "margin-right": "30px"},
+                                    style={"flex": "1 1", "margin-right": "30px"},
                                     className="card",
                                 ),
                                 # Part 2
@@ -107,61 +110,46 @@ app.layout = html.Div(
                             style={"display": "flex", "flex-direction": "row"},
                         ),
                     ],
-                    style={"flex": 2.5},
+                    style={"flex": "1 1"},
                 ),
                 # col 2
                 html.Div(
                     children=[
                         html.Div(
                             children=[
-                                html.H5("ML model"),
+                                html.H6("ML model"),
                                 dcc.RadioItems(
                                     id="prediction_toggle",
                                     options=[
                                         {"label": "None", "value": "none"},
                                         {"label": "Exponential Smoothing", "value": "es",},
-                                        {"label": "Neural-Network", "value": "nn"},
+                                        {"label": "Neural Network", "value": "nn"},
                                     ],
                                     value="none",
                                     className="form-item",
                                 ),
+                                daq.BooleanSwitch(id="show_future_switch", on=False, label="Show future", labelPosition="bottom"),
                                 html.H5(" "),
                                 html.H6("Time"),
-                                dcc.Checklist(
-                                    id="day_night_toggle",
-                                    options=[
-                                        {"label": "Day", "value": "day"},
-                                        {"label": "Night", "value": "night"},
-                                    ],
-                                    value=["day", "night"],
-                                    inline=True,
-                                    className="form-item",
+                                dcc.RangeSlider(
+                                    0, 24, 1, value=[0, 24], marks={0: "12AM", 6: "6AM", 12: "12PM", 18: "6PM", 24: "12AM"},
+                                    id="time_of_day_range",
                                 ),
                                 html.H6("Day"),
                                 dcc.Checklist(
                                     id="day_of_week_toggle",
                                     options=[
-                                        {"label": "Weekdays", "value": "weekdays"},
-                                        {"label": "Weekends", "value": "weekends"},
+                                        {"label": label, "value": value}
+                                        for label, value in zip(
+                                            "MTWRFSS",
+                                            range(7)
+                                        )
                                     ],
-                                    value=["weekdays", "weekends"],
+                                    value=list(range(7)),
                                     inline=True,
                                     className="form-item",
                                 ),
                                 html.H5(" "),
-                                html.H6(
-                                    "Drop irregular clients:",
-                                ),
-                                dcc.RadioItems(
-                                    id="drop_irregular",
-                                    options=[
-                                        {"label": "No", "value": False},
-                                        {"label": "Yes", "value": True},
-                                    ],
-                                    value=True,
-                                    inline=True,
-                                    className="form-item",
-                                ),
                                 html.H6("Clients"),
                                 # dcc.Dropdown(
                                 #     id="group_dropdown",
@@ -174,8 +162,21 @@ app.layout = html.Div(
                                     options=all_groups,
                                     value=["MT_328"],
                                     className="form-item",
-                                    style={"max-height": "190px", "overflow-y": "scroll", "scrollbar-color": "dark"},
+                                    style={"max-height": "250px", "overflow-y": "scroll", "scrollbar-color": "dark"},
                                 ),
+                                # html.H6(
+                                #     "Drop irregular clients",
+                                # ),
+                                # dcc.RadioItems(
+                                #     id="drop_irregular",
+                                #     options=[
+                                #         {"label": "No", "value": False},
+                                #         {"label": "Yes", "value": True},
+                                #     ],
+                                #     value=True,
+                                #     inline=True,
+                                #     className="form-item",
+                                # ),
                             ],
                         ),
                     ],
@@ -238,7 +239,6 @@ def get_combined_df(group: str) -> pd.DataFrame:
             var_name="model",
         )
     )
-    logging.info(combined)
     return combined
 
 # --- plotting
@@ -248,16 +248,52 @@ def get_combined_df(group: str) -> pd.DataFrame:
     Output("histogram-chart", "figure"),
     Input("group_checklist", "value"),
     Input("prediction_toggle", "value"),
+    Input("show_future_switch", "on"),
+    Input("time_of_day_range", "value"),
+    Input("day_of_week_toggle", "value"),
+    Input("time-series-chart", "figure"),
 )
 def display_time_series(
     groups: List[str],
     prediction_toggle_value: str,
+    show_future: bool,
+    time_of_day_range: List[int],
+    day_of_week_toggle: List[int],
+    existing_fig_ts: Optional[Figure],
 ):
 
     _df = pd.concat(
-        [pd.DataFrame(columns=["group", "time", "is_train", "model", "kW"])]
+        [pd.DataFrame({
+            "group": pd.Series(dtype='str'),
+            "time": pd.Series(dtype='datetime64[s]'),
+            "is_train": pd.Series(dtype='bool'),
+            "model": pd.Series(dtype='str'),
+            "kW": pd.Series(dtype='float64')
+        })]
         + [get_combined_df(group) for group in groups]
     )
+
+    # Get the y range now before it gets overwritten
+
+    y_range = (0, _df["kW"].max() * 1.1)
+    x_range = existing_fig_ts and existing_fig_ts['layout']['xaxis']['range']
+    x_max_range = (_df["time"].min(), _df["time"].max())
+
+    if not show_future:
+        _df = _df.query("(is_train == True) | (model != 'actual')")
+
+    if time_of_day_range == [0, 24]:
+        pass
+    else:
+        valid_hours = list(range(*time_of_day_range))
+        _df = _df.query("time.dt.hour.isin(@valid_hours)")
+
+    if day_of_week_toggle == list(range(7)):
+        pass
+    else:
+        _df = _df.query("time.dt.dayofweek.isin(@day_of_week_toggle)")
+
+
 
     ts_fig_height_px = 400
 
@@ -288,16 +324,6 @@ def display_time_series(
     # Add the vertical line between train-val split
     fig_ts.add_vline(x=datetime(2013, 6, 1), line_width=3, line_dash="dash", line_color="white")
 
-    fig_hist = px.histogram(
-        _df.query("model == 'actual'"),
-        x='kW',
-        nbins=80,
-        color='group', **strong_color_cycle,
-        opacity=0.8,
-        histnorm='probability density',
-        height=275
-    )
-
     # Styling of time series
     fig_ts \
         .update_layout(
@@ -323,10 +349,13 @@ def display_time_series(
                     )
                 ),
                 rangeslider=dict(
-                    visible=True
+                    visible=True,
+                    range=x_max_range,
                 ),
-                range=(train_val_split_dt - pd.Timedelta("7D"),
-                       train_val_split_dt - pd.Timedelta("7D") + pd.Timedelta("30D")),
+                range=x_range or (
+                    train_val_split_dt - pd.Timedelta("7D"),
+                    train_val_split_dt - pd.Timedelta("7D") + pd.Timedelta("30D")
+                ),
                 type="date"
             )
         ) \
@@ -353,9 +382,19 @@ def display_time_series(
             title_font_family="Courier New",
         ) \
         .update_xaxes(showgrid=False) \
-        .update_yaxes(showgrid=False) \
+        .update_yaxes(range=y_range, showgrid=False) \
         .update_traces(line=dict(width=1.0))
 
+    # Create the histogram
+    fig_hist = px.histogram(
+        _df.query("model == 'actual'"),
+        x='kW',
+        nbins=80,
+        color='group', **strong_color_cycle,
+        opacity=0.8,
+        histnorm='probability density',
+        height=275
+    )
     # Update looks of histogram
     fig_hist\
         .update_layout(
@@ -381,6 +420,7 @@ def display_time_series(
             )
         )
 
+
     return fig_ts, fig_hist
 
 # Correlation plot
@@ -391,8 +431,8 @@ def display_time_series(
 )
 def correlation_plot(group_checklist_values: List[str]):
     if len(group_checklist_values) == 2:
-        group1: pd.DataFrame = df.loc[df['group'] == group_checklist_values[0]]
-        group2: pd.DataFrame = df.loc[df['group'] == group_checklist_values[1]]
+        group1: pd.DataFrame = get_combined_df(group_checklist_values[0]).query("model == 'actual'")
+        group2: pd.DataFrame = get_combined_df(group_checklist_values[1]).query("model == 'actual'")
         groups_merged: pd.DataFrame = group1.merge(
             group2,
             on=["time"],
@@ -407,6 +447,7 @@ def correlation_plot(group_checklist_values: List[str]):
                 "kW_x": f"{group_checklist_values[0]} Power Use (kW)",
                 "kW_y": f"{group_checklist_values[1]} Power Use (kW)",
             },
+            color_continuous_scale="haline",
             width=323, height=275
         )
         fig_corr\
@@ -420,7 +461,7 @@ def correlation_plot(group_checklist_values: List[str]):
                     l=0,
                     r=0,
                     b=0,
-                    t=24,
+                    t=0,
                     pad=0,
                 ),)\
             .update_coloraxes(showscale=False)
@@ -443,16 +484,17 @@ _max_selected = 2
 @app.callback(
     Output("group_checklist", "options"),
     Input("group_checklist", "value"),
-    Input("drop_irregular", "value"),
+    # Input("drop_irregular", "value"),
 )
 def update_multi_options(
     groups_selected: List[str],
-    drop_irregular: bool,
+    # drop_irregular: bool,
 ):
-    options = all_groups
-    if drop_irregular:
-        options = regular_groups
+    # options = all_groups
+    # if drop_irregular:
+    #     options = regular_groups
 
+    options = regular_groups
     if len(groups_selected) >= _max_selected:
         options = [
             {
