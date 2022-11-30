@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.13.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -95,9 +95,6 @@ torch.manual_seed(2021 - 1 - 21)
 
 # %%
 df_elec.head()
-
-# %%
-df_elec.to_parquet("df_elec.pq")
 
 # %% [markdown]
 # Electricity-demand data can be challenging because of its complexity. In traditional forecasting applications, we divide our model into siloed processes that each contribute to separate behaviors of the time-series. For example:
@@ -351,9 +348,6 @@ def plot_2x2(df: pd.DataFrame,
 
 plot_2x2(df_forecast_ex2)
 
-# %%
-df_forecast_ex2.to_parquet("df_forecast_ex2.pq")
-
 # %% [markdown]
 # Viewing the forecasts in this way helps us see a lingering serious issue: the annual seasonal pattern is very different for daytimes and nighttimes, but the model isn't capturing that. 
 #
@@ -382,7 +376,7 @@ season_cols = \
 
 
 # %% [markdown]
-# Since we're working with more data, we'll need to use a dataloader (`torchcast` provides `TimeSeriesDataLoader`):
+# Since we're working with more data, we'll need to use a dataloader (`torchcast` provies `TimeSeriesDataLoader`):
 
 # %%
 def make_dataloader(type_: str,
@@ -734,9 +728,6 @@ plot_forecasts(df_forecast_nn.query("group==@example_group & time.dt.year==2013 
 # %%
 plot_2x2(df_forecast_nn.query("group==@example_group"))
 
-# %%
-df_forecast_nn.to_parquet("df_forecast_nn.pq")
-
 
 # %% [markdown]
 # Let's confirm quantitatively that the 2nd model does indeed substantially reduce forecast error, relative to the 'standard' model:
@@ -769,5 +760,3 @@ df_forecast_ex2. \
     merge(df_nn_err, on=['group', 'validation'], suffixes=('_es', '_es_nn'))
 
 
-
-# %%
