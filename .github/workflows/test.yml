@@ -1,0 +1,27 @@
+name: Torchcast Unit Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        py-version: ['3.6', '3.7', '3.8', '3.9', '3.10']
+
+    steps:
+
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.py-version }}
+
+      - name: Install torchcast
+        run: pip install .[tests]
+
+      - name: Run tests
+        run: python3 -m unittest
