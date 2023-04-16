@@ -1,4 +1,4 @@
-from typing import Tuple, Union, Optional, Dict, Iterator, Sequence
+from typing import Tuple, Union, Optional, Dict, Iterator, Sequence, TYPE_CHECKING
 from warnings import warn
 
 import torch
@@ -10,8 +10,11 @@ import numpy as np
 from backports.cached_property import cached_property
 
 from torchcast.internals.utils import get_nan_groups, is_near_zero
-
 from torchcast.utils.data import TimeSeriesDataset
+
+if TYPE_CHECKING:
+    from pandas import DataFrame
+    from torchcast.state_space import StateSpaceModel
 
 
 class Predictions(nn.Module):
@@ -103,7 +106,7 @@ class Predictions(nn.Module):
         return self._update_means
 
     @cached_property
-    def update_covs(self) -> torch.Tensor:
+    def update_covs(self) -> Optional[torch.Tensor]:
         if self._update_covs is None:
             return None
         if not isinstance(self._update_covs, torch.Tensor):
@@ -244,7 +247,8 @@ class Predictions(nn.Module):
                      type: str = 'predictions',
                      group_colname: str = 'group',
                      time_colname: str = 'time',
-                     conf: Optional[float] = .95) -> 'DataFrame':
+                     conf: Optional[float] = .95,
+                     multi: Optional[float] = None) -> 'DataFrame':
         """
         :param dataset: Either a :class:`.TimeSeriesDataset`, or a dictionary with 'start_times', 'group_names', &
          'dt_unit'
@@ -255,6 +259,8 @@ class Predictions(nn.Module):
         :return: A pandas DataFrame with group, 'time', 'measure', 'mean', 'lower', 'upper'. For ``type='components'``
          additionally includes: 'process' and 'state_element'.
         """
+        if multi is not None:
+            warn("Ignoring `multi` as it is deprecated, please use `conf` instead.", DeprecationWarning)
 
         from pandas import concat
 
