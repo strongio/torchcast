@@ -81,7 +81,9 @@ kf_pm_univariate.fit(
 def inverse_transform(df):
     df = df.copy()
     # bias-correction for log-transform (see https://otexts.com/fpp2/transformations.html#bias-adjustments)
-    df['mean'] = df['mean'] + .5 * (df['upper'] - df['lower']) / 1.96 ** 2
+    df['mean'] = df['mean'] + .5 * df['std'] ** 2
+    df['lower'] = df['mean'] - 1.96 * df['std']
+    df['upper'] = df['mean'] + 1.96 * df['std']
     # inverse the log10:
     df[['actual', 'mean', 'upper', 'lower']] = 10 ** df[['actual', 'mean', 'upper', 'lower']]
     df['measure'] = df['measure'].str.replace('_log10', '')
@@ -94,7 +96,7 @@ forecast = kf_pm_univariate(
         out_timesteps=dataset_pm_univariate.tensors[0].shape[1]
 )
 
-df_forecast = inverse_transform(forecast.to_dataframe(dataset_pm_univariate))
+df_forecast = inverse_transform(forecast.to_dataframe(dataset_pm_univariate, conf=None))
 print(forecast.plot(df_forecast, max_num_groups=3, split_dt=SPLIT_DT))
 
 # %% [markdown]
@@ -117,7 +119,7 @@ with torch.no_grad():
     )
 
 df_univariate_error = pred_4step.\
-    to_dataframe(dataset_pm_univariate, group_colname='station', time_colname='week').\
+    to_dataframe(dataset_pm_univariate, group_colname='station', time_colname='week', conf=None).\
     pipe(inverse_transform).\
     merge(df_aq.loc[:,['station', 'week', 'PM']]).\
     assign(
@@ -234,7 +236,7 @@ df_multivariate_error = df_mv_pred. \
 df_multivariate_error.groupby('validation')['error'].agg(['mean','std'])
 
 # %% [markdown]
-# We see that this approach has reduced our error: substantially in the training period, and moderately in the validation period. We can look at the per-site differences to reduce common sources of noise and see that the reduction is consistent (it holds for all but one site):
+# We see that this approach has reduced our error in the validation period. We can look at the per-site differences to reduce noise:
 
 # %%
 df_multivariate_error.\
@@ -304,7 +306,10 @@ with torch.no_grad():
         start_offsets=dataset_pm_lm.start_datetimes,
         n_step=4
     )
-pred_4step.plot(pred_4step.to_dataframe(dataset_pm_lm, type='components').query("process.str.contains('lm')"), split_dt=SPLIT_DT)
+pred_4step.plot(
+    pred_4step.to_dataframe(dataset_pm_lm, type='components').query("process.str.contains('lm')"),
+    split_dt=SPLIT_DT
+)
 
 # %% [markdown]
 # Now let's look at error:

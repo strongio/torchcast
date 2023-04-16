@@ -5,6 +5,12 @@ import torch
 import numpy as np
 
 
+def transpose_last_dims(x: torch.Tensor) -> torch.Tensor:
+    args = list(range(len(x.shape)))
+    args[-2], args[-1] = args[-1], args[-2]
+    return x.permute(*args)
+
+
 def get_nan_groups(isnan: torch.Tensor) -> List[Tuple[torch.Tensor, Optional[torch.Tensor]]]:
     """
     Iterable of (group_idx, valid_idx) tuples that can be passed to torch.meshgrid. If no valid, then not returned; if

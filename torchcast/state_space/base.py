@@ -33,7 +33,9 @@ class StateSpaceModel(nn.Module):
             warn(f"`measures` should be a list of strings not a string; interpreted as `{measures}`.")
         self._validate(processes, measures)
 
-        self.measure_covariance = measure_covariance.set_id('measure_covariance')
+        self.measure_covariance = measure_covariance
+        if self.measure_covariance:
+            self.measure_covariance.set_id('measure_covariance')
 
         self.ss_step = self.ss_step_cls()
 
@@ -55,7 +57,7 @@ class StateSpaceModel(nn.Module):
         self.initial_mean = torch.nn.Parameter(.1 * torch.randn(self.state_rank))
 
         # can disable for debugging/tests:
-        self._scale_by_measure_var = True
+        self._scale_by_measure_var = bool(self.measure_covariance)
 
     @torch.jit.ignore()
     def fit(self,
@@ -90,9 +92,10 @@ class StateSpaceModel(nn.Module):
          `backward()`. This can be used for example to add regularization.
         :param callable_kwargs: A dictionary where the keys are keyword-names and the values are no-argument functions
          that will be called each iteration to recompute the corresponding arguments.
-        :param set_initial_values: Default is to set ``initial_mean`` to sensible value given ``y``. This helps speed
-         up training if the data are not centered. Set to ``False`` if you're resuming training from a previous
-         ``fit()`` call.
+        :param set_initial_values: Will set ``initial_mean`` to sensible value given ``y``, which helps speed
+         up training if the data are not centered. This argument determines the number of timesteps of ``y`` to use
+         when doing so (default 1). Set to 0/`False``, if you're resuming training from a previous ``fit()`` call. Set
+         to a larger value for sparse data where the first timestep isn't informative enough.
         :param kwargs: Further keyword-arguments passed to :func:`StateSpaceModel.forward()`.
         :return: This ``StateSpaceModel`` instance.
         """
@@ -105,8 +108,7 @@ class StateSpaceModel(nn.Module):
             optimizer = torch.optim.LBFGS([p for p in self.parameters() if p.requires_grad],
                                           max_iter=10, line_search_fn='strong_wolfe', lr=.5)
 
-        if set_initial_values:
-            self.set_initial_values(y)
+        self.set_initial_values(y, n=set_initial_values, verbose=verbose > 1)
 
         prog = None
         if verbose > 1:
@@ -117,7 +119,7 @@ class StateSpaceModel(nn.Module):
                 else:
                     prog = tqdm(total=1)
             except ImportError:
-                warn("`progress=True` requires package `tqdm`.")
+                warn("verbose>1 w/progress-bar requires package `tqdm`.")
 
         epoch = 0
 
@@ -160,9 +162,14 @@ class StateSpaceModel(nn.Module):
         return self
 
     @torch.jit.ignore()
-    def set_initial_values(self, y: Tensor):
+    def set_initial_values(self, y: Tensor, n: int, ilink: Optional[callable] = None, verbose: bool = True):
+        if not n:
+            return
         if 'initial_mean' not in self.state_dict():
             return
+
+        if ilink is None:
+            ilink = lambda x: x
 
         assert len(self.measures) == y.shape[-1]
 
@@ -176,11 +183,15 @@ class StateSpaceModel(nn.Module):
                 assert process.measure
 
                 hits[process.measure].append(process.id)
+                se_idx = process.state_elements.index('position')
                 measure_idx = list(self.measures).index(process.measure)
                 with torch.no_grad():
-                    t0 = y[:, 0, measure_idx]
-                    self.state_dict()['initial_mean'][self.process_to_slice[pid][0]] = \
-                        t0[~torch.isnan(t0) & ~torch.isinf(t0)].mean()
+                    t0 = y[:, 0:n, measure_idx]
+                    init_mean = ilink(t0[~torch.isnan(t0) & ~torch.isinf(t0)].mean())
+                    if verbose:
+                        print(f"Initializing {pid}.position to {init_mean.item()}")
+                    # TODO instead of [0], should actually get index of 'position->position'
+                    self.state_dict()['initial_mean'][self.process_to_slice[pid][se_idx]] = init_mean
 
         for measure, procs in hits.items():
             if len(procs) > 1:
@@ -223,7 +234,8 @@ class StateSpaceModel(nn.Module):
     def design_modules(self) -> Iterable[Tuple[str, nn.Module]]:
         for pid in self.processes:
             yield pid, self.processes[pid]
-        yield 'measure_covariance', self.measure_covariance
+        if self.measure_covariance:
+            yield 'measure_covariance', self.measure_covariance
 
     @torch.jit.ignore()
     def forward(self,
@@ -293,7 +305,7 @@ class StateSpaceModel(nn.Module):
                 raise ValueError("`out_timesteps` must be an int.")
             out_timesteps = int(out_timesteps)
 
-        preds, updates, R, H = self._script_forward(
+        preds, updates, design_mats = self._script_forward(
             input=input,
             initial_state=initial_state,
             n_step=n_step,
@@ -305,14 +317,17 @@ class StateSpaceModel(nn.Module):
                 **kwargs
             )
         )
-        return self._generate_predictions(preds, R, H, updates if include_updates_in_output else None)
+        return self._generate_predictions(
+            preds=preds,
+            updates=updates if include_updates_in_output else None,
+            **design_mats,
+        )
 
     @torch.jit.ignore
     def _generate_predictions(self,
                               preds: Tuple[List[Tensor], List[Tensor]],
-                              R: List[Tensor],
-                              H: List[Tensor],
-                              updates: Optional[Tuple[List[Tensor], List[Tensor]]] = None) -> 'Predictions':
+                              updates: Optional[Tuple[List[Tensor], List[Tensor]]] = None,
+                              **kwargs) -> 'Predictions':
         """
         StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
         """
@@ -320,8 +335,8 @@ class StateSpaceModel(nn.Module):
         kwargs = {
             'state_means': preds[0],
             'state_covs': preds[1],
-            'R': R,
-            'H': H,
+            'R': kwargs['R'],
+            'H': kwargs['H'],
             'model': self
         }
         if updates is not None:
@@ -379,8 +394,7 @@ class StateSpaceModel(nn.Module):
                         ) -> Tuple[
         Tuple[List[Tensor], List[Tensor]],
         Tuple[List[Tensor], List[Tensor]],
-        List[Tensor],
-        List[Tensor]
+        Dict[str, List[Tensor]]
     ]:
         """
         :param input: A (group X time X measures) tensor. Optional if `initial_state` is specified.
@@ -481,10 +495,8 @@ class StateSpaceModel(nn.Module):
 
         preds = [meanps[t] for t in range(out_timesteps)], [covps[t] for t in range(out_timesteps)]
         updates = meanus, covus
-        R = update_kwargs['R']
-        H = update_kwargs['H']
 
-        return preds, updates, R, H
+        return preds, updates, update_kwargs
 
     def _build_design_mats(self,
                            kwargs_per_process: Dict[str, Dict[str, Tensor]],

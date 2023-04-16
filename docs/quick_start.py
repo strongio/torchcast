@@ -110,7 +110,7 @@ print(loss)
 # `Predictions` can easily be converted to Pandas `DataFrames` for ease of inspecting predictions, comparing them to actuals, and visualizing:
 
 # %%
-df_pred = pred.to_dataframe(dataset_all, multi=None)
+df_pred = pred.to_dataframe(dataset_all, conf=None)
 # bias-correction for log-transform (see https://otexts.com/fpp2/transformations.html#bias-adjustments)
 df_pred['mean'] += .5 * df_pred['std'] ** 2
 df_pred['lower'] = df_pred['mean'] - 1.96 * df_pred['std']

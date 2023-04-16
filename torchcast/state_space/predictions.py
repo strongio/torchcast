@@ -1,16 +1,20 @@
-from typing import Tuple, Union, Optional, Dict, Iterator, Sequence
+from typing import Tuple, Union, Optional, Dict, Iterator, Sequence, TYPE_CHECKING
 from warnings import warn
 
 import torch
+from scipy.stats import norm as ScipyNorm
 from torch import nn, Tensor
 
 import numpy as np
 
 from backports.cached_property import cached_property
 
-from torchcast.internals.utils import get_nan_groups, is_near_zero
-
+from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims
 from torchcast.utils.data import TimeSeriesDataset
+
+if TYPE_CHECKING:
+    from pandas import DataFrame
+    from torchcast.state_space import StateSpaceModel
 
 
 class Predictions(nn.Module):
@@ -102,7 +106,7 @@ class Predictions(nn.Module):
         return self._update_means
 
     @cached_property
-    def update_covs(self) -> torch.Tensor:
+    def update_covs(self) -> Optional[torch.Tensor]:
         if self._update_covs is None:
             return None
         if not isinstance(self._update_covs, torch.Tensor):
@@ -162,10 +166,7 @@ class Predictions(nn.Module):
         :return: A tuple of `means`, `covs`.
         """
         means = H.matmul(state_means.unsqueeze(-1)).squeeze(-1)
-        pargs = list(range(len(H.shape)))
-        pargs[-2:] = reversed(pargs[-2:])
-        Ht = H.permute(*pargs)
-        assert R.shape[-1] == R.shape[-2], f"R is not symmetrical (shape is {R.shape})"
+        Ht = transpose_last_dims(H)
         covs = H.matmul(state_covs).matmul(Ht) + R
         return means, covs
 
@@ -191,9 +192,9 @@ class Predictions(nn.Module):
 
     def log_prob(self, obs: Tensor) -> Tensor:
         """
-        Compute the log-probability of data (e.g. data that was originally fed into the KalmanFilter).
+        Compute the log-probability of data (e.g. data that was originally fed into the ``StateSpaceModel``).
 
-        :param obs: A Tensor that could be used in the KalmanFilter.forward pass.
+        :param obs: A Tensor that could be used in the ``StateSpaceModel`` forward pass.
         :return: A tensor with one element for each group X timestep indicating the log-probability.
         """
         assert len(obs.shape) == 3
@@ -230,22 +231,33 @@ class Predictions(nn.Module):
     def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
         return self.distribution_cls(means, covs, validate_args=False).log_prob(obs)
 
+    @classmethod
+    def _get_quantiles(cls, mean, std, conf: float, observed: bool) -> tuple:
+        assert conf >= .50
+        multi = -ScipyNorm.ppf((1 - conf) / 2)
+        lower = mean - multi * std
+        upper = mean + multi * std
+        return lower, upper
+
     def to_dataframe(self,
                      dataset: Union[TimeSeriesDataset, dict],
                      type: str = 'predictions',
                      group_colname: str = 'group',
                      time_colname: str = 'time',
-                     multi: Optional[float] = 1.96) -> 'DataFrame':
+                     conf: Optional[float] = .95,
+                     multi: Optional[float] = None) -> 'DataFrame':
         """
         :param dataset: Either a :class:`.TimeSeriesDataset`, or a dictionary with 'start_times', 'group_names', &
          'dt_unit'
         :param type: Either 'predictions' or 'components'.
         :param group_colname: Column-name for 'group'
         :param time_colname: Column-name for 'time'
-        :param multi: Multiplier on std-dev for lower/upper CIs. Default 1.96.
+        :param conf: Conf the lower/upper CIs will target. Default of 0.95 means these are 0.025 and 0.975.
         :return: A pandas DataFrame with group, 'time', 'measure', 'mean', 'lower', 'upper'. For ``type='components'``
          additionally includes: 'process' and 'state_element'.
         """
+        if multi is not None:
+            warn("Ignoring `multi` as it is deprecated, please use `conf` instead.", DeprecationWarning)
 
         from pandas import concat
 
@@ -298,9 +310,8 @@ class Predictions(nn.Module):
             for i, measure in enumerate(self.measures):
                 # predicted:
                 df = _tensor_to_df(torch.stack([self.means[..., i], stds[..., i]], 2), measures=['mean', 'std'])
-                if multi is not None:
-                    df['lower'] = df['mean'] - multi * df['std']
-                    df['upper'] = df['mean'] + multi * df.pop('std')
+                if conf is not None:
+                    df['lower'], df['upper'] = self._get_quantiles(df['mean'], df.pop('std'), conf=conf, observed=True)
 
                 # actual:
                 orig_tensor = batch_info.get('named_tensors', {}).get(measure, None)
@@ -314,9 +325,8 @@ class Predictions(nn.Module):
             # components:
             for (measure, process, state_element), (m, std) in self._components().items():
                 df = _tensor_to_df(torch.stack([m, std], 2), measures=['mean', 'std'])
-                if multi is not None:
-                    df['lower'] = df['mean'] - multi * df['std']
-                    df['upper'] = df['mean'] + multi * df.pop('std')
+                if conf is not None:
+                    df['lower'], df['upper'] = self._get_quantiles(df['mean'], df.pop('std'), conf=conf, observed=False)
                 df['process'], df['state_element'], df['measure'] = process, state_element, measure
                 out.append(df)
 
@@ -355,8 +365,9 @@ class Predictions(nn.Module):
 
         return out
 
-    @staticmethod
-    def plot(df: 'DataFrame',
+    @classmethod
+    def plot(cls,
+             df: 'DataFrame',
              group_colname: str = None,
              time_colname: str = None,
              max_num_groups: int = 1,
@@ -392,8 +403,7 @@ class Predictions(nn.Module):
 
         df = df.copy()
         if 'upper' not in df.columns and 'std' in df.columns:
-            df['upper'] = df['mean'] + 1.96 * df['std']
-            df['lower'] = df['mean'] - 1.96 * df['std']
+            df['lower'], df['upper'] = cls._get_quantiles(df['mean'], df['std'], conf=.95, observed=not is_components)
         if df[group_colname].nunique() > max_num_groups:
             subset_groups = df[group_colname].drop_duplicates().sample(max_num_groups).tolist()
             if len(subset_groups) < df[group_colname].nunique():
