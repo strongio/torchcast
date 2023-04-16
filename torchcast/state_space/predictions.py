@@ -9,7 +9,7 @@ import numpy as np
 
 from backports.cached_property import cached_property
 
-from torchcast.internals.utils import get_nan_groups, is_near_zero
+from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims
 from torchcast.utils.data import TimeSeriesDataset
 
 if TYPE_CHECKING:
@@ -166,10 +166,7 @@ class Predictions(nn.Module):
         :return: A tuple of `means`, `covs`.
         """
         means = H.matmul(state_means.unsqueeze(-1)).squeeze(-1)
-        pargs = list(range(len(H.shape)))
-        pargs[-2:] = reversed(pargs[-2:])
-        Ht = H.permute(*pargs)
-        assert R.shape[-1] == R.shape[-2], f"R is not symmetrical (shape is {R.shape})"
+        Ht = transpose_last_dims(H)
         covs = H.matmul(state_covs).matmul(Ht) + R
         return means, covs
 
@@ -195,9 +192,9 @@ class Predictions(nn.Module):
 
     def log_prob(self, obs: Tensor) -> Tensor:
         """
-        Compute the log-probability of data (e.g. data that was originally fed into the KalmanFilter).
+        Compute the log-probability of data (e.g. data that was originally fed into the ``StateSpaceModel``).
 
-        :param obs: A Tensor that could be used in the KalmanFilter.forward pass.
+        :param obs: A Tensor that could be used in the ``StateSpaceModel`` forward pass.
         :return: A tensor with one element for each group X timestep indicating the log-probability.
         """
         assert len(obs.shape) == 3

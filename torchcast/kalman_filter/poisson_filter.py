@@ -22,6 +22,8 @@ from ..covariance import Covariance
 from ..process import Process
 from ..state_space import StateSpaceModel, Predictions
 
+POISSON_SMALL_THRESH = 10
+
 softplus = Softplus()
 
 
@@ -49,7 +51,7 @@ class PoissonStep(KalmanStep):
 
         # use EKF:
         correction = torch.zeros_like(orig_H)
-        _do_cor = orig_mmean < 10
+        _do_cor = orig_mmean < POISSON_SMALL_THRESH
         # derivative of softplus:
         correction[_do_cor] = orig_H[_do_cor] / (torch.exp(orig_mmean[_do_cor]) + 1).unsqueeze(-1)
         newH = orig_H - correction
@@ -147,34 +149,51 @@ _warn_once = {}
 class PoissonPredictions(Predictions):
 
     @classmethod
-    def observe(cls, state_means: Tensor, state_covs: Tensor, R: Tensor, H: Tensor) -> Tuple[Tensor, Tensor]:
-        """
-        Convert latent states into observed predictions (and their uncertainty).
-
-        :param state_means: The latent state means
-        :param state_covs: The latent state covs.
-        :param R: The measure-covariance matrices.
-        :param H: The measurement matrix.
-        :return: A tuple of `means`, `covs`.
-        """
-        means = softplus(H.matmul(state_means.unsqueeze(-1)).squeeze(-1))
+    def observe(cls,
+                state_means: Tensor,
+                state_covs: Tensor,
+                R: Optional[Tensor],
+                H: Tensor) -> Tuple[Tensor, Tensor]:
+        means, covs = super().observe(
+            state_means=state_means,
+            state_covs=state_covs,
+            R=R,
+            H=H
+        )
+        means = softplus(means)
         if _warn_once.get('poisson_predictions', False):
             _warn_once['poisson_predictions'] = True
             warn(
-                "Poisson implementation is experimental. Currently, uncertainty in predictions and log-prob evaluation "
-                "does not incorporate state-covariance."
+                "Poisson implementation is experimental. Currently, this means that, (1) in plotting, will "
+                "over-estimate uncertainty for small values, (2) in log-prob, will ignore state-covariance for small "
+                "values."
             )
-        # TODO: would like self.covs to be R (i.e. this is what we expose for plotting etc.) but would like
-        #  the `covs` passed to log_prob to be state-covs so that we can do things like monte-carlo likelihood
-        return means, R
+        return means, covs
 
     @cached_property
     def R(self) -> torch.Tensor:
-        means, _ = self.observe(self.state_means, self.state_covs, R=None, H=self.H)
+        means, _ = self.observe(self.state_means, self.state_covs, R=0.0, H=self.H)
         return torch.diag_embed(means)
 
     def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
-        return self.distribution_cls(means, validate_args=False).log_prob(obs).sum(-1)
+        # TODO: use monte-carlo instead.
+        # aside from the problem of ignoring state cov when means<POISSON_SMALL_THRESH, the other problem is
+        # that means is itself an estimate, so even when means > POISSON_SMALL_THRESH, true value might be less
+        if means.shape[-1] > 1:
+            raise NotImplementedError("log-prob not currently implemented for poisson when there are multiple measures")
+        use_mvnorm = (means >= POISSON_SMALL_THRESH).any(-1)
+        out = torch.zeros_like(obs[..., 0])
+        # use normal approximation for larger values:
+        out[use_mvnorm] = torch.distributions.MultivariateNormal(
+            loc=means[use_mvnorm],
+            covariance_matrix=covs[use_mvnorm],
+            validate_args=False
+        ).log_prob(obs[use_mvnorm])
+        # ignore state-cov and use poisson for smaller values:
+        out[~use_mvnorm] = self.distribution_cls(
+            means[~use_mvnorm].squeeze(-1), validate_args=False
+        ).log_prob(obs[~use_mvnorm].squeeze(-1))
+        return out
 
     def sample(self) -> Tensor:
         raise NotImplementedError
