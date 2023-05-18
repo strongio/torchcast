@@ -1,15 +1,19 @@
 import datetime
 import itertools
 
-from typing import Sequence, Any, Union, Optional, Tuple, Callable
+from typing import Sequence, Any, Union, Optional, Tuple, Callable, TYPE_CHECKING
 from warnings import warn
 
 import numpy as np
 import torch
+
 from torch import Tensor
 from torch.utils.data import TensorDataset, DataLoader, ConcatDataset, Dataset
 
 from torchcast.internals.utils import ragged_cat, true1d_idx
+
+if TYPE_CHECKING:
+    from pandas import DataFrame
 
 
 class TimeSeriesDataset(TensorDataset):
@@ -573,14 +577,15 @@ class TimeSeriesDataLoader(DataLoader):
 
 
 def complete_times(data: 'DataFrame',
-                   group_colname: str,
+                   group_colnames: Sequence[str] = None,
                    time_colname: Optional[str] = None,
-                   dt_unit: Optional[str] = None):
+                   dt_unit: Optional[str] = None,
+                   group_colname: Optional[str] = None):
     """
     Given a dataframe time-serieses, convert implicit missings within each time-series to explicit missings.
 
     :param data: A pandas dataframe.
-    :param group_colname: The column name for the groups.
+    :param group_colnames: The column name(s) for the groups.
     :param time_colname: The column name for the times. Will attempt to guess based on common labels.
     :param dt_unit: A :class:`numpy.datetime64` or string representing the datetime increments. If not supplied will
      try to guess based on the smallest difference in the data.
@@ -588,6 +593,14 @@ def complete_times(data: 'DataFrame',
      group is preserved.
     """
     import pandas as pd
+
+    if isinstance(group_colnames, str):
+        group_colnames = [group_colnames]
+    elif group_colnames is None:
+        if group_colname is None:
+            raise TypeError("Missing required argument `group_colnames`")
+        warn("Please pass `group_colnames` instead of `group_colname`", DeprecationWarning)
+        group_colnames = [group_colname]
 
     if time_colname is None:
         for col in ('datetime', 'date', 'timestamp', 'time', 'dt'):
@@ -607,7 +620,7 @@ def complete_times(data: 'DataFrame',
     )
 
     df_group_summary = data. \
-        groupby(group_colname). \
+        groupby(group_colnames). \
         agg(_min=(time_colname, 'min'),
             _max=(time_colname, 'max')). \
         reset_index()
@@ -618,9 +631,9 @@ def complete_times(data: 'DataFrame',
         merge(df_group_summary.assign(_cj=1), how='left', on=['_cj'])
     # filter to min/max for each group
     df_cj = df_cj. \
-        loc[df_cj[time_colname].between(df_cj['_min'], df_cj['_max']), [group_colname, time_colname]]. \
+        loc[df_cj[time_colname].between(df_cj['_min'], df_cj['_max']), group_colnames + [time_colname]]. \
         reset_index(drop=True)
-    return df_cj.merge(data, how='left', on=[group_colname, time_colname])
+    return df_cj.merge(data, how='left', on=group_colnames + [time_colname])
 
 
 def chunk_grouped_data(*tensors, group_ids: Sequence) -> Sequence[Tuple[Tensor]]:
