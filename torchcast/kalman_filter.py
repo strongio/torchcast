@@ -40,8 +40,8 @@ class KalmanStep(StateSpaceStep):
                    val_idx: Optional[Tensor],
                    input: Tensor,
                    kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Dict[str, Tensor]]:
+        new_kwargs = kwargs.copy()
         if val_idx is None:
-            new_kwargs = kwargs.copy()
             for k in ['H', 'R']:
                 new_kwargs[k] = kwargs[k][groups]
             return input[groups], new_kwargs
@@ -49,11 +49,11 @@ class KalmanStep(StateSpaceStep):
             m1d = torch.meshgrid(groups, val_idx, indexing='ij')
             m2d = torch.meshgrid(groups, val_idx, val_idx, indexing='ij')
             masked_input = input[m1d[0], m1d[1]]
-            masked_kwargs = {
+            new_kwargs.update({
                 'H': kwargs['H'][m1d[0], m1d[1]],
                 'R': kwargs['R'][m2d[0], m2d[1], m2d[2]]
-            }
-            return masked_input, masked_kwargs
+            })
+            return masked_input, new_kwargs
 
     def _update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         H = kwargs['H']
@@ -69,12 +69,7 @@ class KalmanStep(StateSpaceStep):
         resid = input - measured_mean
 
         # outlier-rejection:
-        valid_mask = torch.ones(len(input), dtype=torch.bool, device=input.device)
-        if 'outlier_threshold' in kwargs.keys() and kwargs['outlier_threshold'] > 0:
-            mdist = mahalanobis_dist(resid, system_covariance)
-            valid_mask = mdist <= kwargs['outlier_threshold']
-            # if (~valid_mask).any():
-            #     print('outlier idxs:', torch.where(~valid_mask)[0])
+        valid_mask = self._get_update_mask(resid, system_covariance, outlier_threshold=kwargs['outlier_threshold'])
 
         # update:
         new_mean = mean.clone()
@@ -85,6 +80,16 @@ class KalmanStep(StateSpaceStep):
         )
 
         return new_mean, new_cov
+
+    @staticmethod
+    def _get_update_mask(resid: torch.Tensor,
+                         system_covariance: torch.Tensor,
+                         outlier_threshold: torch.Tensor) -> torch.Tensor:
+        if outlier_threshold > 0:
+            mdist = mahalanobis_dist(resid, system_covariance)
+            return mdist <= outlier_threshold
+        else:
+            return torch.ones(len(resid), dtype=torch.bool, device=resid.device)
 
     def _covariance_update(self, cov: Tensor, K: Tensor, H: Tensor, R: Tensor) -> Tensor:
         I = torch.eye(cov.shape[1], dtype=cov.dtype, device=cov.device).unsqueeze(0)

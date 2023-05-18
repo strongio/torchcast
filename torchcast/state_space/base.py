@@ -36,7 +36,7 @@ class StateSpaceModel(nn.Module):
         self.outlier_threshold = outlier_threshold
         if self.outlier_threshold and outlier_burnin is None:
             raise ValueError("If `outlier_threshold` is set, `outlier_burnin` must be set as well.")
-        self.outlier_burnin = outlier_burnin
+        self.outlier_burnin = outlier_burnin or 0
 
         if isinstance(measures, str):
             measures = [measures]
@@ -452,9 +452,9 @@ class StateSpaceModel(nn.Module):
             cov1s.append(cov1step)
             if t < len(inputs):
                 update_kwargs_t = {k: v[t] for k, v in update_kwargs.items()}
-                if self.outlier_burnin is not None:
-                    if t > self.outlier_burnin:  # short-circuiting and doesn't work with jit
-                        update_kwargs_t['outlier_threshold'] = torch.tensor(self.outlier_threshold)
+                update_kwargs_t['outlier_threshold'] = torch.tensor(
+                    self.outlier_threshold if t > self.outlier_burnin else 0.
+                )
                 meanu, covu = self.ss_step.update(
                     inputs[t],
                     mean1step,
