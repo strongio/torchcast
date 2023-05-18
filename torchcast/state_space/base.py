@@ -19,14 +19,24 @@ class StateSpaceModel(nn.Module):
     :param processes: A list of :class:`.Process` modules.
     :param measures: A list of strings specifying the names of the dimensions of the time-series being measured.
     :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
+    :param outlier_threshold: If specified, outliers are rejected using the mahalanobis distance.
+    :param outlier_burnin: If outlier_threshold is specified, this specifies the number of steps to wait before
+     starting to reject outliers.
     """
     ss_step_cls: Type[StateSpaceStep]
 
     def __init__(self,
                  processes: Sequence[Process],
                  measures: Optional[Sequence[str]] = None,
-                 measure_covariance: Optional[Covariance] = None):
+                 measure_covariance: Optional[Covariance] = None,
+                 outlier_threshold: float = 0.0,
+                 outlier_burnin: Optional[int] = None):
         super().__init__()
+
+        self.outlier_threshold = outlier_threshold
+        if self.outlier_threshold and outlier_burnin is None:
+            raise ValueError("If `outlier_threshold` is set, `outlier_burnin` must be set as well.")
+        self.outlier_burnin = outlier_burnin
 
         if isinstance(measures, str):
             measures = [measures]
@@ -441,18 +451,22 @@ class StateSpaceModel(nn.Module):
             mean1s.append(mean1step)
             cov1s.append(cov1step)
             if t < len(inputs):
+                update_kwargs_t = {k: v[t] for k, v in update_kwargs.items()}
+                if self.outlier_burnin is not None:
+                    if t > self.outlier_burnin:  # short-circuiting and doesn't work with jit
+                        update_kwargs_t['outlier_threshold'] = torch.tensor(self.outlier_threshold)
                 meanu, covu = self.ss_step.update(
                     inputs[t],
                     mean1step,
                     cov1step,
-                    {k: v[t] for k, v in update_kwargs.items()}
+                    update_kwargs_t,
                 )
             else:
                 meanu, covu = mean1step, cov1step
             meanus.append(meanu)
             covus.append(covu)
 
-        # 2nd loop to get n_step updates:
+        # 2nd loop to get n_step predicts:
         # idx: Dict[int, int] = {}
         meanps: Dict[int, Tensor] = {}
         covps: Dict[int, Tensor] = {}

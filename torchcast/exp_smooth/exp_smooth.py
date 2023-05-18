@@ -10,7 +10,6 @@ from typing import Sequence, Optional, Tuple, List, Dict, Iterable
 import torch
 from torch import Tensor
 
-from torchcast.state_space import Predictions
 from torchcast.exp_smooth.smoothing_matrix import SmoothingMatrix
 from torchcast.covariance import Covariance
 from torchcast.process import Process
@@ -43,7 +42,7 @@ class ExpSmoothStep(StateSpaceStep):
                 input: Tensor,
                 mean: Tensor,
                 cov: Tensor,
-                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Optional[Tensor]]:
         measured_mean = (kwargs['H'] @ mean.unsqueeze(-1)).squeeze(-1)
         resid = input - measured_mean
         new_mean = mean + (kwargs['K'] @ resid.unsqueeze(-1)).squeeze(-1)
