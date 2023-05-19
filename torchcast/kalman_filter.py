@@ -20,6 +20,8 @@ import torch
 from torch import nn, Tensor
 from typing_extensions import Final
 
+from torchcast.utils.outliers import get_inlier_mask
+
 
 class KalmanStep(StateSpaceStep):
     """
@@ -69,7 +71,7 @@ class KalmanStep(StateSpaceStep):
         resid = input - measured_mean
 
         # outlier-rejection:
-        valid_mask = self._get_update_mask(resid, system_covariance, outlier_threshold=kwargs['outlier_threshold'])
+        valid_mask = get_inlier_mask(resid, system_covariance, outlier_threshold=kwargs['outlier_threshold'])
 
         # update:
         new_mean = mean.clone()
@@ -80,16 +82,6 @@ class KalmanStep(StateSpaceStep):
         )
 
         return new_mean, new_cov
-
-    @staticmethod
-    def _get_update_mask(resid: torch.Tensor,
-                         system_covariance: torch.Tensor,
-                         outlier_threshold: torch.Tensor) -> torch.Tensor:
-        if outlier_threshold > 0:
-            mdist = mahalanobis_dist(resid, system_covariance)
-            return mdist <= outlier_threshold
-        else:
-            return torch.ones(len(resid), dtype=torch.bool, device=resid.device)
 
     def _covariance_update(self, cov: Tensor, K: Tensor, H: Tensor, R: Tensor) -> Tensor:
         I = torch.eye(cov.shape[1], dtype=cov.dtype, device=cov.device).unsqueeze(0)
@@ -107,13 +99,6 @@ class KalmanStep(StateSpaceStep):
         Kt = torch.linalg.solve(A, B)
         K = Kt.permute(0, 2, 1)
         return K
-
-
-def mahalanobis_dist(diff: torch.Tensor, covariance: torch.Tensor) -> torch.Tensor:
-    cholesky = torch.linalg.cholesky(covariance)
-    y = torch.cholesky_solve(diff.unsqueeze(-1), cholesky).squeeze(-1)
-    mahalanobis_dist = torch.sqrt(torch.sum(diff * y, 1))
-    return mahalanobis_dist
 
 
 class KalmanFilter(StateSpaceModel):
