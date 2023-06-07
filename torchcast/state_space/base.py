@@ -19,7 +19,9 @@ class StateSpaceModel(nn.Module):
     :param processes: A list of :class:`.Process` modules.
     :param measures: A list of strings specifying the names of the dimensions of the time-series being measured.
     :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
-    :param outlier_threshold: If specified, outliers are rejected using the mahalanobis distance.
+    :param outlier_threshold: If specified, used as a threshold-for outlier rejection during the `update` step, using
+     mahalanobis distance; outliers will also be rejected when evaluating the ``log_prob()`` of the output
+     ``Predictions``.
     :param outlier_burnin: If outlier_threshold is specified, this specifies the number of steps to wait before
      starting to reject outliers.
     """
