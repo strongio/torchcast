@@ -29,8 +29,8 @@ class StateSpaceModel(nn.Module):
 
     def __init__(self,
                  processes: Sequence[Process],
-                 measures: Optional[Sequence[str]] = None,
-                 measure_covariance: Optional[Covariance] = None,
+                 measures: Optional[Sequence[str]],
+                 measure_covariance: Covariance,
                  outlier_threshold: float = 0.0,
                  outlier_burnin: Optional[int] = None):
         super().__init__()
