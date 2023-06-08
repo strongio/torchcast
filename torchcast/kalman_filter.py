@@ -106,6 +106,8 @@ class KalmanFilter(StateSpaceModel):
 
         if measure_covariance is None:
             measure_covariance = Covariance.from_measures(measures)
+        else:
+            assert measure_covariance.rank == 1 or measure_covariance.rank == len(measures)
 
         super().__init__(
             processes=processes,
