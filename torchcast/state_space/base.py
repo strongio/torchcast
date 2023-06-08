@@ -117,6 +117,9 @@ class StateSpaceModel(nn.Module):
             optimizer = torch.optim.LBFGS([p for p in self.parameters() if p.requires_grad],
                                           max_iter=10, line_search_fn='strong_wolfe', lr=.5)
 
+        if self.outlier_threshold and verbose:
+            print("``outlier_threshold`` is experimental")
+
         if set_initial_values:
             self.set_initial_values(y)
 

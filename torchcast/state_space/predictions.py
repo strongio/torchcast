@@ -209,6 +209,8 @@ class Predictions(nn.Module):
         covs_flat = self.covs.view(-1, n_measure_dim, n_measure_dim)
 
         # if the model used an outlier threshold, mask out outliers in the log-prob as well:
+        # todo: this means the data _evaluated_ by log-prob is partially determined by the previous iteration's
+        #  predictions... this kind of circularity can be problematic for the default lbfgs optimizer
         if self.outlier_threshold:
             obs_flat = obs_flat.clone()
             for gt_idx, valid_idx in get_nan_groups(torch.isnan(obs_flat)):
