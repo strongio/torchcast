@@ -580,6 +580,7 @@ def complete_times(data: 'DataFrame',
                    group_colnames: Sequence[str] = None,
                    time_colname: Optional[str] = None,
                    dt_unit: Optional[str] = None,
+                   global_max: bool = False,
                    group_colname: Optional[str] = None):
     """
     Given a dataframe time-serieses, convert implicit missings within each time-series to explicit missings.
@@ -589,6 +590,8 @@ def complete_times(data: 'DataFrame',
     :param time_colname: The column name for the times. Will attempt to guess based on common labels.
     :param dt_unit: A :class:`numpy.datetime64` or string representing the datetime increments. If not supplied will
      try to guess based on the smallest difference in the data.
+    :param global_max: If `True`, will use the max time of all groups for the max time of each group. Otherwise will
+     keep times past each group's max time as implicitly missing.
     :return: A dataframe where implicit missings are converted to explicit missings, but the min/max time for each
      group is preserved.
     """
@@ -614,6 +617,10 @@ def complete_times(data: 'DataFrame',
         dt_unit = diffs.min()
         if dt_unit != diffs.value_counts().index[0]:
             raise ValueError("Unable to guess dt_unit, please pass")
+    elif dt_unit == 'W':
+        # pd.date_range behaves oddly with freq='W'
+        # (e.g. does not match behavior of `my_dates.to_period('W').dt.to_timestamp()`)
+        dt_unit = pd.Timedelta('7 days 00:00:00')
 
     df_grid = pd.DataFrame(
         {time_colname: pd.date_range(data[time_colname].min(), data[time_colname].max(), freq=dt_unit)}
@@ -624,6 +631,8 @@ def complete_times(data: 'DataFrame',
         agg(_min=(time_colname, 'min'),
             _max=(time_colname, 'max')). \
         reset_index()
+    if global_max:
+        df_group_summary['_max'] = df_group_summary['_max'].max()
 
     # cross-join for all times to all groups (todo: not very memory efficient)
     df_cj = df_grid. \
