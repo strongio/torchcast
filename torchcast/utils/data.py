@@ -249,7 +249,7 @@ class TimeSeriesDataset(TensorDataset):
 
     # Creation/Transformation ------------------------:
     @classmethod
-    def make_collate_fn(cls, pad_X: Optional[float] = 0.) -> Callable:
+    def make_collate_fn(cls, pad_X: Union[float, str, None] = 'ffill') -> Callable:
         def collate_fn(batch: Sequence['TimeSeriesDataset']) -> 'TimeSeriesDataset':
             to_concat = {
                 'tensors': [batch[0].tensors],
@@ -340,7 +340,7 @@ class TimeSeriesDataset(TensorDataset):
                        measure_colnames: Optional[Sequence[str]] = None,
                        X_colnames: Optional[Sequence[str]] = None,
                        y_colnames: Optional[Sequence[str]] = None,
-                       pad_X: Optional[float] = 0.,
+                       pad_X: Union[float, str, None] = 'ffill',
                        **kwargs) -> 'TimeSeriesDataset':
         """
         :param dataframe: A pandas ``DataFrame``
@@ -439,8 +439,11 @@ class TimeSeriesDataset(TensorDataset):
         if X_colnames is not None:
             dataset = dataset.split_measures(y_colnames, X_colnames)
             y, X = dataset.tensors
-            # don't use nan-padding on the y tensor:
-            if pad_X is not None:
+            if isinstance(pad_X, str) and pad_X == 'ffill':
+                for i, time_idx in enumerate(time_idxs):
+                    max_idx = time_idx.max()
+                    X[i, (max_idx + 1):, :] = X[i, max_idx, :]
+            elif pad_X is not None:
                 for i, time_idx in enumerate(time_idxs):
                     pad_idx = time_idx.max() + 1
                     X[i, pad_idx:, :] = pad_X
@@ -512,13 +515,16 @@ class TimeSeriesDataLoader(DataLoader):
     def __init__(self,
                  dataset: 'Dataset',
                  batch_size: Optional[int],
-                 pad_X: Optional[float] = 0.,
+                 pad_X: Union[float, str, None] = 'ffill',
                  **kwargs):
         """
         :param dataset: A TimeSeriesDataset
         :param batch_size: Series per batch to load.
         :param pad_X: When stacking time-serieses of unequal length, we left-align them and so get trailing nans.
-         Setting ``pad_X`` allows you to select the padding value for these.
+         Setting ``pad_X`` allows you to select the padding value for these trailing nans. If ``pad_X`` is a float,
+         then it will be used as the padding value. If ``pad_X`` is the string ``'ffill'``, then the trailing nans
+         will be filled with the last non-nan value in the series. If ``pad_X`` is ``None``, then the trailing nans
+         will be left as nans.
         :param kwargs: Other arguments passed to :class:`torch.utils.data.DataLoader`
         """
         kwargs['collate_fn'] = TimeSeriesDataset.make_collate_fn(pad_X)
@@ -533,7 +539,7 @@ class TimeSeriesDataLoader(DataLoader):
                        measure_colnames: Optional[Sequence[str]] = None,
                        X_colnames: Optional[Sequence[str]] = None,
                        y_colnames: Optional[Sequence[str]] = None,
-                       pad_X: Optional[float] = 0.,
+                       pad_X: Union[float, str, None] = 'ffill',
                        **kwargs) -> 'TimeSeriesDataLoader':
         """
         :param dataframe: A pandas ``DataFrame``
