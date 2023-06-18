@@ -19,14 +19,26 @@ class StateSpaceModel(nn.Module):
     :param processes: A list of :class:`.Process` modules.
     :param measures: A list of strings specifying the names of the dimensions of the time-series being measured.
     :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
+    :param outlier_threshold: If specified, used as a threshold-for outlier under-weighting during the `update` step,
+     using mahalanobis distance; outliers will also be under-weighted when evaluating the ``log_prob()`` of the output
+     ``Predictions``.
+    :param outlier_burnin: If outlier_threshold is specified, this specifies the number of steps to wait before
+     starting to reject outliers.
     """
     ss_step_cls: Type[StateSpaceStep]
 
     def __init__(self,
                  processes: Sequence[Process],
                  measures: Optional[Sequence[str]],
-                 measure_covariance: Covariance):
+                 measure_covariance: Covariance,
+                 outlier_threshold: float = 0.0,
+                 outlier_burnin: Optional[int] = None):
         super().__init__()
+
+        self.outlier_threshold = outlier_threshold
+        if self.outlier_threshold and outlier_burnin is None:
+            raise ValueError("If `outlier_threshold` is set, `outlier_burnin` must be set as well.")
+        self.outlier_burnin = outlier_burnin or 0
 
         if isinstance(measures, str):
             measures = [measures]
@@ -104,6 +116,9 @@ class StateSpaceModel(nn.Module):
         if optimizer is None:
             optimizer = torch.optim.LBFGS([p for p in self.parameters() if p.requires_grad],
                                           max_iter=10, line_search_fn='strong_wolfe', lr=.5)
+
+        if self.outlier_threshold and verbose:
+            print("``outlier_threshold`` is experimental")
 
         if set_initial_values:
             self.set_initial_values(y)
@@ -441,18 +456,22 @@ class StateSpaceModel(nn.Module):
             mean1s.append(mean1step)
             cov1s.append(cov1step)
             if t < len(inputs):
+                update_kwargs_t = {k: v[t] for k, v in update_kwargs.items()}
+                update_kwargs_t['outlier_threshold'] = torch.tensor(
+                    self.outlier_threshold if t > self.outlier_burnin else 0.
+                )
                 meanu, covu = self.ss_step.update(
                     inputs[t],
                     mean1step,
                     cov1step,
-                    {k: v[t] for k, v in update_kwargs.items()}
+                    update_kwargs_t,
                 )
             else:
                 meanu, covu = mean1step, cov1step
             meanus.append(meanu)
             covus.append(covu)
 
-        # 2nd loop to get n_step updates:
+        # 2nd loop to get n_step predicts:
         # idx: Dict[int, int] = {}
         meanps: Dict[int, Tensor] = {}
         covps: Dict[int, Tensor] = {}

@@ -10,7 +10,6 @@ from typing import Sequence, Optional, Tuple, List, Dict, Iterable
 import torch
 from torch import Tensor
 
-from torchcast.state_space import Predictions
 from torchcast.exp_smooth.smoothing_matrix import SmoothingMatrix
 from torchcast.covariance import Covariance
 from torchcast.process import Process
@@ -26,24 +25,27 @@ class ExpSmoothStep(StateSpaceStep):
                    input: Tensor,
                    kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Dict[str, Tensor]]:
         # torchscript doesn't support super, see: https://github.com/pytorch/pytorch/issues/42885
+        new_kwargs = kwargs.copy()
         if val_idx is None:
-            return input[groups], {k: v[groups] for k, v in kwargs.items()}
+            for k in ['H', 'R', 'K']:
+                new_kwargs[k] = kwargs[k][groups]
+            return input[groups], new_kwargs
         else:
             m1d = torch.meshgrid(groups, val_idx, indexing='ij')
             m2d = torch.meshgrid(groups, val_idx, val_idx, indexing='ij')
             masked_input = input[m1d[0], m1d[1]]
-            masked_kwargs = {
+            new_kwargs.update({
                 'H': kwargs['H'][m1d[0], m1d[1]],
                 'R': kwargs['R'][m2d[0], m2d[1], m2d[2]],
                 'K': kwargs['K'][m1d[0], m1d[1]],
-            }
-            return masked_input, masked_kwargs
+            })
+            return masked_input, new_kwargs
 
     def _update(self,
                 input: Tensor,
                 mean: Tensor,
                 cov: Tensor,
-                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Optional[Tensor]]:
         measured_mean = (kwargs['H'] @ mean.unsqueeze(-1)).squeeze(-1)
         resid = input - measured_mean
         new_mean = mean + (kwargs['K'] @ resid.unsqueeze(-1)).squeeze(-1)
