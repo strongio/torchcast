@@ -1,5 +1,4 @@
 from typing import Tuple, Union, Optional, Dict, Iterator, Sequence
-from warnings import warn
 
 import torch
 from torch import nn, Tensor
@@ -11,7 +10,7 @@ from backports.cached_property import cached_property
 from torchcast.internals.utils import get_nan_groups, is_near_zero
 
 from torchcast.utils.data import TimeSeriesDataset
-from torchcast.utils.outliers import get_inlier_mask
+from torchcast.utils.outliers import mahalanobis_dist
 
 
 class Predictions(nn.Module):
@@ -208,19 +207,15 @@ class Predictions(nn.Module):
         means_flat = self.means.view(-1, n_measure_dim)
         covs_flat = self.covs.view(-1, n_measure_dim, n_measure_dim)
 
-        # if the model used an outlier threshold, mask out outliers in the log-prob as well:
-        # todo: this means the data _evaluated_ by log-prob is partially determined by the previous iteration's
-        #  predictions... this kind of circularity can be problematic for the default lbfgs optimizer
+        # if the model used an outlier threshold, under-weight outliers
+        weights = torch.ones(obs_flat.shape[0], dtype=self.state_means.dtype, device=self.state_means.device)
         if self.outlier_threshold:
             obs_flat = obs_flat.clone()
             for gt_idx, valid_idx in get_nan_groups(torch.isnan(obs_flat)):
                 if valid_idx is None:
-                    valid_mask = get_inlier_mask(
-                        obs_flat[gt_idx] - means_flat[gt_idx],
-                        covs_flat[gt_idx],
-                        outlier_threshold=self.outlier_threshold
-                    )
-                    obs_flat[gt_idx[~valid_mask]] = float('nan')
+                    mdist = mahalanobis_dist(obs_flat[gt_idx] - means_flat[gt_idx], covs_flat[gt_idx])
+                    multi = (mdist - self.outlier_threshold).clamp(min=0) + 1
+                    weights[gt_idx] = 1 / multi
                 else:
                     raise NotImplemented
 
@@ -246,6 +241,8 @@ class Predictions(nn.Module):
                 )
                 gt_obs = obs_flat[mask1d]
             lp_flat[gt_idx] = self._log_prob(gt_obs, gt_means_flat, gt_covs_flat)
+
+        lp_flat = lp_flat * weights
 
         return lp_flat.view(obs.shape[0:2])
 

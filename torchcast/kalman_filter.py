@@ -6,7 +6,6 @@ This class inherits most of its methods from :class:`torchcast.state_space.State
 
 ----------
 """
-
 from typing import Sequence, Dict, List, Iterable
 
 from torchcast.covariance import Covariance
@@ -20,7 +19,7 @@ import torch
 from torch import nn, Tensor
 from typing_extensions import Final
 
-from torchcast.utils.outliers import get_inlier_mask
+from torchcast.utils.outliers import mahalanobis_dist
 
 
 class KalmanStep(StateSpaceStep):
@@ -71,15 +70,14 @@ class KalmanStep(StateSpaceStep):
         resid = input - measured_mean
 
         # outlier-rejection:
-        valid_mask = get_inlier_mask(resid, system_covariance, outlier_threshold=kwargs['outlier_threshold'])
+        if kwargs['outlier_threshold'] > 0:
+            mdist = mahalanobis_dist(resid, system_covariance)
+            multi = (mdist - kwargs['outlier_threshold']).clamp(min=0) + 1
+            R = R * multi.unsqueeze(-1).unsqueeze(-1)
 
         # update:
-        new_mean = mean.clone()
-        new_mean[valid_mask] = mean[valid_mask] + (K[valid_mask] @ resid[valid_mask].unsqueeze(-1)).squeeze(-1)
-        new_cov = cov.clone()
-        new_cov[valid_mask] = self._covariance_update(
-            cov=cov[valid_mask], K=K[valid_mask], H=H[valid_mask], R=R[valid_mask]
-        )
+        new_mean = mean + (K @ resid.unsqueeze(-1)).squeeze(-1)
+        new_cov = self._covariance_update(cov=cov, K=K, H=H, R=R)
 
         return new_mean, new_cov
 
