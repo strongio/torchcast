@@ -586,7 +586,7 @@ def complete_times(data: 'DataFrame',
                    group_colnames: Sequence[str] = None,
                    time_colname: Optional[str] = None,
                    dt_unit: Optional[str] = None,
-                   global_max: bool = Union[False, datetime.datetime],
+                   global_max: Union[bool, datetime.datetime] = False,
                    group_colname: Optional[str] = None):
     """
     Given a dataframe time-serieses, convert implicit missings within each time-series to explicit missings.
