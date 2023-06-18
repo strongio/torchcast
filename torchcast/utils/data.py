@@ -586,7 +586,7 @@ def complete_times(data: 'DataFrame',
                    group_colnames: Sequence[str] = None,
                    time_colname: Optional[str] = None,
                    dt_unit: Optional[str] = None,
-                   global_max: bool = False,
+                   global_max: bool = Union[False, datetime.datetime],
                    group_colname: Optional[str] = None):
     """
     Given a dataframe time-serieses, convert implicit missings within each time-series to explicit missings.
@@ -596,8 +596,8 @@ def complete_times(data: 'DataFrame',
     :param time_colname: The column name for the times. Will attempt to guess based on common labels.
     :param dt_unit: A :class:`numpy.datetime64` or string representing the datetime increments. If not supplied will
      try to guess based on the smallest difference in the data.
-    :param global_max: If `True`, will use the max time of all groups for the max time of each group. Otherwise will
-     keep times past each group's max time as implicitly missing.
+    :param global_max: If `True`, will use the max time of all groups for the max time of each group. If false, will
+     keep times past each group's max time as implicitly missing. If a datetime is passed, will use that as the max.
     :return: A dataframe where implicit missings are converted to explicit missings, but the min/max time for each
      group is preserved.
     """
@@ -638,7 +638,9 @@ def complete_times(data: 'DataFrame',
             _max=(time_colname, 'max')). \
         reset_index()
     if global_max:
-        df_group_summary['_max'] = df_group_summary['_max'].max()
+        if global_max is True:
+            global_max = df_group_summary['_max'].max()
+        df_group_summary['_max'] = global_max
 
     # cross-join for all times to all groups (todo: not very memory efficient)
     df_cj = df_grid. \
