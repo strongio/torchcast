@@ -10,8 +10,8 @@ setup(
     zip_safe=False,
     install_requires=[
         'backports.cached-property',
-        'torch>=1.8',
-        'numpy>=1.4'
+        'torch>=1.12',
+        'numpy>=1.4',
     ],
     extras_require={
         'tests': ['parameterized>=0.7', 'filterpy>=1.4', 'pandas>=1.0'],

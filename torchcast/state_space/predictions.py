@@ -1,5 +1,4 @@
 from typing import Tuple, Union, Optional, Dict, Iterator, Sequence
-from warnings import warn
 
 import torch
 from torch import nn, Tensor
@@ -11,6 +10,7 @@ from backports.cached_property import cached_property
 from torchcast.internals.utils import get_nan_groups, is_near_zero
 
 from torchcast.utils.data import TimeSeriesDataset
+from torchcast.utils.outliers import mahalanobis_dist
 
 
 class Predictions(nn.Module):
@@ -51,11 +51,13 @@ class Predictions(nn.Module):
             model = {
                 'distribution_cls': model.ss_step.get_distribution(),
                 'measures': model.measures,
-                'all_state_elements': all_state_elements
+                'all_state_elements': all_state_elements,
+                'outlier_threshold': model.outlier_threshold
             }
         self.distribution_cls = model['distribution_cls']
         self.measures = model['measures']
         self.all_state_elements = model['all_state_elements']
+        self.outlier_threshold = model['outlier_threshold']
 
         # for lazily populated properties:
         self._means = self._covs = None
@@ -202,6 +204,21 @@ class Predictions(nn.Module):
         n_state_dim = self.state_means.shape[-1]
 
         obs_flat = obs.reshape(-1, n_measure_dim)
+        means_flat = self.means.view(-1, n_measure_dim)
+        covs_flat = self.covs.view(-1, n_measure_dim, n_measure_dim)
+
+        # if the model used an outlier threshold, under-weight outliers
+        weights = torch.ones(obs_flat.shape[0], dtype=self.state_means.dtype, device=self.state_means.device)
+        if self.outlier_threshold:
+            obs_flat = obs_flat.clone()
+            for gt_idx, valid_idx in get_nan_groups(torch.isnan(obs_flat)):
+                if valid_idx is None:
+                    mdist = mahalanobis_dist(obs_flat[gt_idx] - means_flat[gt_idx], covs_flat[gt_idx])
+                    multi = (mdist - self.outlier_threshold).clamp(min=0) + 1
+                    weights[gt_idx] = 1 / multi
+                else:
+                    raise NotImplemented
+
         state_means_flat = self.state_means.view(-1, n_state_dim)
         state_covs_flat = self.state_covs.view(-1, n_state_dim, n_state_dim)
         H_flat = self.H.view(-1, n_measure_dim, n_state_dim)
@@ -211,8 +228,8 @@ class Predictions(nn.Module):
         for gt_idx, valid_idx in get_nan_groups(torch.isnan(obs_flat)):
             if valid_idx is None:
                 gt_obs = obs_flat[gt_idx]
-                gt_means_flat = self.means.view(-1, n_measure_dim)[gt_idx]
-                gt_covs_flat = self.covs.view(-1, n_measure_dim, n_measure_dim)[gt_idx]
+                gt_means_flat = means_flat[gt_idx]
+                gt_covs_flat = covs_flat[gt_idx]
             else:
                 mask1d = torch.meshgrid(gt_idx, valid_idx, indexing='ij')
                 mask2d = torch.meshgrid(gt_idx, valid_idx, valid_idx, indexing='ij')
@@ -224,6 +241,8 @@ class Predictions(nn.Module):
                 )
                 gt_obs = obs_flat[mask1d]
             lp_flat[gt_idx] = self._log_prob(gt_obs, gt_means_flat, gt_covs_flat)
+
+        lp_flat = lp_flat * weights
 
         return lp_flat.view(obs.shape[0:2])
 
@@ -514,8 +533,9 @@ class Predictions(nn.Module):
         """
         Has the attributes of a KalmanFilter that are needed in __init__
         """
-        return dict(
-            measures=self.measures,
-            distribution_cls=self.distribution_cls,
-            all_state_elements=self.all_state_elements
-        )
+        return {
+            'measures': self.measures,
+            'distribution_cls': self.distribution_cls,
+            'all_state_elements': self.all_state_elements,
+            'outlier_threshold': self.outlier_threshold
+        }

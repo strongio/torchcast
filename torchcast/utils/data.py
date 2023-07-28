@@ -1,15 +1,19 @@
 import datetime
 import itertools
 
-from typing import Sequence, Any, Union, Optional, Tuple, Callable
+from typing import Sequence, Any, Union, Optional, Tuple, Callable, TYPE_CHECKING
 from warnings import warn
 
 import numpy as np
 import torch
+
 from torch import Tensor
 from torch.utils.data import TensorDataset, DataLoader, ConcatDataset, Dataset
 
 from torchcast.internals.utils import ragged_cat, true1d_idx
+
+if TYPE_CHECKING:
+    from pandas import DataFrame
 
 
 class TimeSeriesDataset(TensorDataset):
@@ -245,7 +249,7 @@ class TimeSeriesDataset(TensorDataset):
 
     # Creation/Transformation ------------------------:
     @classmethod
-    def make_collate_fn(cls, pad_X: Optional[float] = 0.) -> Callable:
+    def make_collate_fn(cls, pad_X: Union[float, str, None] = 'ffill') -> Callable:
         def collate_fn(batch: Sequence['TimeSeriesDataset']) -> 'TimeSeriesDataset':
             to_concat = {
                 'tensors': [batch[0].tensors],
@@ -336,7 +340,7 @@ class TimeSeriesDataset(TensorDataset):
                        measure_colnames: Optional[Sequence[str]] = None,
                        X_colnames: Optional[Sequence[str]] = None,
                        y_colnames: Optional[Sequence[str]] = None,
-                       pad_X: Optional[float] = 0.,
+                       pad_X: Union[float, str, None] = 'ffill',
                        **kwargs) -> 'TimeSeriesDataset':
         """
         :param dataframe: A pandas ``DataFrame``
@@ -435,8 +439,11 @@ class TimeSeriesDataset(TensorDataset):
         if X_colnames is not None:
             dataset = dataset.split_measures(y_colnames, X_colnames)
             y, X = dataset.tensors
-            # don't use nan-padding on the y tensor:
-            if pad_X is not None:
+            if isinstance(pad_X, str) and pad_X == 'ffill':
+                for i, time_idx in enumerate(time_idxs):
+                    max_idx = time_idx.max()
+                    X[i, (max_idx + 1):, :] = X[i, max_idx, :]
+            elif pad_X is not None:
                 for i, time_idx in enumerate(time_idxs):
                     pad_idx = time_idx.max() + 1
                     X[i, pad_idx:, :] = pad_X
@@ -508,13 +515,16 @@ class TimeSeriesDataLoader(DataLoader):
     def __init__(self,
                  dataset: 'Dataset',
                  batch_size: Optional[int],
-                 pad_X: Optional[float] = 0.,
+                 pad_X: Union[float, str, None] = 'ffill',
                  **kwargs):
         """
         :param dataset: A TimeSeriesDataset
         :param batch_size: Series per batch to load.
         :param pad_X: When stacking time-serieses of unequal length, we left-align them and so get trailing nans.
-         Setting ``pad_X`` allows you to select the padding value for these.
+         Setting ``pad_X`` allows you to select the padding value for these trailing nans. If ``pad_X`` is a float,
+         then it will be used as the padding value. If ``pad_X`` is the string ``'ffill'``, then the trailing nans
+         will be filled with the last non-nan value in the series. If ``pad_X`` is ``None``, then the trailing nans
+         will be left as nans.
         :param kwargs: Other arguments passed to :class:`torch.utils.data.DataLoader`
         """
         kwargs['collate_fn'] = TimeSeriesDataset.make_collate_fn(pad_X)
@@ -529,7 +539,7 @@ class TimeSeriesDataLoader(DataLoader):
                        measure_colnames: Optional[Sequence[str]] = None,
                        X_colnames: Optional[Sequence[str]] = None,
                        y_colnames: Optional[Sequence[str]] = None,
-                       pad_X: Optional[float] = 0.,
+                       pad_X: Union[float, str, None] = 'ffill',
                        **kwargs) -> 'TimeSeriesDataLoader':
         """
         :param dataframe: A pandas ``DataFrame``
@@ -573,21 +583,33 @@ class TimeSeriesDataLoader(DataLoader):
 
 
 def complete_times(data: 'DataFrame',
-                   group_colname: str,
+                   group_colnames: Sequence[str] = None,
                    time_colname: Optional[str] = None,
-                   dt_unit: Optional[str] = None):
+                   dt_unit: Optional[str] = None,
+                   global_max: Union[bool, datetime.datetime] = False,
+                   group_colname: Optional[str] = None):
     """
     Given a dataframe time-serieses, convert implicit missings within each time-series to explicit missings.
 
     :param data: A pandas dataframe.
-    :param group_colname: The column name for the groups.
+    :param group_colnames: The column name(s) for the groups.
     :param time_colname: The column name for the times. Will attempt to guess based on common labels.
     :param dt_unit: A :class:`numpy.datetime64` or string representing the datetime increments. If not supplied will
      try to guess based on the smallest difference in the data.
+    :param global_max: If `True`, will use the max time of all groups for the max time of each group. If false, will
+     keep times past each group's max time as implicitly missing. If a datetime is passed, will use that as the max.
     :return: A dataframe where implicit missings are converted to explicit missings, but the min/max time for each
      group is preserved.
     """
     import pandas as pd
+
+    if isinstance(group_colnames, str):
+        group_colnames = [group_colnames]
+    elif group_colnames is None:
+        if group_colname is None:
+            raise TypeError("Missing required argument `group_colnames`")
+        warn("Please pass `group_colnames` instead of `group_colname`", DeprecationWarning)
+        group_colnames = [group_colname]
 
     if time_colname is None:
         for col in ('datetime', 'date', 'timestamp', 'time', 'dt'):
@@ -601,16 +623,24 @@ def complete_times(data: 'DataFrame',
         dt_unit = diffs.min()
         if dt_unit != diffs.value_counts().index[0]:
             raise ValueError("Unable to guess dt_unit, please pass")
+    elif dt_unit == 'W':
+        # pd.date_range behaves oddly with freq='W'
+        # (e.g. does not match behavior of `my_dates.to_period('W').dt.to_timestamp()`)
+        dt_unit = pd.Timedelta('7 days 00:00:00')
 
     df_grid = pd.DataFrame(
         {time_colname: pd.date_range(data[time_colname].min(), data[time_colname].max(), freq=dt_unit)}
     )
 
     df_group_summary = data. \
-        groupby(group_colname). \
+        groupby(group_colnames). \
         agg(_min=(time_colname, 'min'),
             _max=(time_colname, 'max')). \
         reset_index()
+    if global_max:
+        if global_max is True:
+            global_max = df_group_summary['_max'].max()
+        df_group_summary['_max'] = global_max
 
     # cross-join for all times to all groups (todo: not very memory efficient)
     df_cj = df_grid. \
@@ -618,9 +648,9 @@ def complete_times(data: 'DataFrame',
         merge(df_group_summary.assign(_cj=1), how='left', on=['_cj'])
     # filter to min/max for each group
     df_cj = df_cj. \
-        loc[df_cj[time_colname].between(df_cj['_min'], df_cj['_max']), [group_colname, time_colname]]. \
+        loc[df_cj[time_colname].between(df_cj['_min'], df_cj['_max']), group_colnames + [time_colname]]. \
         reset_index(drop=True)
-    return df_cj.merge(data, how='left', on=[group_colname, time_colname])
+    return df_cj.merge(data, how='left', on=group_colnames + [time_colname])
 
 
 def chunk_grouped_data(*tensors, group_ids: Sequence) -> Sequence[Tuple[Tensor]]:
