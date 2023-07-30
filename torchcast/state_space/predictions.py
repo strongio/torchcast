@@ -82,7 +82,11 @@ class Predictions(nn.Module):
         if not isinstance(self._state_means, torch.Tensor):
             self._state_means = torch.stack(self._state_means, 1)
         if torch.isnan(self._state_means).any():
-            raise ValueError("`nans` in `state_means`")
+            if torch.isnan(self._state_means).all():
+                raise ValueError("`nans` in all groups' `state_means`")
+            else:
+                groups, *_ = zip(*torch.isnan(self._state_means).nonzero().tolist())
+                raise ValueError(f"`nans` in `state_means` for group-indices: {set(groups)}")
         return self._state_means
 
     @cached_property
