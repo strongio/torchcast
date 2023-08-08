@@ -628,8 +628,13 @@ def complete_times(data: 'DataFrame',
         # (e.g. does not match behavior of `my_dates.to_period('W').dt.to_timestamp()`)
         dt_unit = pd.Timedelta('7 days 00:00:00')
 
+    max_time = data[time_colname].max()
+    if global_max is True:  # they can specify a specific value, or pass True for the max in the data
+        global_max = max_time
+    # or they can leave global_max=None, in which case will filter to group-specific max below
+
     df_grid = pd.DataFrame(
-        {time_colname: pd.date_range(data[time_colname].min(), data[time_colname].max(), freq=dt_unit)}
+        {time_colname: pd.date_range(data[time_colname].min(), global_max or max_time, freq=dt_unit)}
     )
 
     df_group_summary = data. \
@@ -638,8 +643,6 @@ def complete_times(data: 'DataFrame',
             _max=(time_colname, 'max')). \
         reset_index()
     if global_max:
-        if global_max is True:
-            global_max = df_group_summary['_max'].max()
         df_group_summary['_max'] = global_max
 
     # cross-join for all times to all groups (todo: not very memory efficient)
