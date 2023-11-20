@@ -1,16 +1,15 @@
-from typing import Dict, List
+import logging
 from datetime import datetime
 from functools import lru_cache
-from typing import List, Optional
-
-from plotly.graph_objs import Figure
-from dash import Dash, dcc, html, Input, Output
 from pathlib import Path
+from typing import Dict, List, Optional
+
 import dash_daq as daq
-import plotly.express as px
-import pandas as pd
 import numpy as np
-import logging
+import pandas as pd
+import plotly.express as px
+from dash import Dash, Input, Output, dcc, html
+from plotly.graph_objs import Figure
 
 logging.basicConfig(
     format='%(asctime)s %(levelname)s %(module)s - %(funcName)s: %(message)s',
@@ -19,11 +18,11 @@ logging.basicConfig(
 )
 
 
-app = Dash(__name__)
+app = Dash(__name__, eager_loading=True)
+server = app.server
 
 DATA_DIR = Path("docs/examples/electricity").resolve()
 train_val_split_dt: pd.Timestamp = pd.Timestamp("2013-06-01")
-
 
 # assume you have a "long-form" data frame
 # see https://plotly.com/python/px-arguments/ for more options
@@ -151,18 +150,15 @@ app.layout = html.Div(
                                 ),
                                 html.H5(" "),
                                 html.H6("Clients"),
-                                # dcc.Dropdown(
-                                #     id="group_dropdown",
-                                #     options=df['group'].unique(),
-                                #     value="MT_001",
-                                #     clearable=False,
-                                # ),
-                                dcc.Checklist(
-                                    id="group_checklist",
+                                dcc.Dropdown(
+                                    id="group_dropdown",
                                     options=all_groups,
                                     value=["MT_328"],
-                                    className="form-item",
-                                    style={"max-height": "250px", "overflow-y": "scroll", "scrollbar-color": "dark"},
+                                    # className="form-item",
+                                    clearable=False,
+                                    multi=True,
+                                    # style={.Select-value-label {color: white !important;}},
+                                    style={"color": "black"},
                                 ),
                                 # html.H6(
                                 #     "Drop irregular clients",
@@ -246,7 +242,7 @@ def get_combined_df(group: str) -> pd.DataFrame:
 @app.callback(
     Output("time-series-chart", "figure"),
     Output("histogram-chart", "figure"),
-    Input("group_checklist", "value"),
+    Input("group_dropdown", "value"),
     Input("prediction_toggle", "value"),
     Input("show_future_switch", "on"),
     Input("time_of_day_range", "value"),
@@ -427,7 +423,7 @@ def display_time_series(
 @app.callback(
     Output("correlation-div", "children"),
     Output("correlation-div", "style"),
-    Input("group_checklist", "value")
+    Input("group_dropdown", "value")
 )
 def correlation_plot(group_checklist_values: List[str]):
     if len(group_checklist_values) == 2:
@@ -482,8 +478,8 @@ def correlation_plot(group_checklist_values: List[str]):
 # limit the number of options
 _max_selected = 2
 @app.callback(
-    Output("group_checklist", "options"),
-    Input("group_checklist", "value"),
+    Output("group_dropdown", "options"),
+    Input("group_dropdown", "value"),
     # Input("drop_irregular", "value"),
 )
 def update_multi_options(
@@ -506,9 +502,10 @@ def update_multi_options(
         ]
     return options
 
+
 if __name__ == "__main__":
-   app.run_server(
-       debug=True,
-       host="andys-macbook-pro",
-       port=80,
-   )
+    app.run_server(
+        # debug=True,
+        host="0.0.0.0",
+        port=8097,
+    )

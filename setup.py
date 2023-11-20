@@ -32,6 +32,7 @@ setup(
             'dash',
             'dash_daq',
             'jupyter-dash',
+            'pandas',
             'pyarrow',  # to support parquet files
         ]
     }
