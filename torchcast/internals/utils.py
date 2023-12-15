@@ -142,7 +142,7 @@ def true1d_idx(arr: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
     arr = arr.bool()
     if len(arr.shape) > 1:
         raise ValueError("Expected 1d array.")
-    return arr.nonzero(as_tuple=True)[0]
+    return arr.nonzero(as_tuple=True)[0].numpy()
 
 
 def is_near_zero(tens: torch.Tensor, rtol: float = 1e-05, atol: float = 1e-08, equal_nan: bool = False) -> torch.Tensor:
