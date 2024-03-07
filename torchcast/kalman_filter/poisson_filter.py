@@ -18,7 +18,7 @@ from torch import Tensor, nn
 from backports.cached_property import cached_property
 from torch.nn import Softplus
 
-from .kalman_filter import KalmanStep
+from .ekf import EKFStep
 from ..covariance import Covariance
 from ..process import Process
 from ..state_space import StateSpaceModel, Predictions
@@ -39,44 +39,35 @@ def inverse_softplus(x: torch.Tensor, eps: float = .001) -> torch.Tensor:
     return out
 
 
-class PoissonStep(KalmanStep):
+class PoissonStep(EKFStep):
     # this would ideally be a class-attribute but torch.jit.trace strips them
     @torch.jit.ignore()
     def get_distribution(self) -> Type[torch.distributions.Distribution]:
         return torch.distributions.Poisson
 
+    def _get_correction(self, mean: Tensor, H: Tensor) -> Tensor:
+        raw_mmean = (H @ mean.unsqueeze(-1)).squeeze(-1)
+
+        correction = torch.zeros_like(H)
+        _do_cor = raw_mmean < POISSON_SMALL_THRESH
+
+        # derivative of softplus:
+        correction[_do_cor] = H[_do_cor] / (torch.exp(raw_mmean[_do_cor]) + 1).unsqueeze(-1)
+        return correction
+
     def _update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         orig_H = kwargs['H']
         orig_mmean = (orig_H @ mean.unsqueeze(-1)).squeeze(-1)
-        measured_mean = softplus(orig_mmean)
-        # variance = mean
-        R = torch.diag_embed(measured_mean)
 
-        # use EKF:
-        correction = torch.zeros_like(orig_H)
-        _do_cor = orig_mmean < POISSON_SMALL_THRESH
-        # derivative of softplus:
-        correction[_do_cor] = orig_H[_do_cor] / (torch.exp(orig_mmean[_do_cor]) + 1).unsqueeze(-1)
-        newH = orig_H - correction
+        kwargs['measured_mean'] = softplus(orig_mmean)
+        kwargs['R'] = torch.diag_embed(kwargs['measured_mean'])  # variance = mean
 
-        # standard:
-        Ht = newH.permute(0, 2, 1)
-        system_covariance = torch.baddbmm(R, newH @ cov, Ht)
-        K = self._kalman_gain(cov=cov, Ht=Ht, system_covariance=system_covariance)
-        resid = input - measured_mean
-
-        # outlier-rejection:
-        # TODO: does this make sense for EKF?
-        valid_mask = self._get_update_mask(resid, system_covariance, outlier_threshold=kwargs['outlier_threshold'])
-
-        # update:
-        new_mean = mean.clone()
-        new_mean[valid_mask] = mean[valid_mask] + (K[valid_mask] @ resid[valid_mask].unsqueeze(-1)).squeeze(-1)
-        new_cov = cov.clone()
-        new_cov[valid_mask] = self._covariance_update(
-            cov=cov[valid_mask], K=K[valid_mask], H=H[valid_mask], R=R[valid_mask]
+        return super()._update(
+            input=input,
+            mean=mean,
+            cov=cov,
+            kwargs=kwargs
         )
-        return new_mean, new_cov
 
 
 class PoissonFilter(StateSpaceModel):

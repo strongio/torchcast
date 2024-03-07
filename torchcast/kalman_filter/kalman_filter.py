@@ -55,18 +55,25 @@ class KalmanStep(StateSpaceStep):
             })
             return masked_input, new_kwargs
 
-    def _update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+    def _update(self,
+                input: Tensor,
+                mean: Tensor,
+                cov: Tensor,
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         H = kwargs['H']
         R = kwargs['R']
         Ht = H.permute(0, 2, 1)
         system_covariance = torch.baddbmm(R, H @ cov, Ht)
 
+        # measured-mean -> residuals:
+        if 'measured_mean' in kwargs:
+            measured_mean = kwargs['measured_mean']
+        else:
+            measured_mean = (H @ mean.unsqueeze(-1)).squeeze(-1)
+        resid = input - measured_mean
+
         # kalman-gain:
         K = self._kalman_gain(cov=cov, Ht=Ht, system_covariance=system_covariance)
-
-        # residuals:
-        measured_mean = (H @ mean.unsqueeze(-1)).squeeze(-1)
-        resid = input - measured_mean
 
         # outlier-rejection:
         valid_mask = self._get_update_mask(resid, system_covariance, outlier_threshold=kwargs['outlier_threshold'])

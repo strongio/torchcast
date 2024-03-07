@@ -29,7 +29,11 @@ class StateSpaceStep(torch.nn.Module):
     def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         raise NotImplementedError
 
-    def _update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+    def _update(self,
+                input: Tensor,
+                mean: Tensor,
+                cov: Tensor,
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         raise NotImplementedError
 
     def update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
@@ -55,8 +59,11 @@ class StateSpaceStep(torch.nn.Module):
             new_cov = cov.clone()
             for groups, val_idx in get_nan_groups(isnan):
                 masked_input, masked_kwargs = self._mask_mats(groups, val_idx, input=input, kwargs=kwargs)
-                m,c = self._update(
-                    input=masked_input, mean=mean[groups], cov=cov[groups], kwargs=masked_kwargs
+                m, c = self._update(
+                    input=masked_input,
+                    mean=mean[groups],
+                    cov=cov[groups],
+                    kwargs=masked_kwargs
                 )
                 new_mean[groups] = m
                 if c is None:
