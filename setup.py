@@ -10,7 +10,6 @@ setup(
     packages=find_packages(include='torchcast.*'),
     zip_safe=False,
     install_requires=[
-        'backports.cached-property',
         'torch>=1.12',
         'numpy>=1.4',
     ],

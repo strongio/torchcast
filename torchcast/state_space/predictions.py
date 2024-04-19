@@ -1,14 +1,11 @@
+from functools import cached_property
 from typing import Tuple, Union, Optional, Dict, Iterator, Sequence
 
+import numpy as np
 import torch
 from torch import nn, Tensor
 
-import numpy as np
-
-from backports.cached_property import cached_property
-
 from torchcast.internals.utils import get_nan_groups, is_near_zero
-
 from torchcast.utils.data import TimeSeriesDataset
 from torchcast.utils.outliers import mahalanobis_dist
 
