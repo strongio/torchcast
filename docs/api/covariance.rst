@@ -5,5 +5,4 @@ Covariance
 
 .. automodule:: torchcast.covariance
    :members: Covariance
-   :special-members: __init__
    :exclude-members: forward

@@ -8,7 +8,6 @@ on:
 
 jobs:
   test:
-    name: Run tests
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -30,6 +29,7 @@ jobs:
 
   release:
     needs: test
+    if: github.ref == 'refs/heads/main'
     concurrency:
       group: release
     runs-on: ubuntu-latest
@@ -46,3 +46,39 @@ jobs:
           semantic-release version --push --changelog --vcs-release --commit
         env:
           GH_TOKEN: ${{ secrets.STRONGIO_MACHINE_PAT }}
+
+  docs:
+    needs: release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: 3.10
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: 'arn:aws:iam::606444696334:role/strong-github-actions-role'
+          aws-region: us-east-1
+
+      - name: Setup SSH Key
+        uses: webfactory/ssh-agent@v0.5.4
+        with:
+          ssh-private-key: ${{ secrets.STRONGMACHINE_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: |
+          pip install awscli
+          pip install ".[docs]"
+
+      - name: Install pandoc
+        uses: pandoc/actions/setup@main
+
+      - name: Build docs
+        run: cd ./docs && make html
+
+      - name: Upload docs to S3
+        run: |
+          aws s3 cp --recursive docs/_build/html s3://docs.strong.io/torchcast --acl public-read

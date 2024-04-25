@@ -123,6 +123,9 @@ def ragged_cat(tensors: Sequence[torch.Tensor],
                ragged_dim: int,
                cat_dim: int = 0,
                padding: Optional[float] = None) -> torch.Tensor:
+    if padding and not isinstance(padding, float):
+        raise ValueError(padding)
+
     max_dim_len = max(tensor.shape[ragged_dim] for tensor in tensors)
     if padding is None:
         padding = float('nan')
