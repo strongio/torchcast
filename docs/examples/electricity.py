@@ -13,30 +13,20 @@
 #     name: python3
 # ---
 
-# %% nbsphinx="hidden"
+# %%
 from typing import Sequence
 
+import os
 import torch
-import copy
 
+import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 
 from torchcast.exp_smooth import ExpSmoother
 from torchcast.utils.data import TimeSeriesDataset, TimeSeriesDataLoader
 
-from tqdm.auto import tqdm
-
-import numpy as np
-import pandas as pd
-
-BASE_DIR = 'electricity'
-
-import os
-
-if 'drive/MyDrive' in BASE_DIR and not os.path.exists(BASE_DIR):
-    from google.colab import drive
-
-    drive.mount('/content/drive')
+BASE_DIR = './electricity'
 
 # %% [markdown]
 # # Using NN's for Long-Range Forecasts: Electricity Data
@@ -45,20 +35,26 @@ if 'drive/MyDrive' in BASE_DIR and not os.path.exists(BASE_DIR):
 #
 # We'll use a dataset from the [UCI Machine Learning Data Repository](https://archive.ics.uci.edu/ml/datasets/ElectricityLoadDiagrams20112014), which consists of electricity-usage for 370 locations, taken every 15 minutes (we'll downsample to hourly).
 
+# %%
+
+dataset_local_fname = os.path.join(BASE_DIR, 'df_electricity.csv.gz')
+dataset_remote_url = 'https://archive.ics.uci.edu/ml/machine-learning-databases/00321/LD2011_2014.txt.zip'
+
 # %% nbsphinx="hidden"
-rtd = bool(os.environ.get('READTHEDOCS'))
+
+dataset_local_fname = os.path.join(BASE_DIR, 'df_electricity_sample.csv.gz')
+if not os.path.exists(dataset_local_fname):
+    raise FileNotFoundError()
+
+# %%
 try:
-    _fname = 'df_electricity_rtd.csv.gz' if rtd else 'df_electricity.csv.gz'
-    df_elec = pd.read_csv(os.path.join(BASE_DIR, _fname), parse_dates=['time'])
+    df_elec = pd.read_csv(dataset_local_fname, parse_dates=['time'])
 except FileNotFoundError:
-    if rtd:
-        raise
     import requests
     from zipfile import ZipFile
     from io import BytesIO
 
-    response = \
-        requests.get('https://archive.ics.uci.edu/ml/machine-learning-databases/00321/LD2011_2014.txt.zip')
+    response = requests.get(dataset_remote_url)
 
     with ZipFile(BytesIO(response.content)) as f:
         df_raw = pd.read_table(f.open('LD2011_2014.txt'), sep=";", decimal=",")
@@ -66,22 +62,22 @@ except FileNotFoundError:
     # melt, collect to hourly:
     df_elec = df_raw. \
         melt(id_vars=['Unnamed: 0'], value_name='kW', var_name='group'). \
-        assign(time=lambda df_elec: df_elec['Unnamed: 0'].astype('datetime64[h]')). \
+        assign(time=lambda df_elec: pd.to_datetime(df_elec['Unnamed: 0'])). \
         groupby(['group', 'time']) \
         ['kW'].mean(). \
         reset_index()
 
     # find start time for each group:
     group_starts = df_elec['group'].map(df_elec.query("kW>0").groupby('group')['time'].min().to_dict())
-    
+
     # filter to start time:
     df_elec = df_elec.loc[df_elec['time'] >= group_starts, :].reset_index(drop=True)
-    
+
     # "Every year in March time change day (which has only 23 hours) the values between 1:00 am and
     # 2:00 am are zero for all points"
     zero_counts = df_elec.query("kW==0")['time'].value_counts()
     df_elec.loc[df_elec['time'].isin(zero_counts.index[zero_counts>100]),'kW'] = float('nan')
-    
+
     # save
     df_elec.to_csv(os.path.join(BASE_DIR, "df_electricity.csv.gz"), index=False)
 
@@ -186,7 +182,7 @@ es = ExpSmoother(
 # transform and center:
 df_elec['kW_sqrt'] = np.sqrt(df_elec['kW'])
 group_means = df_elec.query("dataset=='train'").groupby('group')['kW_sqrt'].mean().to_dict()
-df_elec['kW_sqrt_c'] = df_elec['kW_sqrt'] - df_elec['group'].map(group_means) 
+df_elec['kW_sqrt_c'] = df_elec['kW_sqrt'] - df_elec['group'].map(group_means)
 
 # %%
 # build our dataset
@@ -296,7 +292,7 @@ df_forecast_ex2 = make_forecast_df(model=es, df_trainval=df_elec.query("group ==
 plot_forecasts(df_forecast_ex2)
 
 # %% [markdown]
-# Seems like a massive improvement... Unfortunately, with hourly data, visualizing long-range forecasts in this way isn't very illuminating: it's just really hard to see the data! 
+# Seems like a massive improvement... Unfortunately, with hourly data, visualizing long-range forecasts in this way isn't very illuminating: it's just really hard to see the data!
 #
 # We can try zooming in:
 
@@ -305,7 +301,7 @@ plot_forecasts(df_forecast_ex2.query("time.dt.year==2013 & time.dt.month==6"))
 
 
 # %% [markdown]
-# This is better for actually seeing the data, but ideally we'd still like to get a view of the long range. 
+# This is better for actually seeing the data, but ideally we'd still like to get a view of the long range.
 #
 # Let's instead try splitting it into weekdays vs. weekends and daytimes vs. nightimes:
 
@@ -328,11 +324,11 @@ def plot_2x2(df: pd.DataFrame,
     df_split = df.loc[df[time_colname].dt.hour.isin(day_hours) | df[time_colname].dt.hour.isin(night_hours), :]. \
         assign(weekend=lambda df: df[time_colname].dt.weekday.isin([5, 6]).astype('int'),
                night=lambda df: (df[time_colname].dt.hour.isin(night_hours)).astype('int'),
-               date=lambda df: df[time_colname].astype('datetime64[D]')). \
+               date=lambda df: df[time_colname].dt.date). \
         groupby(['date', 'weekend', 'night']). \
         agg(forecast=(pred_colname, 'mean'), actual=(actual_colname, 'mean')). \
         reset_index()
-            
+
     kwargs['subplot_kw'] = kwargs.get('subplot_kw', {})
     if 'ylim' not in kwargs['subplot_kw']:
         kwargs['subplot_kw']['ylim'] = (df_split['actual'].min(), df_split['actual'].max())
@@ -349,7 +345,7 @@ def plot_2x2(df: pd.DataFrame,
 plot_2x2(df_forecast_ex2)
 
 # %% [markdown]
-# Viewing the forecasts in this way helps us see a lingering serious issue: the annual seasonal pattern is very different for daytimes and nighttimes, but the model isn't capturing that. 
+# Viewing the forecasts in this way helps us see a lingering serious issue: the annual seasonal pattern is very different for daytimes and nighttimes, but the model isn't capturing that.
 #
 # The limitation is inherent to the model: it only allows for a single seasonal pattern, rather than a separate one for different times of the day and days of the week.
 
@@ -497,12 +493,12 @@ class CalendarFeatureNN(TimeSeriesLightningModule):
         super().__init__(module=module)
         with torch.no_grad():
             self._module.emb_nn.weight *= .1
-    
+
     def _get_loss(self, predicted, actual) -> torch.Tensor:
         is_valid = ~torch.isnan(actual)
         sq_err = (actual[is_valid] - predicted[is_valid]) ** 2
         return sq_err.mean()
-    
+
     def backward(self,
                 loss: torch.Tensor,
                 optimizer: torch.optim.Optimizer,
@@ -558,7 +554,7 @@ try:
     ))
 except FileNotFoundError:
     Trainer(
-        gpus=int(str(maybe_cuda) == 'cuda'),
+        accelerator='gpu' if maybe_cuda == 'cuda' else 'cpu',
         logger=CSVLogger(BASE_DIR, f'calendar_feature_nn{cal_features_num_latent_dim}'),
         log_every_n_steps=1,
         min_epochs=100,
@@ -599,7 +595,7 @@ with torch.no_grad():
 plot_2x2(df_cal_nn_example, actual_colname='kW_sqrt_c', pred_colname='predicted_sqrt')
 
 # %% [markdown]
-# We can see that the network correctly captures the varying seasonal patterns. 
+# We can see that the network correctly captures the varying seasonal patterns.
 
 # %% [markdown]
 # ### The Hybrid Model
@@ -613,13 +609,16 @@ plot_2x2(df_cal_nn_example, actual_colname='kW_sqrt_c', pred_colname='predicted_
 # pytorch has the handy feature that we can set calendar_feature_nn to be a child of es_nn
 # by adding it as an attribute; among other things this means that calendar_feature_nn's params
 # will be included in the state-dict:
+
+import copy
+
 es_nn.calendar_feature_nn = copy.deepcopy(calendar_feature_nn)
 
 
 # %% [markdown]
 # #### One More Thing: Predict Variance
 #
-# One last complexity we're going to add: 
+# One last complexity we're going to add:
 #
 # Our exponential-smoothing model has the nice property that it doesn't just generate point-predictions, but also prediction intervals (the gray bands we see when we use `plot_forecasts()`).
 #
@@ -692,7 +691,7 @@ try:
     es_nn.load_state_dict(torch.load(os.path.join(BASE_DIR, f"es_nn{cal_features_num_latent_dim}.pt")))
 except FileNotFoundError:
     Trainer(
-        gpus=int(str(maybe_cuda) == 'cuda'),
+        accelerator='gpu' if maybe_cuda == 'cuda' else 'cpu',
         logger=CSVLogger(BASE_DIR, f'es_nn{cal_features_num_latent_dim}', flush_logs_every_n_steps=1),
         log_every_n_steps=1,
         min_epochs=10,
@@ -706,7 +705,7 @@ except FileNotFoundError:
 # %% [markdown]
 # #### Evaluation
 #
-# Reviewing the same example-building from before, we see the forecasts are more closely hewing to the actual seasonal structure for each time of day/week. Instead of the forecasts in each panel being essentially identical, each differs in shape. 
+# Reviewing the same example-building from before, we see the forecasts are more closely hewing to the actual seasonal structure for each time of day/week. Instead of the forecasts in each panel being essentially identical, each differs in shape.
 
 # %% nbsphinx="hidden"
 es_nn_lightning.to(maybe_cuda)

@@ -443,8 +443,8 @@ class Predictions(nn.Module):
             elif num_groups == 1:
                 plot = plot + facet_wrap(f"~ measure + process", scales='free_y', labeller='label_both')
                 if 'figure_size' not in kwargs:
-                    from plotnine.facets.facet_wrap import n2mfrow
-                    nrow, _ = n2mfrow(len(df[['process', 'measure']].drop_duplicates().index))
+                    from plotnine.facets.facet_wrap import wrap_dims
+                    nrow, _ = wrap_dims(len(df[['process', 'measure']].drop_duplicates().index))
                     kwargs['figure_size'] = (12, nrow * 2.5)
             else:
                 plot = plot + facet_grid(f"{group_colname} ~ measure", scales='free_y', labeller='label_both')

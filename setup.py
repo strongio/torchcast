@@ -22,11 +22,12 @@ setup(
             'ipykernel>=5.3.4',
             'tqdm>=4.59',
             'ipywidgets>=7.6.3',
-            'sphinx_rtd_theme>=0.5.2',
             'pandoc>=1.0.2',
             'pytorch_lightning>=1.5',
             'torch_optimizer>=0.3.0',
-            'matplotlib'
+            'matplotlib',
+            'Pandoc',
+            'strong-sphinx-theme @ git+ssh://git@github.com/strongio/strong-sphinx-theme.git'
         ]
     }
 )

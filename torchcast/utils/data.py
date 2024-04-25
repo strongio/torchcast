@@ -249,7 +249,7 @@ class TimeSeriesDataset(TensorDataset):
 
     # Creation/Transformation ------------------------:
     @classmethod
-    def make_collate_fn(cls, pad_X: Union[float, str, None] = 'ffill') -> Callable:
+    def make_collate_fn(cls, pad_X: Optional[float] = .0) -> Callable:
         def collate_fn(batch: Sequence['TimeSeriesDataset']) -> 'TimeSeriesDataset':
             to_concat = {
                 'tensors': [batch[0].tensors],
@@ -515,7 +515,7 @@ class TimeSeriesDataLoader(DataLoader):
     def __init__(self,
                  dataset: 'Dataset',
                  batch_size: Optional[int],
-                 pad_X: Union[float, str, None] = 'ffill',
+                 pad_X: Optional[float] = .0,
                  **kwargs):
         """
         :param dataset: A TimeSeriesDataset
@@ -539,7 +539,7 @@ class TimeSeriesDataLoader(DataLoader):
                        measure_colnames: Optional[Sequence[str]] = None,
                        X_colnames: Optional[Sequence[str]] = None,
                        y_colnames: Optional[Sequence[str]] = None,
-                       pad_X: Union[float, str, None] = 'ffill',
+                       pad_X: Optional[float] = .0,
                        **kwargs) -> 'TimeSeriesDataLoader':
         """
         :param dataframe: A pandas ``DataFrame``
