@@ -27,6 +27,7 @@ jobs:
 
   docs:
     needs: [ test ]
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -51,7 +52,7 @@ jobs:
           pip install ".[docs]"
 
       - name: Install pandoc
-        uses: pandoc/actions/setup@{main}
+        uses: pandoc/actions/setup@main
 
       - name: Build docs
         run: cd ./docs && make html
