@@ -1,0 +1,7 @@
+div.rendered_html table {
+    table-layout: auto!important;
+}
+
+table.dataframe tr>td:nth-child(2) {
+    white-space: nowrap;
+}

@@ -60,7 +60,11 @@ html_theme_options = {
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = []
+html_static_path = ['_static']
+
+html_css_files = [
+    'css/custom.css',
+]
 
 #
 intersphinx_mapping = {
@@ -71,7 +75,3 @@ intersphinx_mapping = {
 nbsphinx_custom_formats = {
     '.py': ['jupytext.reads', {'fmt': 'py:percent'}],
 }
-
-
-# This should be removed after fixing electricity notebook
-nbsphinx_allow_errors = True
