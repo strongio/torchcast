@@ -6,10 +6,10 @@ setup(
     name='torchcast',
     version=__version__,
     license='MIT',
+    python_requires='>= 3.8',
     packages=find_packages(include='torchcast.*'),
     zip_safe=False,
     install_requires=[
-        'backports.cached-property',
         'torch>=1.12',
         'numpy>=1.4',
     ],
