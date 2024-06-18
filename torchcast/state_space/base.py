@@ -78,6 +78,7 @@ class StateSpaceModel(nn.Module):
             optimizer: Optional[torch.optim.Optimizer] = None,
             verbose: int = 2,
             callbacks: Sequence[Callable] = (),
+            get_loss: Optional[Callable] = None,
             loss_callback: Optional[Callable] = None,
             callable_kwargs: Optional[Dict[str, Callable]] = None,
             set_initial_values: bool = True,
@@ -98,14 +99,16 @@ class StateSpaceModel(nn.Module):
          (the default) this progress bar will tick within each epoch to track the calls to forward.
         :param callbacks: A list of functions that will be called at the end of each epoch, which take the current
          epoch's loss value.
-        :param loss_callback: A callback that takes the loss and returns a modified loss, called before each call to
-         `backward()`. This can be used for example to add regularization.
-        :param callable_kwargs: A dictionary where the keys are keyword-names and the values are no-argument functions
-         that will be called each iteration to recompute the corresponding arguments.
+        :param get_loss: A function that takes the ``Predictions` object and the input data and returns the loss.
+         Default is ``lambda pred, y: -pred.log_prob(y).mean()``.
+        :param loss_callback: Deprecated; use ``get_loss`` instead.
         :param set_initial_values: Default is to set ``initial_mean`` to sensible value given ``y``. This helps speed
          up training if the data are not centered. Set to ``False`` if you're resuming training from a previous
          ``fit()`` call.
         :param kwargs: Further keyword-arguments passed to :func:`StateSpaceModel.forward()`.
+        :param callable_kwargs: The kwargs passed to the forward pass are static, but sometimes you want to recompute
+         them each iteration. The values in this dictionary are functions that will be called each iteration to
+         recompute the corresponding arguments.
         :return: This ``StateSpaceModel`` instance.
         """
 
@@ -123,6 +126,9 @@ class StateSpaceModel(nn.Module):
         if set_initial_values:
             self.set_initial_values(y)
 
+        if not get_loss:
+            get_loss = lambda pred, y: -pred.log_prob(y).mean()
+
         prog = None
         if verbose > 1:
             try:
@@ -134,15 +140,15 @@ class StateSpaceModel(nn.Module):
             except ImportError:
                 warn("`progress=True` requires package `tqdm`.")
 
-        epoch = 0
-
         callable_kwargs = callable_kwargs or {}
+        if loss_callback:
+            warn("`loss_callback` is deprecated; use `get_loss` instead.", DeprecationWarning)
 
         def closure():
             optimizer.zero_grad()
             kwargs.update({k: v() for k, v in callable_kwargs.items()})
             pred = self(y, **kwargs)
-            loss = -pred.log_prob(y).mean()
+            loss = get_loss(pred, y)
             if loss_callback:
                 loss = loss_callback(loss)
             loss.backward()
