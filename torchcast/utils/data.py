@@ -586,6 +586,7 @@ def complete_times(data: 'DataFrame',
                    group_colnames: Sequence[str] = None,
                    time_colname: Optional[str] = None,
                    dt_unit: Optional[str] = None,
+                   max_dt_colname: Optional[str] = None,
                    global_max: Union[bool, datetime.datetime] = False,
                    group_colname: Optional[str] = None):
     """
@@ -594,10 +595,10 @@ def complete_times(data: 'DataFrame',
     :param data: A pandas dataframe.
     :param group_colnames: The column name(s) for the groups.
     :param time_colname: The column name for the times. Will attempt to guess based on common labels.
-    :param dt_unit: A :class:`numpy.datetime64` or string representing the datetime increments. If not supplied will
-     try to guess based on the smallest difference in the data.
-    :param global_max: If `True`, will use the max time of all groups for the max time of each group. If false, will
-     keep times past each group's max time as implicitly missing. If a datetime is passed, will use that as the max.
+    :param dt_unit: Passed to ``pandas.date_range``. If not passed, will attempt to guess based on the minimum
+     difference between times.
+    :param max_dt_colname: Optional, a column-name that indicates the maximum time for each group. If not supplied, the
+     actual maximum time for each group will be used.
     :return: A dataframe where implicit missings are converted to explicit missings, but the min/max time for each
      group is preserved.
     """
@@ -610,6 +611,8 @@ def complete_times(data: 'DataFrame',
             raise TypeError("Missing required argument `group_colnames`")
         warn("Please pass `group_colnames` instead of `group_colname`", DeprecationWarning)
         group_colnames = [group_colname]
+    if max_dt_colname and max_dt_colname not in group_colnames:
+        group_colnames.append(max_dt_colname)
 
     if time_colname is None:
         for col in ('datetime', 'date', 'timestamp', 'time', 'dt'):
@@ -628,31 +631,27 @@ def complete_times(data: 'DataFrame',
         # (e.g. does not match behavior of `my_dates.to_period('W').dt.to_timestamp()`)
         dt_unit = pd.Timedelta('7 days 00:00:00')
 
-    max_time = data[time_colname].max()
-    if global_max is True:  # they can specify a specific value, or pass True for the max in the data
-        global_max = max_time
-    # or they can leave global_max=None, in which case will filter to group-specific max below
-
-    df_grid = pd.DataFrame(
-        {time_colname: pd.date_range(data[time_colname].min(), global_max or max_time, freq=dt_unit)}
-    )
-
-    df_group_summary = data. \
-        groupby(group_colnames). \
-        agg(_min=(time_colname, 'min'),
-            _max=(time_colname, 'max')). \
-        reset_index()
     if global_max:
-        df_group_summary['_max'] = global_max
+        warn("`global_max=True` is deprecated, use `max_dt_colname` instead.", DeprecationWarning)
+
+
+    df_group_summary = (data
+                        .groupby(group_colnames)
+                        .agg(_min=(time_colname, 'min'), _max=(time_colname, 'max'))
+                        .reset_index())
+    if max_dt_colname:
+        df_group_summary['_max'] = df_group_summary[max_dt_colname]
+
+    max_of_maxes = df_group_summary['_max'].max()
+
+    df_grid = pd.DataFrame({time_colname: pd.date_range(data[time_colname].min(), max_of_maxes, freq=dt_unit)})
 
     # cross-join for all times to all groups (todo: not very memory efficient)
-    df_cj = df_grid. \
-        assign(_cj=1). \
-        merge(df_group_summary.assign(_cj=1), how='left', on=['_cj'])
+    df_cj = df_grid.merge(df_group_summary, how='cross')
     # filter to min/max for each group
-    df_cj = df_cj. \
-        loc[df_cj[time_colname].between(df_cj['_min'], df_cj['_max']), group_colnames + [time_colname]]. \
-        reset_index(drop=True)
+    df_cj = (df_cj
+             .loc[df_cj[time_colname].between(df_cj['_min'], df_cj['_max']), group_colnames + [time_colname]]
+             .reset_index(drop=True))
     return df_cj.merge(data, how='left', on=group_colnames + [time_colname])
 
 
