@@ -7,7 +7,7 @@ from torch import nn, Tensor
 
 from torchcast.internals.utils import get_nan_groups, is_near_zero
 from torchcast.utils.data import TimeSeriesDataset
-from torchcast.utils.outliers import mahalanobis_dist
+from torchcast.utils.outliers import get_outlier_multi
 
 
 class Predictions(nn.Module):
@@ -214,8 +214,11 @@ class Predictions(nn.Module):
             obs_flat = obs_flat.clone()
             for gt_idx, valid_idx in get_nan_groups(torch.isnan(obs_flat)):
                 if valid_idx is None:
-                    mdist = mahalanobis_dist(obs_flat[gt_idx] - means_flat[gt_idx], covs_flat[gt_idx])
-                    multi = (mdist - self.outlier_threshold).clamp(min=0) + 1
+                    multi = get_outlier_multi(
+                        resid=obs_flat[gt_idx] - means_flat[gt_idx],
+                        cov=covs_flat[gt_idx],
+                        outlier_threshold=torch.as_tensor(self.outlier_threshold)
+                    )
                     weights[gt_idx] = 1 / multi
                 else:
                     raise NotImplemented

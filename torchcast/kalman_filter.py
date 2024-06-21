@@ -19,7 +19,7 @@ import torch
 from torch import nn, Tensor
 from typing_extensions import Final
 
-from torchcast.utils.outliers import mahalanobis_dist
+from torchcast.utils.outliers import get_outlier_multi
 
 
 class KalmanStep(StateSpaceStep):
@@ -60,19 +60,22 @@ class KalmanStep(StateSpaceStep):
         H = kwargs['H']
         R = kwargs['R']
         Ht = H.permute(0, 2, 1)
-        system_covariance = torch.baddbmm(R, H @ cov, Ht)
-
-        # kalman-gain:
-        K = self._kalman_gain(cov=cov, Ht=Ht, system_covariance=system_covariance)
 
         # residuals:
         measured_mean = (H @ mean.unsqueeze(-1)).squeeze(-1)
         resid = input - measured_mean
 
+        # kalman-gain:
+        system_covariance = torch.baddbmm(R, H @ cov, Ht)
+        K = self._kalman_gain(cov=cov, Ht=Ht, system_covariance=system_covariance)
+
         # outlier-rejection:
-        if kwargs['outlier_threshold'] > 0:
-            mdist = mahalanobis_dist(resid, system_covariance)
-            multi = (mdist - kwargs['outlier_threshold']).clamp(min=0) + 1
+        if (kwargs['outlier_threshold'] > 0).any():
+            multi = get_outlier_multi(
+                resid=resid,
+                cov=system_covariance,
+                outlier_threshold=kwargs['outlier_threshold']
+            )
             R = R * multi.unsqueeze(-1).unsqueeze(-1)
 
         # update:
