@@ -69,7 +69,7 @@ class KalmanStep(StateSpaceStep):
         system_covariance = HcHt + R
 
         # outlier-rejection:
-        if (kwargs['outlier_threshold'] > 0).any():
+        if (kwargs['outlier_threshold'] != 0).any():
             multi = get_outlier_multi(
                 resid=resid,
                 cov=system_covariance,
