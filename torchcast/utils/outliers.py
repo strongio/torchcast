@@ -1,4 +1,5 @@
 import torch
+from torch.linalg import LinAlgError
 
 
 def get_outlier_multi(resid: torch.Tensor,
@@ -10,7 +11,7 @@ def get_outlier_multi(resid: torch.Tensor,
         neg_mask = (resid < 0).squeeze(-1)
         mdist_neg = mahalanobis_dist(resid[neg_mask], cov[neg_mask])
         mdist_pos = mahalanobis_dist(resid[~neg_mask], cov[~neg_mask])
-        multi = torch.ones_like(resid)
+        multi = torch.ones_like(resid).squeeze(-1)
         neg_thresh, pos_thresh = outlier_threshold.abs()
         multi[neg_mask] = (mdist_neg - neg_thresh).clamp(min=0) + 1
         multi[~neg_mask] = (mdist_pos - pos_thresh).clamp(min=0) + 1
@@ -22,6 +23,18 @@ def get_outlier_multi(resid: torch.Tensor,
 
 
 def mahalanobis_dist(diff: torch.Tensor, covariance: torch.Tensor) -> torch.Tensor:
-    cholesky = torch.linalg.cholesky(covariance)
+    try:
+        cholesky = torch.linalg.cholesky(covariance)
+    except LinAlgError as e:
+        cholesky = None
+        for i in [-8, -7, -6, -5, -4, -3, -2]:
+            try:
+                cholesky = torch.linalg.cholesky(covariance + torch.eye(covariance.shape[-1]) * 10 ** -i)
+                break
+            except LinAlgError:
+                continue
+        if cholesky is None:
+            raise e
+
     y = torch.cholesky_solve(diff.unsqueeze(-1), cholesky).squeeze(-1)
     return torch.sqrt(torch.sum(diff * y, -1))

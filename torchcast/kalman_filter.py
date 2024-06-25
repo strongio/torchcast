@@ -65,9 +65,8 @@ class KalmanStep(StateSpaceStep):
         measured_mean = (H @ mean.unsqueeze(-1)).squeeze(-1)
         resid = input - measured_mean
 
-        # kalman-gain:
-        system_covariance = torch.baddbmm(R, H @ cov, Ht)
-        K = self._kalman_gain(cov=cov, Ht=Ht, system_covariance=system_covariance)
+        HcHt = H @ cov @ Ht
+        system_covariance = HcHt + R
 
         # outlier-rejection:
         if (kwargs['outlier_threshold'] > 0).any():
@@ -77,6 +76,10 @@ class KalmanStep(StateSpaceStep):
                 outlier_threshold=kwargs['outlier_threshold']
             )
             R = R * multi.unsqueeze(-1).unsqueeze(-1)
+            system_covariance = HcHt + R
+
+        # kalman-gain:
+        K = self._kalman_gain(cov=cov, Ht=Ht, system_covariance=system_covariance)
 
         # update:
         new_mean = mean + (K @ resid.unsqueeze(-1)).squeeze(-1)
