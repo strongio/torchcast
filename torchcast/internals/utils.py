@@ -142,7 +142,7 @@ def ragged_cat(tensors: Sequence[torch.Tensor],
 
 
 @torch.no_grad()
-def true1d_idx(arr: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
+def true1d_idx(arr: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
     if not isinstance(arr, torch.Tensor):
         arr = torch.as_tensor(arr)
     arr = arr.bool()

@@ -121,6 +121,9 @@ class Covariance(nn.Module):
         if isinstance(measures, str):
             measures = [measures]
             warn(f"`measures` should be a list of strings not a string; interpreted as `{measures}`.")
+        elif not isinstance(measures[0], str):
+            # not good duck-typing, but too easy to accidentally pass dataset.measures instead of dataset.measures[0]
+            raise RuntimeError(f"`measures[0]` is {type(measures[0])}, expected str")
         if 'method' not in kwargs and len(measures) > 5:
             kwargs['method'] = 'low_rank'
         if 'init_diag_multi' not in kwargs:
@@ -262,7 +265,6 @@ class Covariance(nn.Module):
             mini_cov, num_groups=num_groups, num_times=num_times, trailing_dim=[self.param_rank, self.param_rank]
         )
 
-        pred = None
         if self.var_predict_module is not None and not _ignore_input:
             pred = self.var_predict_module(*[inputs[x] for x in self.expected_kwargs])
             if torch.isnan(pred).any() or torch.isinf(pred).any():
@@ -270,9 +272,7 @@ class Covariance(nn.Module):
             if (pred < 0).any():
                 raise RuntimeError(f"{self.id}'s `predict_variance` produced values <0; needs exp/softplus layer.")
             pred = validate_gt_shape(pred, num_groups=num_groups, num_times=num_times, trailing_dim=[self.param_rank])
-
-        if pred is not None:
-            diag_multi = torch.diag_embed(torch.exp(pred))
+            diag_multi = torch.diag_embed(pred)
             mini_cov = diag_multi @ mini_cov @ diag_multi
 
         mask = self.mask.unsqueeze(0).unsqueeze(0)

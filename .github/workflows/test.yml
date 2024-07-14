@@ -1,7 +1,9 @@
-name: Torchcast Unit Tests
+name: torchcast
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 jobs:
@@ -10,14 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        py-version: ['3.7', '3.8', '3.9', '3.10']
+        py-version: [ '3.8', '3.9', '3.10' ]
 
     steps:
-
       - uses: actions/checkout@v3
-
       - uses: actions/setup-python@v4
         with:
+          cache: 'pip'
+          cache-dependency-path: setup.py
           python-version: ${{ matrix.py-version }}
 
       - name: Install torchcast

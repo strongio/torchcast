@@ -6,7 +6,6 @@ This class inherits most of its methods from :class:`torchcast.state_space.State
 
 ----------
 """
-
 from typing import Sequence, Dict, List, Iterable
 
 from torchcast.covariance import Covariance
@@ -19,6 +18,8 @@ from typing import Tuple, Optional
 import torch
 from torch import nn, Tensor
 from typing_extensions import Final
+
+from torchcast.utils.outliers import get_outlier_multi
 
 
 class KalmanStep(StateSpaceStep):
@@ -55,48 +56,36 @@ class KalmanStep(StateSpaceStep):
             })
             return masked_input, new_kwargs
 
-    def _update(self,
-                input: Tensor,
-                mean: Tensor,
-                cov: Tensor,
-                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+    def _update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         H = kwargs['H']
         R = kwargs['R']
         Ht = H.permute(0, 2, 1)
-        system_covariance = torch.baddbmm(R, H @ cov, Ht)
 
-        # measured-mean -> residuals:
-        if 'measured_mean' in kwargs:
-            measured_mean = kwargs['measured_mean']
-        else:
-            measured_mean = (H @ mean.unsqueeze(-1)).squeeze(-1)
+        # residuals:
+        measured_mean = (H @ mean.unsqueeze(-1)).squeeze(-1)
         resid = input - measured_mean
+
+        HcHt = H @ cov @ Ht
+        system_covariance = HcHt + R
+
+        # outlier-rejection:
+        if (kwargs['outlier_threshold'] != 0).any():
+            multi = get_outlier_multi(
+                resid=resid,
+                cov=system_covariance,
+                outlier_threshold=kwargs['outlier_threshold']
+            )
+            R = R * multi.unsqueeze(-1).unsqueeze(-1)
+            system_covariance = HcHt + R
 
         # kalman-gain:
         K = self._kalman_gain(cov=cov, Ht=Ht, system_covariance=system_covariance)
 
-        # outlier-rejection:
-        valid_mask = self._get_update_mask(resid, system_covariance, outlier_threshold=kwargs['outlier_threshold'])
-
         # update:
-        new_mean = mean.clone()
-        new_mean[valid_mask] = mean[valid_mask] + (K[valid_mask] @ resid[valid_mask].unsqueeze(-1)).squeeze(-1)
-        new_cov = cov.clone()
-        new_cov[valid_mask] = self._covariance_update(
-            cov=cov[valid_mask], K=K[valid_mask], H=H[valid_mask], R=R[valid_mask]
-        )
+        new_mean = mean + (K @ resid.unsqueeze(-1)).squeeze(-1)
+        new_cov = self._covariance_update(cov=cov, K=K, H=H, R=R)
 
         return new_mean, new_cov
-
-    @staticmethod
-    def _get_update_mask(resid: torch.Tensor,
-                         system_covariance: torch.Tensor,
-                         outlier_threshold: torch.Tensor) -> torch.Tensor:
-        if outlier_threshold > 0:
-            mdist = mahalanobis_dist(resid, system_covariance)
-            return mdist <= outlier_threshold
-        else:
-            return torch.ones(len(resid), dtype=torch.bool, device=resid.device)
 
     def _covariance_update(self, cov: Tensor, K: Tensor, H: Tensor, R: Tensor) -> Tensor:
         I = torch.eye(cov.shape[1], dtype=cov.dtype, device=cov.device).unsqueeze(0)
@@ -116,13 +105,6 @@ class KalmanStep(StateSpaceStep):
         return K
 
 
-def mahalanobis_dist(diff: torch.Tensor, covariance: torch.Tensor) -> torch.Tensor:
-    cholesky = torch.linalg.cholesky(covariance)
-    y = torch.cholesky_solve(diff.unsqueeze(-1), cholesky).squeeze(-1)
-    mahalanobis_dist = torch.sqrt(torch.sum(diff * y, 1))
-    return mahalanobis_dist
-
-
 class KalmanFilter(StateSpaceModel):
     """
     Uses the full kalman-filtering algorithm for generating forecasts.
@@ -131,8 +113,10 @@ class KalmanFilter(StateSpaceModel):
     :param measures: A list of strings specifying the names of the dimensions of the time-series being measured.
     :param process_covariance: A module created with ``Covariance.from_processes(processes)``.
     :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
-    :param outlier_threshold: If specified, outliers are rejected using the mahalanobis distance.
-    :param outlier_burnin: If outlier_threshold is specified, this specifies the number of steps to wait before
+    :param outlier_threshold: If specified, used as a threshold-for outlier under-weighting during the `update` step,
+     using mahalanobis distance; outliers will also be under-weighted when evaluating the ``log_prob()`` of the output
+     ``Predictions``.
+    :param outlier_burnin: If outlier_threshold is specified, this specifies the number of timesteps to wait before
      starting to reject outliers.
     """
     ss_step_cls = KalmanStep
@@ -152,6 +136,8 @@ class KalmanFilter(StateSpaceModel):
 
         if measure_covariance is None:
             measure_covariance = Covariance.from_measures(measures)
+        else:
+            assert measure_covariance.rank == 1 or measure_covariance.rank == len(measures)
 
         super().__init__(
             processes=processes,
