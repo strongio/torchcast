@@ -51,7 +51,7 @@ class TimeSeriesDataset(TensorDataset):
                 raise ValueError(f"Tensor {i}'s 3rd dimension has length != len({tensor_measures}).")
 
         self.measures = tuple(tuple(m) for m in measures)
-        self.all_measures = tuple(itertools.chain.from_iterable(self.measures))
+
         self.group_names = group_names
         self.dt_unit = None
         if dt_unit:
@@ -73,6 +73,10 @@ class TimeSeriesDataset(TensorDataset):
                 )
         self.start_times = start_times
         super().__init__(*tensors)
+
+    @property
+    def all_measures(self) -> tuple:
+        return tuple(itertools.chain.from_iterable(self.measures))
 
     def to(self, *args, **kwargs) -> 'TimeSeriesDataset':
         new_tensors = [x.to(*args, **kwargs) for x in self.tensors]
@@ -311,13 +315,14 @@ class TimeSeriesDataset(TensorDataset):
         assert tensor.shape[1] <= times.shape[1]
         assert tensor.shape[2] == len(measures)
 
+        _all_nan_groups = []
         dfs = []
         for g, group_name in enumerate(group_names):
             # get values, don't store trailing nans:
             values = tensor[g]
             all_nan_per_row = np.min(np.isnan(values), axis=1)
             if all_nan_per_row.all():
-                warn(f"Group {group_name} has only missing values.")
+                _all_nan_groups.append(group_name)
                 continue
             end_idx = true1d_idx(~all_nan_per_row).max() + 1
             # convert to dataframe:
@@ -326,6 +331,9 @@ class TimeSeriesDataset(TensorDataset):
             df[time_colname] = np.nan
             df[time_colname] = times[g, 0:len(df.index)]
             dfs.append(df)
+        if _all_nan_groups:
+            warn(f"Groups have only missing values:{_all_nan_groups}")
+
         if dfs:
             return concat(dfs)
         else:
