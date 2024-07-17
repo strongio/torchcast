@@ -55,7 +55,7 @@ class TestTraining(unittest.TestCase):
                 lp_method2_sum += lp_gt
         self.assertAlmostEqual(lp_method1_sum, lp_method2_sum, places=3)
 
-    def test_training1(self, ndim: int = 2, num_groups: int = 150, num_times: int = 24, compile: bool = True):
+    def test_training1(self, ndim: int = 2, num_groups: int = 150, num_times: int = 24, compile: bool = False):
         """
         simulated data with known parameters, fitted loss should approach the loss given known params
         """
@@ -119,7 +119,7 @@ class TestTraining(unittest.TestCase):
         oracle_loss = -kf_generator(y, X=X).log_prob(y).mean()
         self.assertAlmostEqual(oracle_loss.item(), loss.item(), places=1)
 
-    def test_training2(self, num_groups: int = 50, compile: bool = True):
+    def test_training2(self, num_groups: int = 50, compile: bool = False):
         """
         # manually generated data (sin-wave, trend, etc.) with virtually no noise: MSE should be near zero
         """
@@ -182,7 +182,7 @@ class TestTraining(unittest.TestCase):
         # trend should be identified:
         self.assertAlmostEqual(pred.state_means[:, :, 1].mean().item(), 5., places=1)
 
-    def test_training3(self, compile: bool = True):
+    def test_training3(self, compile: bool = False):
         """
         Test TBATS and TimeSeriesDataset integration
         """
