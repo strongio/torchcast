@@ -43,6 +43,8 @@ class TimeSeriesDataset(TensorDataset):
         assert len(tensors) == len(measures)
 
         for i, (tensor, tensor_measures) in enumerate(zip(tensors, measures)):
+            if isinstance(tensor_measures, str):
+                raise ValueError(f"Expected measures to be a list of lists/tuples, but element-{i} is a string.")
             if len(tensor.shape) < 3:
                 raise ValueError(f"Tensor {i} has < 3 dimensions")
             if tensor.shape[0] != len(group_names):
