@@ -12,8 +12,8 @@ class EKFStep(KalmanStep):
         assert R is not None
         return R
 
-    def _link(self, measured_mean: Tensor) -> Tensor:
-        return measured_mean
+    def _link(self, x: Tensor) -> Tensor:
+        return x
 
     def _update(self,
                 input: Tensor,
