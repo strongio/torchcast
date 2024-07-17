@@ -2,7 +2,7 @@ from typing import Tuple, Union, Optional, Dict, Iterator, Sequence, TYPE_CHECKI
 from warnings import warn
 
 import torch
-from scipy.stats import norm as ScipyNorm
+
 from torch import nn, Tensor
 
 import numpy as np
@@ -10,8 +10,7 @@ import numpy as np
 from functools import cached_property
 
 from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims
-from torchcast.utils.data import TimeSeriesDataset
-from torchcast.utils.outliers import get_outlier_multi
+from torchcast.utils import conf2bounds, TimeSeriesDataset, get_outlier_multi
 
 if TYPE_CHECKING:
     from pandas import DataFrame
@@ -190,9 +189,15 @@ class Predictions(nn.Module):
             self._means, self._covs = self.observe(self.state_means, self.state_covs, self.R, self.H)
         return self._covs
 
-    @torch.no_grad()
-    def sample(self, sample_shape=torch.Size()) -> Tensor:
-        dist = torch.distributions.MultivariateNormal(self.means, self.covs)
+    def sample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
+        with torch.no_grad():
+            return self.rsample(sample_shape)
+
+    def rsample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
+        return self._sample(self.means, self.covs)
+
+    def _sample(self, means: Tensor, covs: Tensor, sample_shape=torch.Size()) -> Tensor:
+        dist = torch.distributions.MultivariateNormal(means, covs)
         return dist.rsample(sample_shape=sample_shape)
 
     def log_prob(self, obs: Tensor) -> Tensor:
@@ -546,11 +551,3 @@ class Predictions(nn.Module):
             'all_state_elements': self.all_state_elements,
             'outlier_threshold': self.outlier_threshold
         }
-
-
-def conf2bounds(mean, std, conf) -> tuple:
-    assert conf >= .50
-    multi = -ScipyNorm.ppf((1 - conf) / 2)
-    lower = mean - multi * std
-    upper = mean + multi * std
-    return lower, upper
