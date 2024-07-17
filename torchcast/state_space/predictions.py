@@ -420,7 +420,7 @@ class Predictions(nn.Module):
 
         df = df.copy()
         if 'upper' not in df.columns and 'std' in df.columns:
-            df['lower'], df['upper'] = conf2bounds(df['mean'], df.pop('std'), conf=conf)
+            df['lower'], df['upper'] = conf2bounds(df['mean'], df.pop('std'), conf=.95)
         if df[group_colname].nunique() > max_num_groups:
             subset_groups = df[group_colname].drop_duplicates().sample(max_num_groups).tolist()
             if len(subset_groups) < df[group_colname].nunique():
@@ -497,7 +497,7 @@ class Predictions(nn.Module):
         return self._subset(idx, collapsed_dim=1)
 
     def __iter__(self) -> Iterator[Tensor]:
-        # for mean, cov = tuple(predictions)
+        # so that we can do ``mean, cov = predictions``
         yield self.means
         yield self.covs
 
