@@ -2,7 +2,7 @@ import copy
 import itertools
 from collections import defaultdict
 from typing import Callable, Optional, Dict
-from unittest import TestCase
+from unittest import TestCase, expectedFailure
 
 import torch
 from parameterized import parameterized
@@ -66,12 +66,13 @@ class TestKalmanFilter(TestCase):
             processes=[LocalLevel(id=f'lm{i}', measure=str(i)) for i in range(ndim)],
             measures=[str(i) for i in range(ndim)]
         )
-        kf = torch.jit.script(kf)
+#        kf = torch.jit.script(kf)
         obs_means, obs_covs = kf(data, n_step=n_step)
         self.assertFalse(torch.isnan(obs_means).any())
         self.assertFalse(torch.isnan(obs_covs).any())
         self.assertEqual(tuple(obs_means.shape), (5, ntimes, ndim))
 
+    @expectedFailure # for now, no longer supporting jit
     @torch.no_grad()
     def test_jit(self):
         from torchcast.state_space import Predictions
@@ -168,7 +169,6 @@ class TestKalmanFilter(TestCase):
             processes=[LocalTrend(id='lt', decay_velocity=None, measure='y', velocity_multi=1.)],
             measures=['y']
         )
-        kf = torch.jit.script(torch_kf)
         expectedF = torch.tensor([[1., 1.], [0., 1.]])
         expectedH = torch.tensor([[1., 0.]])
         kwargs_per_process = torch_kf._parse_design_kwargs(input=data, out_timesteps=num_times)
@@ -401,11 +401,10 @@ class TestKalmanFilter(TestCase):
         self.assertTrue((cov == 0).all())
 
     @parameterized.expand([
-        (torch.float64, 2, True),
         (torch.float64, 2, False)
     ])
     @torch.no_grad()
-    def test_dtype(self, dtype: torch.dtype, ndim: int = 2, compiled: bool = True):
+    def test_dtype(self, dtype: torch.dtype, ndim: int = 2, compiled: bool = False):
         data = torch.zeros((2, 5, ndim), dtype=dtype)
         kf = KalmanFilter(
             processes=[LocalLevel(id=f'll{i}', measure=str(i)) for i in range(ndim)],

@@ -23,18 +23,6 @@ def get_outlier_multi(resid: torch.Tensor,
 
 
 def mahalanobis_dist(diff: torch.Tensor, covariance: torch.Tensor) -> torch.Tensor:
-    try:
-        cholesky = torch.linalg.cholesky(covariance)
-    except LinAlgError as e:
-        cholesky = None
-        for i in [-8, -7, -6, -5, -4, -3, -2]:
-            try:
-                cholesky = torch.linalg.cholesky(covariance + torch.eye(covariance.shape[-1]) * 10 ** -i)
-                break
-            except LinAlgError:
-                continue
-        if cholesky is None:
-            raise e
-
+    cholesky = torch.linalg.cholesky(covariance)
     y = torch.cholesky_solve(diff.unsqueeze(-1), cholesky).squeeze(-1)
     return torch.sqrt(torch.sum(diff * y, -1))

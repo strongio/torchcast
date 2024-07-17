@@ -14,21 +14,6 @@ MAX_TRIES = 3  # we set the seed but not tested across different platforms
 
 
 class TestTraining(unittest.TestCase):
-    @parameterized.expand([(1,), (2,), (3,)])
-    @torch.no_grad()
-    def test_gaussian_log_prob(self, ndim: int = 1):
-        data = torch.zeros((2, 5, ndim))
-        kf = KalmanFilter(
-            processes=[LocalLevel(id=f'lm{i}', measure=str(i)) for i in range(ndim)],
-            measures=[str(i) for i in range(ndim)]
-        )
-        dist = kf.ss_step.get_distribution()
-        pred = kf(data)
-        log_lik1 = dist(*pred).log_prob(data)
-        from torch.distributions import MultivariateNormal
-        mv = MultivariateNormal(*pred)
-        log_lik2 = mv.log_prob(data)
-        self.assertAlmostEqual(log_lik1.sum().item(), log_lik2.sum().item())
 
     @parameterized.expand([(1,), (2,), (3,)])
     @torch.no_grad()
@@ -46,8 +31,6 @@ class TestTraining(unittest.TestCase):
         lp_method1 = pred.log_prob(data)
         lp_method1_sum = lp_method1.sum().item()
 
-        dist = kf.ss_step.get_distribution()
-
         lp_method2_sum = 0
         for g in range(num_groups):
             data_g = data[[g]]
@@ -59,7 +42,7 @@ class TestTraining(unittest.TestCase):
                 if not isvalid_gt.any():
                     continue
                 if isvalid_gt.all():
-                    lp_gt = dist(*pred_gt).log_prob(data_gt).item()
+                    lp_gt = torch.distributions.MultivariateNormal(*pred_gt).log_prob(data_gt).item()
                 else:
                     pred_gtm = pred_gt.observe(
                         state_means=pred_gt.state_means,
@@ -67,12 +50,12 @@ class TestTraining(unittest.TestCase):
                         R=pred_gt.R[..., isvalid_gt, :][..., isvalid_gt],
                         H=pred_gt.H[..., isvalid_gt, :]
                     )
-                    lp_gt = dist(*pred_gtm).log_prob(data_gt[..., isvalid_gt]).item()
+                    lp_gt = torch.distributions.MultivariateNormal(*pred_gtm).log_prob(data_gt[..., isvalid_gt]).item()
                 self.assertAlmostEqual(lp_method1[g, t].item(), lp_gt, places=4)
                 lp_method2_sum += lp_gt
         self.assertAlmostEqual(lp_method1_sum, lp_method2_sum, places=3)
 
-    def test_training1(self, ndim: int = 2, num_groups: int = 150, num_times: int = 24, compile: bool = True):
+    def test_training1(self, ndim: int = 2, num_groups: int = 150, num_times: int = 24, compile: bool = False):
         """
         simulated data with known parameters, fitted loss should approach the loss given known params
         """
@@ -136,7 +119,7 @@ class TestTraining(unittest.TestCase):
         oracle_loss = -kf_generator(y, X=X).log_prob(y).mean()
         self.assertAlmostEqual(oracle_loss.item(), loss.item(), places=1)
 
-    def test_training2(self, num_groups: int = 50, compile: bool = True):
+    def test_training2(self, num_groups: int = 50, compile: bool = False):
         """
         # manually generated data (sin-wave, trend, etc.) with virtually no noise: MSE should be near zero
         """
@@ -199,7 +182,7 @@ class TestTraining(unittest.TestCase):
         # trend should be identified:
         self.assertAlmostEqual(pred.state_means[:, :, 1].mean().item(), 5., places=1)
 
-    def test_training3(self, compile: bool = True):
+    def test_training3(self, compile: bool = False):
         """
         Test TBATS and TimeSeriesDataset integration
         """
