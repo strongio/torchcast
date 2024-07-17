@@ -1,4 +1,4 @@
-from typing import Type, Tuple, Dict, Optional
+from typing import Tuple, Dict, Optional
 
 import torch
 from torch import Tensor
@@ -10,11 +10,6 @@ class StateSpaceStep(torch.nn.Module):
     """
     Base-class for modules that handle predict/update within a state-space model.
     """
-
-    # this would ideally be a class-attribute but torch.jit.trace strips them
-    @torch.jit.ignore()
-    def get_distribution(self) -> Type[torch.distributions.Distribution]:
-        return torch.distributions.MultivariateNormal
 
     def forward(self,
                 input: Tensor,

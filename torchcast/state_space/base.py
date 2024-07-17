@@ -625,6 +625,7 @@ class StateSpaceModel(nn.Module):
         :param kwargs: Further arguments passed to the `processes`.
         :return: A :class:`.Simulations` object with a :func:`Simulations.sample()` method.
         """
+        warn("`simulate()` is deprecated, use the `sample()` method of Predictions", DeprecationWarning)
 
         mean, cov = self._prepare_initial_state(initial_state, start_offsets=start_offsets)
 
@@ -645,11 +646,9 @@ class StateSpaceModel(nn.Module):
             kwargs_per_process=self._parse_design_kwargs(input=None, out_timesteps=out_timesteps, **kwargs)
         )
 
-        dist_cls = self.ss_step.get_distribution()
-
         means: List[Tensor] = []
         for t in times:
-            mean = dist_cls(mean, cov).rsample()
+            mean = torch.distributions.MultivariateNormal(mean, cov).rsample()
             mean, cov = self.ss_step.predict(
                 mean=mean, cov=.0001 * torch.eye(mean.shape[-1]), kwargs={k: v[t] for k, v in predict_kwargs.items()}
             )

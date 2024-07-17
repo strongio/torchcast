@@ -54,12 +54,10 @@ class Predictions(nn.Module):
                 for state_element in process.state_elements:
                     all_state_elements.append((pid, state_element))
             model = {
-                'distribution_cls': model.ss_step.get_distribution(),
                 'measures': model.measures,
                 'all_state_elements': all_state_elements,
                 'outlier_threshold': model.outlier_threshold
             }
-        self.distribution_cls = model['distribution_cls']
         self.measures = model['measures']
         self.all_state_elements = model['all_state_elements']
         self.outlier_threshold = model['outlier_threshold']
@@ -192,10 +190,10 @@ class Predictions(nn.Module):
             self._means, self._covs = self.observe(self.state_means, self.state_covs, self.R, self.H)
         return self._covs
 
-    def sample(self) -> Tensor:
-        with torch.no_grad():
-            dist = self.distribution_cls(self.means, self.covs)
-            return dist.rsample()
+    @torch.no_grad()
+    def sample(self, sample_shape=torch.Size()) -> Tensor:
+        dist = torch.distributions.MultivariateNormal(self.means, self.covs)
+        return dist.rsample(sample_shape=sample_shape)
 
     def log_prob(self, obs: Tensor) -> Tensor:
         """
@@ -256,15 +254,7 @@ class Predictions(nn.Module):
         return lp_flat.view(obs.shape[0:2])
 
     def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
-        return self.distribution_cls(means, covs, validate_args=False).log_prob(obs)
-
-    @classmethod
-    def _get_quantiles(cls, mean, std, conf: float, observed: bool) -> tuple:
-        assert conf >= .50
-        multi = -ScipyNorm.ppf((1 - conf) / 2)
-        lower = mean - multi * std
-        upper = mean + multi * std
-        return lower, upper
+        return torch.distributions.MultivariateNormal(means, covs, validate_args=False).log_prob(obs)
 
     def to_dataframe(self,
                      dataset: Union[TimeSeriesDataset, dict],
@@ -338,7 +328,7 @@ class Predictions(nn.Module):
                 # predicted:
                 df = _tensor_to_df(torch.stack([self.means[..., i], stds[..., i]], 2), measures=['mean', 'std'])
                 if conf is not None:
-                    df['lower'], df['upper'] = self._get_quantiles(df['mean'], df.pop('std'), conf=conf, observed=True)
+                    df['lower'], df['upper'] = conf2bounds(df['mean'], df.pop('std'), conf=conf)
 
                 # actual:
                 orig_tensor = batch_info.get('named_tensors', {}).get(measure, None)
@@ -353,7 +343,7 @@ class Predictions(nn.Module):
             for (measure, process, state_element), (m, std) in self._components().items():
                 df = _tensor_to_df(torch.stack([m, std], 2), measures=['mean', 'std'])
                 if conf is not None:
-                    df['lower'], df['upper'] = self._get_quantiles(df['mean'], df.pop('std'), conf=conf, observed=False)
+                    df['lower'], df['upper'] = conf2bounds(df['mean'], df.pop('std'), conf=conf)
                 df['process'], df['state_element'], df['measure'] = process, state_element, measure
                 out.append(df)
 
@@ -430,7 +420,7 @@ class Predictions(nn.Module):
 
         df = df.copy()
         if 'upper' not in df.columns and 'std' in df.columns:
-            df['lower'], df['upper'] = cls._get_quantiles(df['mean'], df['std'], conf=.95, observed=not is_components)
+            df['lower'], df['upper'] = conf2bounds(df['mean'], df.pop('std'), conf=conf)
         if df[group_colname].nunique() > max_num_groups:
             subset_groups = df[group_colname].drop_duplicates().sample(max_num_groups).tolist()
             if len(subset_groups) < df[group_colname].nunique():
@@ -457,8 +447,8 @@ class Predictions(nn.Module):
             elif num_groups == 1:
                 plot = plot + facet_wrap(f"~ measure + process", scales='free_y', labeller='label_both')
                 if 'figure_size' not in kwargs:
-                    from plotnine.facets.facet_wrap import n2mfrow
-                    nrow, _ = n2mfrow(len(df[['process', 'measure']].drop_duplicates().index))
+                    from plotnine.facets.facet_wrap import wrap_dims
+                    nrow, _ = wrap_dims(len(df[['process', 'measure']].drop_duplicates().index))
                     kwargs['figure_size'] = (12, nrow * 2.5)
             else:
                 plot = plot + facet_grid(f"{group_colname} ~ measure", scales='free_y', labeller='label_both')
@@ -553,7 +543,14 @@ class Predictions(nn.Module):
         """
         return {
             'measures': self.measures,
-            'distribution_cls': self.distribution_cls,
             'all_state_elements': self.all_state_elements,
             'outlier_threshold': self.outlier_threshold
         }
+
+
+def conf2bounds(mean, std, conf) -> tuple:
+    assert conf >= .50
+    multi = -ScipyNorm.ppf((1 - conf) / 2)
+    lower = mean - multi * std
+    upper = mean + multi * std
+    return lower, upper
