@@ -45,29 +45,14 @@ class PoissonStep(EKFStep):
     def get_distribution(self) -> Type[torch.distributions.Distribution]:
         return torch.distributions.Poisson
 
-    def _get_correction(self, mean: Tensor, H: Tensor) -> Tensor:
-        raw_mmean = (H @ mean.unsqueeze(-1)).squeeze(-1)
+    def _adjust_h(self, mean: Tensor, H: Tensor) -> Tensor:
+        raise NotImplementedError("TODO")
 
-        correction = torch.zeros_like(H)
-        _do_cor = raw_mmean < POISSON_SMALL_THRESH
+    def _adjust_r(self, measured_mean: Tensor, R: Tensor) -> Tensor:
+        return torch.diag_embed(measured_mean)  # variance = mean
 
-        # derivative of softplus:
-        correction[_do_cor] = H[_do_cor] / (torch.exp(raw_mmean[_do_cor]) + 1).unsqueeze(-1)
-        return correction
-
-    def _update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        orig_H = kwargs['H']
-        orig_mmean = (orig_H @ mean.unsqueeze(-1)).squeeze(-1)
-
-        kwargs['measured_mean'] = softplus(orig_mmean)
-        kwargs['R'] = torch.diag_embed(kwargs['measured_mean'])  # variance = mean
-
-        return super()._update(
-            input=input,
-            mean=mean,
-            cov=cov,
-            kwargs=kwargs
-        )
+    def _link(self, measured_mean: Tensor) -> Tensor:
+        return softplus(measured_mean)
 
 
 class PoissonFilter(StateSpaceModel):
@@ -160,15 +145,7 @@ class PoissonPredictions(Predictions):
                 state_covs: Tensor,
                 R: Optional[Tensor],
                 H: Tensor) -> Tuple[Tensor, Tensor]:
-        means, covs = super().observe(
-            state_means=state_means,
-            state_covs=state_covs,
-            R=R,
-            H=H
-        )
-        means = softplus(means)
-
-        return means, covs
+        raise NotImplementedError("TODO")
 
     @classmethod
     def plot(cls,
@@ -178,37 +155,17 @@ class PoissonPredictions(Predictions):
              max_num_groups: int = 1,
              split_dt: Optional[np.datetime64] = None,
              **kwargs) -> 'DataFrame':
-        if _warn_once.get('poisson_plot', False):
-            _warn_once['poisson_plot'] = True
-            warn(
-                "Poisson implementation is experimental. Currently plotting will over-estimate uncertainty."
-            )
-        return super().plot(
-            df=df,
-            group_colname=group_colname,
-            time_colname=time_colname,
-            max_num_groups=max_num_groups,
-            split_dt=split_dt,
-            **kwargs
-        )
+        raise NotImplementedError("TODO")
 
     @cached_property
     def R(self) -> torch.Tensor:
-        means, _ = self.observe(self.state_means, self.state_covs, R=0.0, H=self.H)
-        return torch.diag_embed(means)
+        raise NotImplementedError("TODO")
 
     def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
-        if _warn_once.get('poisson_log_prob', False):
-            _warn_once['poisson_log_prob'] = True
-            warn(
-                "Poisson implementation is experimental. Currently log-prob will ignore state-covariance."
-            )
-        # TODO: use monte-carlo instead.
-        out = self.distribution_cls(means.squeeze(-1), validate_args=False).log_prob(obs.squeeze(-1))
-        return out
+        raise NotImplementedError("TODO")
 
     def sample(self) -> Tensor:
-        raise NotImplementedError
+        raise NotImplementedError("TODO")
 
     @classmethod
     def _get_quantiles(cls, mean, std, conf: float, observed: bool) -> tuple:
