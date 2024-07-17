@@ -7,10 +7,11 @@ from torch import nn, Tensor
 
 import numpy as np
 
-from backports.cached_property import cached_property
+from functools import cached_property
 
 from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims
 from torchcast.utils.data import TimeSeriesDataset
+from torchcast.utils.outliers import get_outlier_multi
 
 if TYPE_CHECKING:
     from pandas import DataFrame

@@ -7,7 +7,7 @@ import torch
 from scipy.special import expit, logit
 from torch import Tensor, nn
 
-from backports.cached_property import cached_property
+from functools import cached_property
 from torch.nn import Sigmoid
 
 from torchcast.covariance import Covariance
