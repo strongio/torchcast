@@ -80,7 +80,7 @@ class Covariance(nn.Module):
             if 'init_diag_multi' not in kwargs:
                 kwargs['init_diag_multi'] = .01
             if 'method' in kwargs and kwargs['method'] == 'low_rank':
-                warn("``method='low_rank'`` not recommended for processes, consider 'low_rank+block_diag'")
+                warn("``method='low_rank'`` not recommended for processes")
         elif cov_type == 'initial':
             if (state_rank - len(no_cov_idx)) >= 10:
                 # by default, use low-rank parameterization for initial cov:

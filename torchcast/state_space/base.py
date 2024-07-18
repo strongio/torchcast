@@ -68,8 +68,6 @@ class StateSpaceModel(nn.Module):
         # the initial mean
         self.initial_mean = torch.nn.Parameter(.1 * torch.randn(self.state_rank))
 
-        self._scale_by_measure_var = bool(self.measure_covariance)
-
     @torch.jit.ignore()
     def fit(self,
             *args,
@@ -351,14 +349,11 @@ class StateSpaceModel(nn.Module):
         """
         StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
         """
-
-        kwargs = {
+        kwargs.update({
             'state_means': preds[0],
             'state_covs': preds[1],
-            'R': kwargs['R'],
-            'H': kwargs['H'],
             'model': self
-        }
+        })
         if updates is not None:
             kwargs.update(update_means=updates[0], update_covs=updates[1])
         return Predictions(**kwargs)
@@ -587,15 +582,12 @@ class StateSpaceModel(nn.Module):
 
     def _get_measure_scaling(self) -> Tensor:
         mcov = self.measure_covariance({}, num_groups=1, num_times=1, _ignore_input=True)[0, 0]
-        if self._scale_by_measure_var:
-            measure_var = mcov.diagonal(dim1=-2, dim2=-1)
-            multi = torch.zeros(mcov.shape[0:-2] + (self.state_rank,), dtype=mcov.dtype, device=mcov.device)
-            for pid, process in self.processes.items():
-                pidx = self.process_to_slice[pid]
-                multi[..., slice(*pidx)] = measure_var[..., self.measure_to_idx[process.measure]].sqrt().unsqueeze(-1)
-            assert (multi > 0).all()
-        else:
-            multi = torch.ones((self.state_rank,), dtype=mcov.dtype, device=mcov.device)
+        measure_var = mcov.diagonal(dim1=-2, dim2=-1)
+        multi = torch.zeros(mcov.shape[0:-2] + (self.state_rank,), dtype=mcov.dtype, device=mcov.device)
+        for pid, process in self.processes.items():
+            pidx = self.process_to_slice[pid]
+            multi[..., slice(*pidx)] = measure_var[..., self.measure_to_idx[process.measure]].sqrt().unsqueeze(-1)
+        assert (multi > 0).all()
         return multi
 
     def __repr__(self) -> str:
