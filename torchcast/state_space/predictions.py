@@ -267,19 +267,25 @@ class Predictions(nn.Module):
                      group_colname: str = 'group',
                      time_colname: str = 'time',
                      conf: Optional[float] = .95,
-                     multi: Optional[float] = None) -> 'DataFrame':
+                     multi: Optional[float] = False) -> 'DataFrame':
         """
         :param dataset: Either a :class:`.TimeSeriesDataset`, or a dictionary with 'start_times', 'group_names', &
          'dt_unit'
         :param type: Either 'predictions' or 'components'.
         :param group_colname: Column-name for 'group'
         :param time_colname: Column-name for 'time'
-        :param conf: Conf the lower/upper CIs will target. Default of 0.95 means these are 0.025 and 0.975.
+        :param conf: If set, specifies the confidence level for the 'lower' and 'upper' columns in the output. Default
+         of 0.95 means these are 0.025 and 0.975. If ``None``, then will just include 'std' column instead.
         :return: A pandas DataFrame with group, 'time', 'measure', 'mean', 'lower', 'upper'. For ``type='components'``
          additionally includes: 'process' and 'state_element'.
         """
-        if multi is not None:
-            warn("Ignoring `multi` as it is deprecated, please use `conf` instead.", DeprecationWarning)
+        if multi is not False:
+            msg = "`multi` is deprecated, please use `conf` instead."
+            if multi is None:  # old way of specifying "just return std", for backwards-compatibility
+                warn(msg, DeprecationWarning)
+                conf = None
+            else:
+                raise TypeError(msg)
 
         from pandas import concat
 
