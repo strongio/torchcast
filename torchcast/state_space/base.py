@@ -264,6 +264,7 @@ class StateSpaceModel(nn.Module):
                 initial_state: Union[Tensor, Tuple[Optional[Tensor], Optional[Tensor]]] = (None, None),
                 every_step: bool = True,
                 include_updates_in_output: bool = False,
+                simulate: Optional[int] = None,
                 **kwargs) -> Predictions:
         """
         Generate n-step-ahead predictions from the model.
@@ -293,6 +294,7 @@ class StateSpaceModel(nn.Module):
          to True to allow this -- False by default to reduce memory.
         :param kwargs: Further arguments passed to the `processes`. For example, the :class:`.LinearModel` expects an
          ``X`` argument for predictors.
+        :param simulate: If specified, will generate `simulate` samples from the model.
         :return: A :class:`.Predictions` object with :func:`Predictions.log_prob()` and
          :func:`Predictions.to_dataframe()` methods.
         """
@@ -313,6 +315,10 @@ class StateSpaceModel(nn.Module):
             initial_state,
             start_offsets=start_offsets,
         )
+        if simulate and simulate > 1:
+            init_mean, init_cov = initial_state
+            initial_state = init_mean.repeat(simulate, 1), init_cov.repeat(simulate, 1, 1)
+            kwargs = {k: v.repeat(simulate, 1) for k, v in kwargs.items()}
 
         if isinstance(n_step, float):
             if not n_step.is_integer():
@@ -333,7 +339,8 @@ class StateSpaceModel(nn.Module):
                 input,
                 out_timesteps=out_timesteps or input.shape[1],
                 **kwargs
-            )
+            ),
+            simulate=bool(simulate)
         )
         return self._generate_predictions(
             preds=preds,
@@ -364,7 +371,7 @@ class StateSpaceModel(nn.Module):
                                start_offsets: Optional[Sequence] = None) -> Tuple[Tensor, Tensor]:
         init_mean, init_cov = initial_state
         if init_mean is None:
-            init_mean = self.initial_mean[None, :]
+            init_mean = self.initial_mean[None, :].clone()
         elif len(init_mean.shape) != 2:
             raise ValueError(
                 f"Expected ``init_mean`` to have two-dimensions for (num_groups, state_dim), got {init_mean.shape}"
@@ -405,7 +412,8 @@ class StateSpaceModel(nn.Module):
                         initial_state: Tuple[Tensor, Tensor],
                         n_step: int = 1,
                         out_timesteps: Optional[int] = None,
-                        every_step: bool = True
+                        every_step: bool = True,
+                        simulate: bool = False
                         ) -> Tuple[
         Tuple[List[Tensor], List[Tensor]],
         Tuple[List[Tensor], List[Tensor]],
@@ -474,14 +482,22 @@ class StateSpaceModel(nn.Module):
                 update_kwargs_t['outlier_threshold'] = torch.tensor(
                     self.outlier_threshold if t > self.outlier_burnin else 0.
                 )
-                meanu, covu = self.ss_step.update(
-                    inputs[t],
-                    mean1step,
-                    cov1step,
-                    update_kwargs_t,
-                )
+                if simulate:
+                    meanu = torch.distributions.MultivariateNormal(mean1step, cov1step).sample()
+                    covu = torch.eye(meanu.shape[-1]) * 1e-6
+                else:
+                    meanu, covu = self.ss_step.update(
+                        inputs[t],
+                        mean1step,
+                        cov1step,
+                        update_kwargs_t,
+                    )
             else:
-                meanu, covu = mean1step, cov1step
+                if simulate:
+                    meanu = torch.distributions.MultivariateNormal(mean1step, cov1step).sample()
+                    covu = torch.eye(meanu.shape[-1]) * 1e-6
+                else:
+                    meanu, covu = mean1step, cov1step
             meanus.append(meanu)
             covus.append(covu)
 
@@ -600,8 +616,8 @@ class StateSpaceModel(nn.Module):
                  out_timesteps: int,
                  initial_state: Tuple[Optional[Tensor], Optional[Tensor]] = (None, None),
                  start_offsets: Optional[Sequence] = None,
-                 num_sims: Optional[int] = None,
-                 progress: bool = False,
+                 num_sims: int = 1,
+                 num_groups: Optional[int] = None,
                  **kwargs):
         """
         Generate simulated state-trajectories from your model.
@@ -612,46 +628,24 @@ class StateSpaceModel(nn.Module):
          each group in ``input``. If you passed ``dt_unit`` when constructing those processes, then you should pass an
          array datetimes here. Otherwise you can pass an array of integers (or leave `None` if there are no seasonal
          processes).
-        :param num_sims: The number of state-trajectories to simulate.
+        :param num_sims: The number of state-trajectories to simulate per group.
+        :param num_groups: The number of groups.
         :param progress: Should a progress-bar be displayed? Requires `tqdm`.
         :param kwargs: Further arguments passed to the `processes`.
         :return: A :class:`.Simulations` object with a :func:`Simulations.sample()` method.
         """
-        warn("`simulate()` is deprecated, use the `sample()` method of Predictions", DeprecationWarning)
 
-        mean, cov = self._prepare_initial_state(initial_state, start_offsets=start_offsets)
+        if num_groups is not None:
 
-        times = range(out_timesteps)
-        if progress:
-            if progress is True:
-                try:
-                    from tqdm.auto import tqdm
-                    progress = tqdm
-                except ImportError:
-                    warn("verbose>1 w/progress-bar requires package `tqdm`.")
-                    progress = lambda x: x
-            times = progress(times)
+            if start_offsets is None:
+                start_offsets = [0] * num_groups
+            elif len(start_offsets) != num_groups:
+                raise ValueError("Expected `len(start_offsets) == num_groups` (or num_groups=None)")
 
-        predict_kwargs, update_kwargs = self._build_design_mats(
-            num_groups=num_sims,
+        return self(
+            start_offsets=start_offsets,
             out_timesteps=out_timesteps,
-            kwargs_per_process=self._parse_design_kwargs(input=None, out_timesteps=out_timesteps, **kwargs)
-        )
-
-        means: List[Tensor] = []
-        for t in times:
-            mean = torch.distributions.MultivariateNormal(mean, cov).rsample()
-            mean, cov = self.ss_step.predict(
-                mean=mean, cov=.0001 * torch.eye(mean.shape[-1]), kwargs={k: v[t] for k, v in predict_kwargs.items()}
-            )
-            means.append(mean)
-
-        smeans = torch.stack(means, 1)
-        num_groups, num_times, sdim = smeans.shape
-        scovs = torch.zeros((num_groups, num_times, sdim, sdim), dtype=smeans.dtype, device=smeans.device)
-
-        return self._generate_predictions(
-            preds=(smeans, scovs),
-            R=torch.stack(update_kwargs['R'], 1),
-            H=torch.stack(update_kwargs['H'], 1)
+            initial_state=initial_state,
+            simulate=num_sims,
+            **kwargs
         )

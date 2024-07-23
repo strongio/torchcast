@@ -11,7 +11,6 @@ from torch import jit, nn, Tensor
 
 from torchcast.process.base import Process
 from torchcast.process.utils import SingleOutput, Multi, Bounded, ScriptSequential
-from torchcast.utils.features import fourier_tensor
 
 
 class _Season:

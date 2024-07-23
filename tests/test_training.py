@@ -84,7 +84,7 @@ class TestTraining(unittest.TestCase):
         X = torch.randn((num_groups, num_times, 5))
         kf_generator = _make_kf()
         with torch.no_grad():
-            sim = kf_generator.simulate(out_timesteps=num_times, num_sims=num_groups, X=X)
+            sim = kf_generator.simulate(out_timesteps=num_times, num_groups=num_groups, X=X)
             y = sim.sample()
         assert not y.requires_grad
 

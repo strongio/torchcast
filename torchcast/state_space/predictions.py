@@ -1,3 +1,4 @@
+import datetime
 from typing import Tuple, Union, Optional, Dict, Iterator, Sequence, TYPE_CHECKING
 from warnings import warn
 
@@ -102,7 +103,11 @@ class Predictions(nn.Module):
     @cached_property
     def update_means(self) -> Optional[torch.Tensor]:
         if self._update_means is None:
-            return None
+            raise RuntimeError(
+                "Cannot get ``update_means`` because update mean/cov was not passed when creating this "
+                "``Predictions`` object. This usually means you have to include ``include_updates_in_output=True`` "
+                "when calling ``StateSpaceModel()``."
+            )
         if not isinstance(self._update_means, torch.Tensor):
             self._update_means = torch.stack(self._update_means, 1)
         if torch.isnan(self._update_means).any():
@@ -119,6 +124,46 @@ class Predictions(nn.Module):
             raise ValueError("`nans` in `update_covs`")
         return self._update_covs
 
+    def _standardize_times(self,
+                           times: Union[np.ndarray, np.datetime64],
+                           start_offsets: Optional[np.ndarray] = None,
+                           dt_unit: Optional[str] = None) -> np.ndarray:
+        if not isinstance(times, (list, tuple, np.ndarray)):
+            times = [times] * self.num_groups
+        times = np.asanyarray(times)
+
+        if start_offsets is not None:
+            if isinstance(dt_unit, str):
+                dt_unit = np.timedelta64(1, dt_unit)
+            times = times - start_offsets
+            if dt_unit is not None:
+                times = times // dt_unit  # todo: validate int?
+
+        assert len(times.shape) == 1
+        assert times.shape[0] == self.num_groups
+        return times
+
+    def get_timeslice(self,
+                      times: Union[np.ndarray, np.datetime64],
+                      n_timesteps: int,
+                      start_offsets: Optional[np.ndarray] = None,
+                      dt_unit: Optional[str] = None) -> 'Predictions':
+        """
+        :param times: Either (a) indices corresponding to each group (e.g. ``times[0]`` corresponds to the timestep to
+         take for the 0th group, ``times[1]`` the timestep to take for the 1th group, etc.) or (b) if ``start_times``
+         is passed, an array of datetimes. Will also support a single datetime.
+        :param start_offsets: If ``times`` is an array of datetimes, must also pass ``start_datetimes``, i.e. the
+         datetimes at which each group started.
+        :param dt_unit: If ``times`` is an array of datetimes, must also pass ``dt_unit``, i.e. a
+         :class:`numpy.timedelta64` that indicates how much time passes at each timestep.
+        :param n_timesteps: The number of timesteps to take.
+        :return: A new ``Predictions`` object, with the state and measurement tensors sliced to the given
+            ``times``/``n_timesteps``.
+        """
+        start_indices = self._standardize_times(times=times, start_offsets=start_offsets, dt_unit=dt_unit)
+        time_indices = np.arange(n_timesteps)[None, ...] + start_indices[:, None, ...]
+        return self[np.arange(self.num_groups)[:, None, ...], time_indices]
+
     def get_state_at_times(self,
                            times: Union[np.ndarray, np.datetime64],
                            start_times: Optional[np.ndarray] = None,
@@ -133,7 +178,7 @@ class Predictions(nn.Module):
         :param times: Either (a) indices corresponding to each group (e.g. ``times[0]`` corresponds to the timestep to
          take for the 0th group, ``times[1]`` the timestep to take for the 1th group, etc.) or (b) if ``start_times``
          is passed, an array of datetimes. Will also support a single datetime.
-        :param start_times: If ``times`` is an array of datetimes, must also pass ``start_datetimes``, i.e. the
+        :param start_offsets: If ``times`` is an array of datetimes, must also pass ``start_datetimes``, i.e. the
          datetimes at which each group started.
         :param dt_unit: If ``times`` is an array of datetimes, must also pass ``dt_unit``, i.e. a
          :class:`numpy.timedelta64` that indicates how much time passes at each timestep. (times-start_times)/dt_unit
@@ -144,17 +189,11 @@ class Predictions(nn.Module):
         :return: A tuple of state-means and state-covs, appropriate for forecasting by passing as `initial_state`
          for :func:`StateSpaceModel.forward()`.
         """
-        sliced = self._subset_to_times(times=times, start_times=start_times, dt_unit=dt_unit)
+        preds = self.get_timeslice(times=times, n_timesteps=1, start_offsets=start_times, dt_unit=dt_unit)
         if type_.startswith('pred'):
-            return sliced.state_means.squeeze(1), sliced.state_covs.squeeze(1)
+            return preds.state_means.squeeze(1), preds.state_covs.squeeze(1)
         elif type_.startswith('update'):
-            if self.update_means is None:
-                raise RuntimeError(
-                    "Cannot get with ``type_='update'`` because update mean/cov was not passed when creating this "
-                    "``Predictions`` object. This usually means you have to include ``include_updates=True`` when "
-                    "calling ``StateSpaceModel``."
-                )
-            return sliced.update_means.squeeze(1), sliced.update_covs.squeeze(1)
+            return preds.update_means.squeeze(1), preds.update_covs.squeeze(1)
         else:
             raise ValueError("Unrecognized `type_`, expected 'prediction' or 'update'.")
 
@@ -188,17 +227,6 @@ class Predictions(nn.Module):
         if self._covs is None:
             self._means, self._covs = self.observe(self.state_means, self.state_covs, self.R, self.H)
         return self._covs
-
-    def sample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
-        with torch.no_grad():
-            return self.rsample(sample_shape)
-
-    def rsample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
-        return self._sample(self.means, self.covs)
-
-    def _sample(self, means: Tensor, covs: Tensor, sample_shape=torch.Size()) -> Tensor:
-        dist = torch.distributions.MultivariateNormal(means, covs)
-        return dist.rsample(sample_shape=sample_shape)
 
     def log_prob(self, obs: Tensor) -> Tensor:
         """
@@ -332,7 +360,7 @@ class Predictions(nn.Module):
         assert time_colname not in {'mean', 'lower', 'upper', 'std'}
 
         out = []
-        if type == 'predictions':
+        if type.startswith('pred'):
 
             stds = torch.diagonal(self.covs, dim1=-1, dim2=-2).sqrt()
             for i, measure in enumerate(self.measures):
@@ -349,8 +377,7 @@ class Predictions(nn.Module):
 
                 out.append(df.assign(measure=measure))
 
-        elif type == 'components':
-            # components:
+        elif type.startswith('comp'):
             for (measure, process, state_element), (m, std) in self._components().items():
                 df = _tensor_to_df(torch.stack([m, std], 2), measures=['mean', 'std'])
                 if conf is not None:
@@ -485,28 +512,6 @@ class Predictions(nn.Module):
 
         return plot + theme_bw() + theme(**kwargs)
 
-    def _subset_to_times(self,
-                         times: Union[np.ndarray, np.datetime64],
-                         start_times: Optional[np.ndarray] = None,
-                         dt_unit: Optional[str] = None) -> 'Predictions':
-        """
-        Return a `Predictions` object with a single timepoint for each group.
-        """
-        if not isinstance(times, (list, tuple, np.ndarray)):
-            times = np.asanyarray([times] * self.num_groups)
-
-        if start_times is not None:
-            if isinstance(dt_unit, str):
-                dt_unit = np.datetime64(1, dt_unit)
-            times = times - start_times
-            if dt_unit is not None:
-                times = times // dt_unit  # todo: validate int?
-
-        assert len(times.shape) == 1
-        assert times.shape[0] == self.num_groups
-        idx = (torch.arange(self.num_groups), torch.as_tensor(times, dtype=torch.int64))
-        return self._subset(idx, collapsed_dim=1)
-
     def __iter__(self) -> Iterator[Tensor]:
         # so that we can do ``mean, cov = predictions``
         yield self.means
@@ -517,27 +522,17 @@ class Predictions(nn.Module):
         return self.means.detach().numpy()
 
     def __getitem__(self, item: Tuple) -> 'Predictions':
-        return self._subset(item)
-
-    def _subset(self, idx: Tuple, collapsed_dim: Optional[int] = None) -> 'Predictions':
-        """
-        Helper for __getitem__ and get_timeslice
-        """
-        if collapsed_dim is not None:
-            assert collapsed_dim < 2
         kwargs = {
-            'state_means': self.state_means[idx],
-            'state_covs': self.state_covs[idx],
-            'H': self.H[idx],
-            'R': self.R[idx]
+            'state_means': self.state_means[item],
+            'state_covs': self.state_covs[item],
+            'H': self.H[item],
+            'R': self.R[item]
         }
         if self.update_means is not None:
-            kwargs.update({'update_means': self.update_means[idx], 'update_covs': self.update_covs[idx]})
+            kwargs.update({'update_means': self.update_means[item], 'update_covs': self.update_covs[item]})
         cls = type(self)
         for k in list(kwargs):
             expected_shape = getattr(self, k).shape
-            if collapsed_dim is not None:
-                kwargs[k] = kwargs[k].unsqueeze(collapsed_dim)
             v = kwargs[k]
             if len(v.shape) != len(expected_shape):
                 raise TypeError(f"Expected {k} to have shape {expected_shape} but got {v.shape}.")
