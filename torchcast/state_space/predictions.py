@@ -167,18 +167,18 @@ class Predictions(nn.Module):
             raise ValueError("`nans` in `update_covs`")
         return self._update_covs
 
-    def get_timeslice(self,
-                      times: Union[np.ndarray, np.datetime64],
-                      n_timesteps: int,
-                      **kwargs) -> 'Predictions':
+    def with_new_start_times(self,
+                             start_times: Union[np.ndarray, np.datetime64],
+                             n_timesteps: int,
+                             **kwargs) -> 'Predictions':
         """
-        :param times: An array/sequence containing the start time for each group; or a single datetime to apply to all
-         groups. If the model/predictions are dateless (no dt_unit) then simply an array of indices.
+        :param start_times: An array/sequence containing the start time for each group; or a single datetime to apply
+         to all groups. If the model/predictions are dateless (no dt_unit) then simply an array of indices.
         :param n_timesteps: Each group will be sliced to this many timesteps, so times is start and times + n_timesteps
         is end.
         :return: A new ``Predictions`` object, with the state and measurement tensors sliced to the given times.
         """
-        start_indices = self._standardize_times(times=times, *kwargs)
+        start_indices = self._standardize_times(times=start_times, *kwargs)
         time_indices = np.arange(n_timesteps)[None, ...] + start_indices[:, None, ...]
         return self[np.arange(self.num_groups)[:, None, ...], time_indices]
 
@@ -200,7 +200,7 @@ class Predictions(nn.Module):
         :return: A tuple of state-means and state-covs, appropriate for forecasting by passing as `initial_state`
          for :func:`StateSpaceModel.forward()`.
         """
-        preds = self.get_timeslice(times=times, n_timesteps=1, **kwargs)
+        preds = self.with_new_start_times(start_times=times, n_timesteps=1, **kwargs)
         if type_.startswith('pred'):
             return preds.state_means.squeeze(1), preds.state_covs.squeeze(1)
         elif type_.startswith('update'):

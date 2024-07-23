@@ -157,15 +157,19 @@ class TimeSeriesDataset(TensorDataset):
         return train_dataset, val_dataset
 
     def with_new_start_times(self,
-                             start_times: Union[np.ndarray, Sequence],
+                             start_times: Union[datetime.datetime, np.datetime64, np.ndarray, Sequence],
+                             n_timesteps: Optional[int] = None,
                              quiet: bool = False) -> 'TimeSeriesDataset':
         """
         Subset a :class:`.TimeSeriesDataset` so that some/all of the groups have later start times.
 
-        :param start_times: An array/list of new datetimes.
+        :param start_times: An array/list of new datetimes, or a single datetime that will be used for all groups.
+        :param n_timesteps: The number of timesteps in the output (nan-padded).
         :param quiet: If True, will not emit a warning for groups having only `nan` after the start-time.
         :return: A new :class:`.TimeSeriesDataset`.
         """
+        if isinstance(start_times, (datetime.datetime, np.datetime64)):
+            start_times = np.full(len(self.group_names), start_times, dtype='datetime64[ns]' if self.dt_unit else 'int')
         new_tensors = []
         for i, tens in enumerate(self.tensors):
             times = self.times(i)
@@ -191,6 +195,14 @@ class TimeSeriesDataset(TensorDataset):
                     end_idx = true1d_idx(~all_nan).max() + 1
                 new_tens.append(g_tens[:end_idx].unsqueeze(0))
             new_tens = ragged_cat(new_tens, ragged_dim=1, cat_dim=0)
+            if n_timesteps:
+                if new_tens.shape[1] > n_timesteps:
+                    new_tens = new_tens[:, :n_timesteps, :]
+                else:
+                    tmp = torch.empty((new_tens.shape[0], n_timesteps, new_tens.shape[2]), dtype=new_tens.dtype)
+                    tmp[:] = float('nan')
+                    tmp[:, :new_tens.shape[1], :] = new_tens
+                    new_tens = tmp
             new_tensors.append(new_tens)
         return type(self)(
             *new_tensors,
@@ -643,7 +655,6 @@ def complete_times(data: 'DataFrame',
 
     if global_max:
         warn("`global_max=True` is deprecated, use `max_dt_colname` instead.", DeprecationWarning)
-
 
     df_group_summary = (data
                         .groupby(group_colnames)
