@@ -55,34 +55,31 @@ class EKFStep(KalmanStep):
 
 class EKFPredictions(Predictions):
     @classmethod
-    def inverse_transform(cls,
-                          x: Union[Tensor, np.ndarray, pd.Series],
-                          std: Optional[Union[Tensor, np.ndarray, pd.Series]] = None,
-                          conf: float = .95) -> Union[Tensor, pd.DataFrame]:
+    def _adjust_measured_mean(cls,
+                              x: Union[Tensor, np.ndarray, pd.Series],
+                              std: Optional[Union[Tensor, np.ndarray, pd.Series]] = None,
+                              conf: float = .95) -> Union[Tensor, pd.DataFrame]:
+        """
+        In our EKF, the measured-mean is ``custom_fun(H @ state)``.
+
+        - If only ``x`` (``= H @ state``) is passed, this method should apply the custom fun -- supporting x that is
+          either a tensor (with grad), a numpy array, or a pandas series.
+        - If both ``x`` and ``std`` is passed, this method should return a dataframe with mean, lower, upper columns.
+          The mean column should have any bias-correction applied, and the lower/upper should be conf% confidence
+          bounds (e.g. for plotting).
+        """
         raise NotImplementedError
 
     def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
         raise NotImplementedError
 
-    def _sample(self, means: Tensor, covs: Tensor, sample_shape=torch.Size()) -> Tensor:
-        samples = super()._sample(
-            means=means,
-            covs=covs,
-            sample_shape=sample_shape
-        )
-        return self.inverse_transform(samples)
-
-    def _inverse_transform_tensors(self, means, covs) -> np.ndarray:
-        means = means.numpy()
-        stds = torch.diagonal(covs, dim1=-1, dim2=-2).sqrt().numpy()
-        out = []
-        for i, m in enumerate(self.measures):
-            out.append(self.link(means[..., i], stds[..., i]))
-        return np.stack(out, -1)
-
     def __array__(self) -> np.ndarray:
         with torch.no_grad():
-            return self._inverse_transform_tensors(self.means, self.covs)
+            stds = torch.diagonal(self.covs, dim1=-1, dim2=-2).sqrt()
+            out = []
+            for i, m in enumerate(self.measures):
+                out.append(self._adjust_measured_mean(self.means[..., i], stds[..., i]))
+            return torch.stack(out, -1).numpy()
 
     def to_dataframe(self,
                      dataset: Union[TimeSeriesDataset, dict],
@@ -99,7 +96,7 @@ class EKFPredictions(Predictions):
             conf=None,
             multi=multi
         )
-        df[['mean', 'lower', 'upper']] = self.inverse_transform(df['mean'], df.pop('std'), conf=conf)
+        df[['mean', 'lower', 'upper']] = self._adjust_measured_mean(df['mean'], df.pop('std'), conf=conf)
         return df
 
     @classmethod
@@ -112,7 +109,7 @@ class EKFPredictions(Predictions):
              **kwargs) -> pd.DataFrame:
 
         if 'upper' not in df.columns and 'std' in df.columns:
-            df[['mean', 'lower', 'upper']] = cls.inverse_transform(df['mean'], df['std'])
+            df[['mean', 'lower', 'upper']] = cls._adjust_measured_mean(df['mean'], df['std'])
 
         return super().plot(
             df=df,

@@ -66,7 +66,7 @@ class KalmanStep(StateSpaceStep):
         Ht = H.permute(0, 2, 1)
 
         # residuals:
-        if 'measured_mean' in kwargs: # calculated by super
+        if 'measured_mean' in kwargs:  # calculated by super
             measured_mean = kwargs['measured_mean']
         else:
             measured_mean = (H @ mean.unsqueeze(-1)).squeeze(-1)
