@@ -85,7 +85,7 @@ class TestTraining(unittest.TestCase):
         kf_generator = _make_kf()
         with torch.no_grad():
             sim = kf_generator.simulate(out_timesteps=num_times, num_groups=num_groups, X=X)
-            y = sim.sample()
+            y = torch.distributions.MultivariateNormal(*sim).sample()
         assert not y.requires_grad
 
         # train:

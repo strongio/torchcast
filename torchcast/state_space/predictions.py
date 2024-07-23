@@ -575,7 +575,7 @@ class Predictions(nn.Module):
             'H': self.H[item],
             'R': self.R[item]
         }
-        if self.update_means is not None:
+        if self._update_means is not None:
             kwargs.update({'update_means': self.update_means[item], 'update_covs': self.update_covs[item]})
         cls = type(self)
         for k in list(kwargs):

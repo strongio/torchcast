@@ -1,7 +1,7 @@
 import copy
 import itertools
 from collections import defaultdict
-from typing import Callable, Optional, Dict
+from typing import Callable, Dict
 from unittest import TestCase, expectedFailure
 
 import torch
@@ -72,7 +72,6 @@ class TestKalmanFilter(TestCase):
         self.assertFalse(torch.isnan(obs_covs).any())
         self.assertEqual(tuple(obs_means.shape), (5, ntimes, ndim))
 
-    @expectedFailure # for now, no longer supporting jit
     @torch.no_grad()
     def test_jit(self):
         from torchcast.state_space import Predictions
@@ -228,7 +227,7 @@ class TestKalmanFilter(TestCase):
             ],
             measures=['y']
         )
-        kf._scale_by_measure_var = False
+        kf._get_measure_scaling = lambda: torch.ones(2)
 
         kf.state_dict()['initial_mean'][:] = torch.tensor([1.5, -0.5])
         kf.state_dict()['measure_covariance.cholesky_log_diag'][0] = np.log(.1 ** .5)
@@ -348,7 +347,7 @@ class TestKalmanFilter(TestCase):
             processes=[Season(id='s1')],
             measures=['y']
         )
-        kf._scale_by_measure_var = False
+        kf._get_measure_scaling = lambda: torch.ones(1)
         data = torch.arange(7).view(1, -1, 1).to(torch.float32)
         for init_state in [0., 1.]:
             kf.state_dict()['initial_mean'][:] = torch.ones(1) * init_state
