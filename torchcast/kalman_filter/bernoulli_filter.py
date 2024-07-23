@@ -1,5 +1,5 @@
 import functools
-from typing import Dict, Tuple, Optional, Sequence, Iterable, List, TYPE_CHECKING, Union
+from typing import Tuple, Optional, Sequence, List, TYPE_CHECKING, Union
 
 import numpy as np
 import pandas as pd
@@ -8,13 +8,10 @@ from scipy.special import expit
 import torch
 from torch import Tensor, nn
 
-from functools import cached_property
-
 from torchcast.covariance import Covariance
 from torchcast.kalman_filter import KalmanFilter
 from torchcast.kalman_filter.ekf import EKFStep, EKFPredictions
 from torchcast.process import Process
-from torchcast.state_space import StateSpaceModel
 from torchcast.utils import conf2bounds
 
 if TYPE_CHECKING:
@@ -132,26 +129,14 @@ class BernoulliPredictions(EKFPredictions):
     def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
         num_samples = 600  # TODO: how to allow user to customize?
         torch.manual_seed(0)  # TODO: this is a hack; instead need to sample white noise once per training session
-        samples = super()._sample(
-            means=means,
-            covs=covs,
-            sample_shape=(num_samples,)
-        )
-        return torch.distributions.Bernoulli(probs=samples).log_prob(obs).mean(0).sum(-1)
-
-    def _sample(self, means: Tensor, covs: Tensor, sample_shape=torch.Size()) -> Tensor:
-        samples = super()._sample(
-            means=means,
-            covs=covs,
-            sample_shape=sample_shape
-        )
-        return torch.distributions.Bernoulli(probs=samples).sample()
+        samples = torch.distributions.MultivariateNormal(means, covs).rsample(sample_shape=(num_samples,))
+        return torch.distributions.Bernoulli(logits=samples).log_prob(obs).mean(0).sum(-1)
 
     @classmethod
-    def inverse_transform(cls,
-                          x: Union[Tensor, np.ndarray, pd.Series],
-                          std: Optional[Union[Tensor, np.ndarray, pd.Series]] = None,
-                          conf: float = .95) -> Union[Tensor, pd.DataFrame]:
+    def _adjust_measured_mean(cls,
+                              x: Union[Tensor, np.ndarray, pd.Series],
+                              std: Optional[Union[Tensor, np.ndarray, pd.Series]] = None,
+                              conf: float = .95) -> Union[Tensor, pd.DataFrame]:
         if hasattr(x, 'to_numpy'):
             x = x.to_numpy()
 
