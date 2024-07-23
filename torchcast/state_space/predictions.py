@@ -11,7 +11,7 @@ import numpy as np
 from functools import cached_property
 
 from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims
-from torchcast.utils import conf2bounds, TimeSeriesDataset, get_outlier_multi
+from torchcast.utils import conf2bounds, TimeSeriesDataset
 
 if TYPE_CHECKING:
     from pandas import DataFrame
@@ -228,11 +228,12 @@ class Predictions(nn.Module):
             self._means, self._covs = self.observe(self.state_means, self.state_covs, self.R, self.H)
         return self._covs
 
-    def log_prob(self, obs: Tensor) -> Tensor:
+    def log_prob(self, obs: Tensor, weights: Optional[Tensor] = None) -> Tensor:
         """
         Compute the log-probability of data (e.g. data that was originally fed into the ``StateSpaceModel``).
 
         :param obs: A Tensor that could be used in the ``StateSpaceModel`` forward pass.
+        :param weights: If specified, will be used to weight the log-probability of each group X timestep.
         :return: A tensor with one element for each group X timestep indicating the log-probability.
         """
         assert len(obs.shape) == 3
@@ -244,20 +245,23 @@ class Predictions(nn.Module):
         means_flat = self.means.view(-1, n_measure_dim)
         covs_flat = self.covs.view(-1, n_measure_dim, n_measure_dim)
 
-        # if the model used an outlier threshold, under-weight outliers
-        weights = torch.ones(obs_flat.shape[0], dtype=self.state_means.dtype, device=self.state_means.device)
-        if self.outlier_threshold:
-            obs_flat = obs_flat.clone()
-            for gt_idx, valid_idx in get_nan_groups(torch.isnan(obs_flat)):
-                if valid_idx is None:
-                    multi = get_outlier_multi(
-                        resid=obs_flat[gt_idx] - means_flat[gt_idx],
-                        cov=covs_flat[gt_idx],
-                        outlier_threshold=torch.as_tensor(self.outlier_threshold)
-                    )
-                    weights[gt_idx] = 1 / multi
-                else:
-                    raise NotImplemented
+        # # if the model used an outlier threshold, under-weight outliers
+        if weights is None:
+            weights = torch.ones(obs_flat.shape[0], dtype=self.state_means.dtype, device=self.state_means.device)
+        else:
+            weights = weights.reshape(-1, n_measure_dim)
+        # if self.outlier_threshold:
+        #     obs_flat = obs_flat.clone()
+        #     for gt_idx, valid_idx in get_nan_groups(torch.isnan(obs_flat)):
+        #         if valid_idx is None:
+        #             multi = get_outlier_multi(
+        #                 resid=obs_flat[gt_idx] - means_flat[gt_idx],
+        #                 cov=covs_flat[gt_idx],
+        #                 outlier_threshold=torch.as_tensor(self.outlier_threshold)
+        #             )
+        #             weights[gt_idx] /= multi
+        #         else:
+        #             raise NotImplemented
 
         state_means_flat = self.state_means.view(-1, n_state_dim)
         state_covs_flat = self.state_covs.view(-1, n_state_dim, n_state_dim)

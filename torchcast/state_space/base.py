@@ -2,6 +2,7 @@ from collections import defaultdict
 from typing import Tuple, List, Optional, Sequence, Dict, Iterable, Callable, Union, Type
 from warnings import warn
 
+import numpy as np
 import torch
 from torch import nn, Tensor
 
@@ -19,26 +20,14 @@ class StateSpaceModel(nn.Module):
     :param processes: A list of :class:`.Process` modules.
     :param measures: A list of strings specifying the names of the dimensions of the time-series being measured.
     :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
-    :param outlier_threshold: If specified, used as a threshold-for outlier under-weighting during the `update` step,
-     using mahalanobis distance; outliers will also be under-weighted when evaluating the ``log_prob()`` of the output
-     ``Predictions``.
-    :param outlier_burnin: If outlier_threshold is specified, this specifies the number of steps to wait before
-     starting to reject outliers.
     """
     ss_step_cls: Type[StateSpaceStep]
 
     def __init__(self,
                  processes: Sequence[Process],
                  measures: Optional[Sequence[str]],
-                 measure_covariance: Covariance,
-                 outlier_threshold: float = 0.0,
-                 outlier_burnin: Optional[int] = None):
+                 measure_covariance: Covariance):
         super().__init__()
-
-        self.outlier_threshold = outlier_threshold
-        if self.outlier_threshold and outlier_burnin is None:
-            raise ValueError("If `outlier_threshold` is set, `outlier_burnin` must be set as well.")
-        self.outlier_burnin = outlier_burnin or 0
 
         if isinstance(measures, str):
             measures = [measures]
@@ -121,9 +110,6 @@ class StateSpaceModel(nn.Module):
         if optimizer is None:
             optimizer = torch.optim.LBFGS([p for p in self.parameters() if p.requires_grad],
                                           max_iter=10, line_search_fn='strong_wolfe', lr=.5)
-
-        if self.outlier_threshold and verbose:
-            print("``outlier_threshold`` is experimental")
 
         self.set_initial_values(y, n=set_initial_values, verbose=verbose > 1)
 
@@ -435,6 +421,8 @@ class StateSpaceModel(nn.Module):
          Alternatively, we could generate 24-hour-ahead predictions at every 24th hour, in which case we'd save
          predictions 1-24. The former corresponds to every_step=True, the latter to every_step=False. If n_step=1
          (the default) then this option has no effect.
+        :param simulate: If True, will simulate state-trajectories and return a ``Predictions`` object with zero state
+         covariance.
         :return: predictions (tuple of (means,covs)), updates (tuple of (means,covs)), R, H
         """
         assert n_step > 0
@@ -484,9 +472,7 @@ class StateSpaceModel(nn.Module):
             cov1s.append(cov1step)
             if t < len(inputs):
                 update_kwargs_t = {k: v[t] for k, v in update_kwargs.items()}
-                update_kwargs_t['outlier_threshold'] = torch.tensor(
-                    self.outlier_threshold if t > self.outlier_burnin else 0.
-                )
+                # update_kwargs_t['outlier_threshold'] = torch.tensor(outlier_threshold if t > outlier_burnin else 0.)
                 if simulate:
                     meanu = torch.distributions.MultivariateNormal(mean1step, cov1step).sample()
                     covu = torch.eye(meanu.shape[-1]) * 1e-6
@@ -515,7 +501,7 @@ class StateSpaceModel(nn.Module):
             # t1: time of 1step
             tu = t1 - 1
 
-            # - if every_step, we run this loop ever iter
+            # - if every_step, we run this loop every iter
             # - if not every_step, we run this loop every nth iter
             if every_step or (t1 % n_step) == 0:
                 meanp, covp = mean1s[t1], cov1s[t1]  # already had to generate h=1 above
@@ -637,14 +623,13 @@ class StateSpaceModel(nn.Module):
          array datetimes here. Otherwise you can pass an array of integers (or leave `None` if there are no seasonal
          processes).
         :param num_sims: The number of state-trajectories to simulate per group.
-        :param num_groups: The number of groups.
-        :param progress: Should a progress-bar be displayed? Requires `tqdm`.
+        :param num_groups: The number of groups; if `None` will be inferred from the shape of `initial_state` and/or
+         ``start_offsets``.
         :param kwargs: Further arguments passed to the `processes`.
-        :return: A :class:`.Simulations` object with a :func:`Simulations.sample()` method.
+        :return: A :class:`.Predictions` object with zero state-covariance.
         """
 
         if num_groups is not None:
-
             if start_offsets is None:
                 start_offsets = [0] * num_groups
             elif len(start_offsets) != num_groups:
