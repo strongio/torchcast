@@ -636,13 +636,14 @@ class StateSpaceModel(nn.Module):
         Generate simulated state-trajectories from your model.
 
         :param out_timesteps: The number of timesteps to generate in the output.
-        :param initial_state: The initial state of the system: a tuple of `mean`, `cov`.
+        :param initial_state: The initial state of the system: a tuple of `mean`, `cov`. Can be obtained from previous
+         model-predictions by calling ``get_state_at_times()`` on the output predictions.
         :param start_offsets: If your model includes seasonal processes, then these needs to know the start-time for
-         each group in ``input``. If you passed ``dt_unit`` when constructing those processes, then you should pass an
-         array datetimes here. Otherwise you can pass an array of integers (or leave `None` if there are no seasonal
-         processes).
-        :param num_sims: The number of state-trajectories to simulate per group. The output will be layed out so that
-         groups are contiguous (i.e. ``new_group_names = np.tile(group_names, num_sims)``).
+         each group in ``initial_state``. If you passed ``dt_unit`` when constructing those processes, then you should
+         pass an array of datetimes here, otherwise an array of ints. If there are no seasonal processes you can omit.
+        :param num_sims: The number of state-trajectories to simulate per group. The output will be laid out in blocks
+         (e.g. if there are 10 groups, the first ten elements of the output are sim 1, the next 10 elements are sim 2,
+         etc.). Tensors associated with this output can be reshaped with ``tensor.reshape(num_sims, num_groups, ...)``.
         :param num_groups: The number of groups; if `None` will be inferred from the shape of `initial_state` and/or
          ``start_offsets``.
         :param kwargs: Further arguments passed to the `processes`.
