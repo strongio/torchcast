@@ -1,20 +1,19 @@
-import datetime
+from dataclasses import dataclass, fields
 from typing import Tuple, Union, Optional, Dict, Iterator, Sequence, TYPE_CHECKING
 from warnings import warn
 
 import torch
-
 from torch import nn, Tensor
 
 import numpy as np
+import pandas as pd
 
 from functools import cached_property
 
 from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims
-from torchcast.utils import conf2bounds, TimeSeriesDataset, get_outlier_multi
+from torchcast.utils import conf2bounds, TimeSeriesDataset
 
 if TYPE_CHECKING:
-    from pandas import DataFrame
     from torchcast.state_space import StateSpaceModel
 
 
@@ -29,7 +28,7 @@ class Predictions(nn.Module):
                  state_covs: Sequence[Tensor],
                  R: Sequence[Tensor],
                  H: Sequence[Tensor],
-                 model: Union['StateSpaceModel', dict],
+                 model: Union['StateSpaceModel', 'StateSpaceModelMetadata'],
                  update_means: Optional[Sequence[Tensor]] = None,
                  update_covs: Optional[Sequence[Tensor]] = None):
         super().__init__()
@@ -47,26 +46,62 @@ class Predictions(nn.Module):
         self._R = R
 
         # some model attributes are needed for `log_prob` method and for names for plotting
-        if not isinstance(model, dict):
+        if not isinstance(model, StateSpaceModelMetadata):
             all_state_elements = []
             for pid in model.processes:
                 process = model.processes[pid]
                 for state_element in process.state_elements:
                     all_state_elements.append((pid, state_element))
-            model = {
-                'measures': model.measures,
-                'all_state_elements': all_state_elements,
-                'outlier_threshold': model.outlier_threshold
-            }
-        self.measures = model['measures']
-        self.all_state_elements = model['all_state_elements']
-        self.outlier_threshold = model['outlier_threshold']
+            self._model_attributes = StateSpaceModelMetadata(
+                measures=model.measures,
+                all_state_elements=all_state_elements,
+            )
 
         # for lazily populated properties:
         self._means = self._covs = None
 
-        # useful to have:
+        # metadata
         self.num_groups, self.num_timesteps, self.state_size = self.state_means.shape
+        self._dataset_metadata = None
+
+    def set_metadata(self,
+                     dataset: Optional[TimeSeriesDataset] = None,
+                     group_names: Optional[Sequence[str]] = None,
+                     start_offsets: Optional[np.ndarray] = None,
+                     group_colname: str = 'group',
+                     time_colname: str = 'time',
+                     dt_unit: Optional[str] = None) -> 'Predictions':
+        if dataset is not None:
+            group_names = dataset.group_names
+            start_offsets = dataset.start_offsets
+            dt_unit = dataset.dt_unit
+
+        if isinstance(dt_unit, str):
+            dt_unit = np.timedelta64(1, dt_unit)
+
+        if group_names is not None and len(group_names) != self.num_groups:
+            raise ValueError("`group_names` must have the same length as the number of groups.")
+        if start_offsets is not None and len(start_offsets) != self.num_groups:
+            raise ValueError("`start_offsets` must have the same length as the number of groups.")
+
+        kwargs = {
+            'group_names': group_names,
+            'start_offsets': start_offsets,
+            'dt_unit': dt_unit,
+            'group_colname': group_colname,
+            'time_colname': time_colname
+        }
+        if self._dataset_metadata is not None:
+            self._dataset_metadata.update(**kwargs)
+        else:
+            self._dataset_metadata = DatasetMetadata(**kwargs)
+        return self
+
+    @property
+    def dataset_metadata(self) -> 'DatasetMetadata':
+        if self._dataset_metadata is None:
+            raise RuntimeError("Metadata not set. Pass the dataset or call `set_metadata()`.")
+        return self._dataset_metadata
 
     @cached_property
     def R(self) -> torch.Tensor:
@@ -79,6 +114,10 @@ class Predictions(nn.Module):
         if not isinstance(self._H, torch.Tensor):
             self._H = torch.stack(self._H, 1)
         return self._H
+
+    @property
+    def measures(self) -> Sequence[str]:
+        return self._model_attributes.measures
 
     @cached_property
     def state_means(self) -> torch.Tensor:
@@ -117,17 +156,75 @@ class Predictions(nn.Module):
     @cached_property
     def update_covs(self) -> Optional[torch.Tensor]:
         if self._update_covs is None:
-            return None
+            raise RuntimeError(
+                "Cannot get ``update_covs`` because update mean/cov was not passed when creating this "
+                "``Predictions`` object. This usually means you have to include ``include_updates_in_output=True`` "
+                "when calling ``StateSpaceModel()``."
+            )
         if not isinstance(self._update_covs, torch.Tensor):
             self._update_covs = torch.stack(self._update_covs, 1)
         if torch.isnan(self._update_covs).any():
             raise ValueError("`nans` in `update_covs`")
         return self._update_covs
 
+    def get_timeslice(self,
+                      times: Union[np.ndarray, np.datetime64],
+                      n_timesteps: int,
+                      **kwargs) -> 'Predictions':
+        """
+        :param times: An array/sequence containing the start time for each group; or a single datetime to apply to all
+         groups. If the model/predictions are dateless (no dt_unit) then simply an array of indices.
+        :param n_timesteps: Each group will be sliced to this many timesteps, so times is start and times + n_timesteps
+        is end.
+        :return: A new ``Predictions`` object, with the state and measurement tensors sliced to the given times.
+        """
+        start_indices = self._standardize_times(times=times, *kwargs)
+        time_indices = np.arange(n_timesteps)[None, ...] + start_indices[:, None, ...]
+        return self[np.arange(self.num_groups)[:, None, ...], time_indices]
+
+    def get_state_at_times(self,
+                           times: Union[np.ndarray, np.datetime64],
+                           type_: str = 'update',
+                           **kwargs) -> Tuple[Tensor, Tensor]:
+        """
+        For each group, get the state (tuple of (mean, cov)) for a timepoint. This is often useful since predictions
+        are right-aligned and padded, so that the final prediction for each group is arbitrarily padded and does not
+        correspond to a timepoint of interest -- e.g. for simulation (i.e., calling
+        ``StateSpaceModel.simulate(initial_state=get_state_at_times(...))``).
+
+        :param times: An array/sequence containing the time for each group; or a single datetime to apply to all groups.
+          If the model/predictions are dateless (no dt_unit) then simply an array of indices
+        :param type_: What type of state? Since this method is typically used for getting an `initial_state` for
+         another call to :func:`StateSpaceModel.forward()`, this should generally be 'update' (the default); other
+         option is 'prediction'.
+        :return: A tuple of state-means and state-covs, appropriate for forecasting by passing as `initial_state`
+         for :func:`StateSpaceModel.forward()`.
+        """
+        preds = self.get_timeslice(times=times, n_timesteps=1, **kwargs)
+        if type_.startswith('pred'):
+            return preds.state_means.squeeze(1), preds.state_covs.squeeze(1)
+        elif type_.startswith('update'):
+            return preds.update_means.squeeze(1), preds.update_covs.squeeze(1)
+        else:
+            raise ValueError("Unrecognized `type_`, expected 'prediction' or 'update'.")
+
     def _standardize_times(self,
                            times: Union[np.ndarray, np.datetime64],
                            start_offsets: Optional[np.ndarray] = None,
                            dt_unit: Optional[str] = None) -> np.ndarray:
+        if start_offsets is not None:
+            warn(
+                "Passing `start_offsets` as an argument is deprecated, first call ``set_metadata()``",
+                DeprecationWarning
+            )
+            start_offsets = self.dataset_metadata.start_offsets or start_offsets
+        if dt_unit is not None:
+            warn(
+                "Passing `dt_unit` as an argument is deprecated, first call ``set_metadata()``",
+                DeprecationWarning
+            )
+            dt_unit = self.dataset_metadata.dt_unit or dt_unit
+
         if not isinstance(times, (list, tuple, np.ndarray)):
             times = [times] * self.num_groups
         times = np.asanyarray(times)
@@ -141,61 +238,8 @@ class Predictions(nn.Module):
 
         assert len(times.shape) == 1
         assert times.shape[0] == self.num_groups
+
         return times
-
-    def get_timeslice(self,
-                      times: Union[np.ndarray, np.datetime64],
-                      n_timesteps: int,
-                      start_offsets: Optional[np.ndarray] = None,
-                      dt_unit: Optional[str] = None) -> 'Predictions':
-        """
-        :param times: Either (a) indices corresponding to each group (e.g. ``times[0]`` corresponds to the timestep to
-         take for the 0th group, ``times[1]`` the timestep to take for the 1th group, etc.) or (b) if ``start_times``
-         is passed, an array of datetimes. Will also support a single datetime.
-        :param start_offsets: If ``times`` is an array of datetimes, must also pass ``start_datetimes``, i.e. the
-         datetimes at which each group started.
-        :param dt_unit: If ``times`` is an array of datetimes, must also pass ``dt_unit``, i.e. a
-         :class:`numpy.timedelta64` that indicates how much time passes at each timestep.
-        :param n_timesteps: The number of timesteps to take.
-        :return: A new ``Predictions`` object, with the state and measurement tensors sliced to the given
-            ``times``/``n_timesteps``.
-        """
-        start_indices = self._standardize_times(times=times, start_offsets=start_offsets, dt_unit=dt_unit)
-        time_indices = np.arange(n_timesteps)[None, ...] + start_indices[:, None, ...]
-        return self[np.arange(self.num_groups)[:, None, ...], time_indices]
-
-    def get_state_at_times(self,
-                           times: Union[np.ndarray, np.datetime64],
-                           start_times: Optional[np.ndarray] = None,
-                           dt_unit: Optional[str] = None,
-                           type_: str = 'update') -> Tuple[Tensor, Tensor]:
-        """
-        For each group, get the state (tuple of (mean, cov)) for a timepoint. This is often useful since predictions
-        are right-aligned and padded, so that the final prediction for each group is arbitrarily padded and does not
-        correspond to a timepoint of interest -- e.g. for forecasting (i.e., calling
-        ``StateSpaceModel.forward(initial_state=get_state_at_times(...))``).
-
-        :param times: Either (a) indices corresponding to each group (e.g. ``times[0]`` corresponds to the timestep to
-         take for the 0th group, ``times[1]`` the timestep to take for the 1th group, etc.) or (b) if ``start_times``
-         is passed, an array of datetimes. Will also support a single datetime.
-        :param start_offsets: If ``times`` is an array of datetimes, must also pass ``start_datetimes``, i.e. the
-         datetimes at which each group started.
-        :param dt_unit: If ``times`` is an array of datetimes, must also pass ``dt_unit``, i.e. a
-         :class:`numpy.timedelta64` that indicates how much time passes at each timestep. (times-start_times)/dt_unit
-         should be an array of integers.
-        :param type_: What type of state? Since this method is typically used for getting an `initial_state` for
-         another call to :func:`StateSpaceModel.forward()`, this should generally be 'update' (the default); other
-         option is 'prediction'.
-        :return: A tuple of state-means and state-covs, appropriate for forecasting by passing as `initial_state`
-         for :func:`StateSpaceModel.forward()`.
-        """
-        preds = self.get_timeslice(times=times, n_timesteps=1, start_offsets=start_times, dt_unit=dt_unit)
-        if type_.startswith('pred'):
-            return preds.state_means.squeeze(1), preds.state_covs.squeeze(1)
-        elif type_.startswith('update'):
-            return preds.update_means.squeeze(1), preds.update_covs.squeeze(1)
-        else:
-            raise ValueError("Unrecognized `type_`, expected 'prediction' or 'update'.")
 
     @classmethod
     def observe(cls, state_means: Tensor, state_covs: Tensor, R: Tensor, H: Tensor) -> Tuple[Tensor, Tensor]:
@@ -228,11 +272,12 @@ class Predictions(nn.Module):
             self._means, self._covs = self.observe(self.state_means, self.state_covs, self.R, self.H)
         return self._covs
 
-    def log_prob(self, obs: Tensor) -> Tensor:
+    def log_prob(self, obs: Tensor, weights: Optional[Tensor] = None) -> Tensor:
         """
         Compute the log-probability of data (e.g. data that was originally fed into the ``StateSpaceModel``).
 
         :param obs: A Tensor that could be used in the ``StateSpaceModel`` forward pass.
+        :param weights: If specified, will be used to weight the log-probability of each group X timestep.
         :return: A tensor with one element for each group X timestep indicating the log-probability.
         """
         assert len(obs.shape) == 3
@@ -244,20 +289,23 @@ class Predictions(nn.Module):
         means_flat = self.means.view(-1, n_measure_dim)
         covs_flat = self.covs.view(-1, n_measure_dim, n_measure_dim)
 
-        # if the model used an outlier threshold, under-weight outliers
-        weights = torch.ones(obs_flat.shape[0], dtype=self.state_means.dtype, device=self.state_means.device)
-        if self.outlier_threshold:
-            obs_flat = obs_flat.clone()
-            for gt_idx, valid_idx in get_nan_groups(torch.isnan(obs_flat)):
-                if valid_idx is None:
-                    multi = get_outlier_multi(
-                        resid=obs_flat[gt_idx] - means_flat[gt_idx],
-                        cov=covs_flat[gt_idx],
-                        outlier_threshold=torch.as_tensor(self.outlier_threshold)
-                    )
-                    weights[gt_idx] = 1 / multi
-                else:
-                    raise NotImplemented
+        # # if the model used an outlier threshold, under-weight outliers
+        if weights is None:
+            weights = torch.ones(obs_flat.shape[0], dtype=self.state_means.dtype, device=self.state_means.device)
+        else:
+            weights = weights.reshape(-1, n_measure_dim)
+        # if self.outlier_threshold:
+        #     obs_flat = obs_flat.clone()
+        #     for gt_idx, valid_idx in get_nan_groups(torch.isnan(obs_flat)):
+        #         if valid_idx is None:
+        #             multi = get_outlier_multi(
+        #                 resid=obs_flat[gt_idx] - means_flat[gt_idx],
+        #                 cov=covs_flat[gt_idx],
+        #                 outlier_threshold=torch.as_tensor(self.outlier_threshold)
+        #             )
+        #             weights[gt_idx] /= multi
+        #         else:
+        #             raise NotImplemented
 
         state_means_flat = self.state_means.view(-1, n_state_dim)
         state_covs_flat = self.state_covs.view(-1, n_state_dim, n_state_dim)
@@ -290,15 +338,16 @@ class Predictions(nn.Module):
         return torch.distributions.MultivariateNormal(means, covs, validate_args=False).log_prob(obs)
 
     def to_dataframe(self,
-                     dataset: Union[TimeSeriesDataset, dict],
+                     dataset: Optional[TimeSeriesDataset] = None,
                      type: str = 'predictions',
-                     group_colname: str = 'group',
-                     time_colname: str = 'time',
+                     group_colname: Optional[str] = None,
+                     time_colname: Optional[str] = None,
                      conf: Optional[float] = .95,
-                     multi: Optional[float] = False) -> 'DataFrame':
+                     **kwargs) -> pd.DataFrame:
         """
-        :param dataset: Either a :class:`.TimeSeriesDataset`, or a dictionary with 'start_times', 'group_names', &
-         'dt_unit'
+        :param dataset: The dataset which generated the predictions. If not supplied, will use the metadata set at
+         prediction time, but the group-names will be replaced by dummy group names, and the output will not include
+         actuals.
         :param type: Either 'predictions' or 'components'.
         :param group_colname: Column-name for 'group'
         :param time_colname: Column-name for 'time'
@@ -307,6 +356,7 @@ class Predictions(nn.Module):
         :return: A pandas DataFrame with group, 'time', 'measure', 'mean', 'lower', 'upper'. For ``type='components'``
          additionally includes: 'process' and 'state_element'.
         """
+        multi = kwargs.pop('multi', False)
         if multi is not False:
             msg = "`multi` is deprecated, please use `conf` instead."
             if multi is None:  # old way of specifying "just return std", for backwards-compatibility
@@ -315,42 +365,34 @@ class Predictions(nn.Module):
             else:
                 raise TypeError(msg)
 
-        from pandas import concat
-
-        if isinstance(dataset, TimeSeriesDataset):
-            batch_info = {
-                'start_times': dataset.start_times,
-                'group_names': dataset.group_names,
-                'named_tensors': {},
-                'dt_unit': dataset.dt_unit
-            }
+        named_tensors = {}
+        if dataset is None:
+            dataset = self.dataset_metadata.copy()
+            if dataset.group_names is None:
+                dataset.group_names = [f"group_{i}" for i in range(self.num_groups)]
+        else:
             for measure_group, tensor in zip(dataset.measures, dataset.tensors):
                 for i, measure in enumerate(measure_group):
                     if measure in self.measures:
-                        batch_info['named_tensors'][measure] = tensor[..., [i]]
+                        named_tensors[measure] = tensor[..., [i]]
             missing = set(self.measures) - set(dataset.all_measures)
             if missing:
                 raise ValueError(
                     f"Some measures in the design aren't in the dataset.\n"
                     f"Design: {missing}\nDataset: {dataset.all_measures}"
                 )
-        elif isinstance(dataset, dict):
-            batch_info = dataset.copy()
-            if isinstance(batch_info['dt_unit'], str):
-                batch_info['dt_unit'] = np.timedelta64(1, batch_info['dt_unit'])
-        else:
-            raise TypeError(
-                "Expected `batch` to be a TimeSeriesDataset, or a dictionary with 'start_times' and 'group_names'."
-            )
+
+        group_colname = group_colname or self.dataset_metadata.group_colname
+        time_colname = time_colname or self.dataset_metadata.time_colname
 
         def _tensor_to_df(tens, measures):
-            offsets = np.arange(0, tens.shape[1]) * (batch_info['dt_unit'] if batch_info['dt_unit'] else 1)
-            times = batch_info['start_times'][:, None] + offsets
+            offsets = np.arange(0, tens.shape[1]) * (dataset.dt_unit if dataset.dt_unit else 1)
+            times = dataset.start_offsets[:, None] + offsets
 
             return TimeSeriesDataset.tensor_to_dataframe(
                 tensor=tens,
                 times=times,
-                group_names=batch_info['group_names'],
+                group_names=dataset.group_names,
                 group_colname=group_colname,
                 time_colname=time_colname,
                 measures=measures
@@ -370,8 +412,8 @@ class Predictions(nn.Module):
                     df['lower'], df['upper'] = conf2bounds(df['mean'], df.pop('std'), conf=conf)
 
                 # actual:
-                orig_tensor = batch_info.get('named_tensors', {}).get(measure, None)
-                if orig_tensor is not None and (orig_tensor == orig_tensor).any():
+                orig_tensor = named_tensors.get(measure, None)
+                if orig_tensor is not None and not torch.isnan(orig_tensor).all():
                     df_actual = _tensor_to_df(orig_tensor, measures=['actual'])
                     df = df.merge(df_actual, on=[group_colname, time_colname], how='left')
 
@@ -386,7 +428,6 @@ class Predictions(nn.Module):
                 out.append(df)
 
             # residuals:
-            named_tensors = batch_info.get('named_tensors', {})
             for i, measure in enumerate(self.measures):
                 orig_tensor = named_tensors.get(measure)
                 predictions = self.means[..., [i]]
@@ -404,7 +445,7 @@ class Predictions(nn.Module):
         else:
             raise ValueError("Expected `type` to be 'predictions' or 'components'.")
 
-        return concat(out, sort=True)
+        return pd.concat(out, sort=True)
 
     @torch.no_grad()
     def _components(self) -> Dict[Tuple[str, str, str], Tuple[Tensor, Tensor]]:
@@ -414,7 +455,7 @@ class Predictions(nn.Module):
             means = H * self.state_means
             stds = H * torch.diagonal(self.state_covs, dim1=-2, dim2=-1).sqrt()
 
-            for se_idx, (process, state_element) in enumerate(self.all_state_elements):
+            for se_idx, (process, state_element) in enumerate(self._model_attributes.all_state_elements):
                 if not is_near_zero(means[:, :, se_idx]).all():
                     out[(measure, process, state_element)] = (means[:, :, se_idx], stds[:, :, se_idx])
 
@@ -422,12 +463,12 @@ class Predictions(nn.Module):
 
     @classmethod
     def plot(cls,
-             df: 'DataFrame',
+             df: pd.DataFrame,
              group_colname: str = None,
              time_colname: str = None,
              max_num_groups: int = 1,
              split_dt: Optional[np.datetime64] = None,
-             **kwargs) -> 'DataFrame':
+             **kwargs) -> pd.DataFrame:
         """
         :param df: The output of :func:`Predictions.to_dataframe()`.
         :param group_colname: The name of the group-column.
@@ -442,6 +483,12 @@ class Predictions(nn.Module):
         from plotnine import (
             ggplot, aes, geom_line, geom_ribbon, facet_grid, facet_wrap, theme_bw, theme, ylab, geom_vline
         )
+
+        if isinstance(cls, Predictions):  # using it as an instance-method
+            group_colname = group_colname or cls.dataset_metadata.group_colname
+            time_colname = time_colname or cls.dataset_metadata.time_colname
+        elif not group_colname or not time_colname:
+            raise TypeError("Please specify group_colname and time_colname")
 
         is_components = 'process' in df.columns
         if is_components and 'state_element' not in df.columns:
@@ -542,13 +589,35 @@ class Predictions(nn.Module):
                 raise TypeError(f"Cannot index into non-batch dims of {cls.__name__}")
         return cls(**kwargs, model=self._model_attributes)
 
-    @property
-    def _model_attributes(self) -> dict:
-        """
-        Has the attributes of a KalmanFilter that are needed in __init__
-        """
-        return {
-            'measures': self.measures,
-            'all_state_elements': self.all_state_elements,
-            'outlier_threshold': self.outlier_threshold
-        }
+
+@dataclass
+class StateSpaceModelMetadata:
+    measures: Sequence[str]
+    all_state_elements: Sequence[Tuple[str, str]]
+
+
+@dataclass
+class DatasetMetadata:
+    group_names: Optional[Sequence[str]]
+    start_offsets: Optional[np.ndarray]
+    dt_unit: Optional[np.timedelta64]
+    group_colname: str = 'group'
+    time_colname: str = 'time'
+
+    def update(self, **kwargs) -> 'DatasetMetadata':
+        for f in fields(self):
+            v = kwargs.pop(f.name, None)
+            if v is not None:
+                setattr(self, f.name, v)
+        if kwargs:
+            raise TypeError(f"Unrecognized kwargs: {list(kwargs)}")
+        return self
+
+    def copy(self) -> 'DatasetMetadata':
+        return DatasetMetadata(
+            group_names=self.group_names,
+            start_offsets=self.start_offsets,
+            dt_unit=self.dt_unit,
+            group_colname=self.group_colname,
+            time_colname=self.time_colname
+        )
