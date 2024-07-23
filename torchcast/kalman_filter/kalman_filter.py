@@ -75,15 +75,15 @@ class KalmanStep(StateSpaceStep):
         HcHt = H @ cov @ Ht
         system_covariance = HcHt + R
 
-        # outlier-rejection:
-        if (kwargs['outlier_threshold'] != 0).any():
-            multi = get_outlier_multi(
-                resid=resid,
-                cov=system_covariance,
-                outlier_threshold=kwargs['outlier_threshold']
-            )
-            R = R * multi.unsqueeze(-1).unsqueeze(-1)
-            system_covariance = HcHt + R
+        # # outlier-rejection:
+        # if (kwargs['outlier_threshold'] != 0).any():
+        #     multi = get_outlier_multi(
+        #         resid=resid,
+        #         cov=system_covariance,
+        #         outlier_threshold=kwargs['outlier_threshold']
+        #     )
+        #     R = R * multi.unsqueeze(-1).unsqueeze(-1)
+        #     system_covariance = HcHt + R
 
         # kalman-gain:
         K = self._kalman_gain(cov=cov, Ht=Ht, system_covariance=system_covariance)

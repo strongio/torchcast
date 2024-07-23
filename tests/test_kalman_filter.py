@@ -1,7 +1,7 @@
 import copy
 import itertools
 from collections import defaultdict
-from typing import Callable, Optional, Dict
+from typing import Callable, Dict
 from unittest import TestCase, expectedFailure
 
 import torch
@@ -72,7 +72,6 @@ class TestKalmanFilter(TestCase):
         self.assertFalse(torch.isnan(obs_covs).any())
         self.assertEqual(tuple(obs_means.shape), (5, ntimes, ndim))
 
-    @expectedFailure # for now, no longer supporting jit
     @torch.no_grad()
     def test_jit(self):
         from torchcast.state_space import Predictions
