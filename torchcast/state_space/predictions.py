@@ -217,24 +217,31 @@ class Predictions(nn.Module):
                 "Passing `start_offsets` as an argument is deprecated, first call ``set_metadata()``",
                 DeprecationWarning
             )
-            start_offsets = self.dataset_metadata.start_offsets or start_offsets
         if dt_unit is not None:
             warn(
                 "Passing `dt_unit` as an argument is deprecated, first call ``set_metadata()``",
                 DeprecationWarning
             )
-            dt_unit = self.dataset_metadata.dt_unit or dt_unit
+        if self.dataset_metadata.start_offsets is not None:
+            start_offsets = self.dataset_metadata.start_offsets
+        if self.dataset_metadata.dt_unit is not None:
+            dt_unit = self.dataset_metadata.dt_unit
 
         if not isinstance(times, (list, tuple, np.ndarray)):
             times = [times] * self.num_groups
-        times = np.asanyarray(times)
+        times = np.asanyarray(times, dtype='datetime64' if dt_unit else 'int')
 
-        if start_offsets is not None:
+        if start_offsets is None:
+            if dt_unit is not None:
+                raise ValueError("If `dt_unit` is specified, then `start_offsets` must also be specified.")
+        else:
             if isinstance(dt_unit, str):
                 dt_unit = np.timedelta64(1, dt_unit)
             times = times - start_offsets
             if dt_unit is not None:
                 times = times // dt_unit  # todo: validate int?
+            else:
+                assert times.dtype.name.startswith('int')
 
         assert len(times.shape) == 1
         assert times.shape[0] == self.num_groups
