@@ -59,6 +59,24 @@ class StateSpaceModel(nn.Module):
 
         self._scale_by_measure_var = bool(self.measure_covariance)
 
+    @property
+    def dt_unit(self) -> Optional[np.timedelta64]:
+        dt_unit_ns = None
+        proc_with_dt = ''
+        for p in self.processes.values():
+            if hasattr(p, 'dt_unit_ns'):
+                if dt_unit_ns is None:
+                    dt_unit_ns = p.dt_unit_ns
+                    proc_with_dt = p.id
+                elif p.dt_unit_ns != dt_unit_ns:
+                    raise ValueError(
+                        f"Found multiple processes with different dt_units:"
+                        f"{proc_with_dt}: {dt_unit_ns}"
+                        f"{p.id}: {p.dt_unit_ns}"
+                    )
+        if dt_unit_ns is not None:
+            return np.timedelta64(dt_unit_ns, 'ns')  # todo: promote
+
     @torch.jit.ignore()
     def fit(self,
             *args,
@@ -333,6 +351,7 @@ class StateSpaceModel(nn.Module):
         return self._generate_predictions(
             preds=preds,
             updates=updates if include_updates_in_output else None,
+            start_offsets=start_offsets,
             **design_mats,
         )
 
@@ -340,21 +359,25 @@ class StateSpaceModel(nn.Module):
     def _generate_predictions(self,
                               preds: Tuple[List[Tensor], List[Tensor]],
                               updates: Optional[Tuple[List[Tensor], List[Tensor]]] = None,
+                              start_offsets: Optional[np.ndarray] = None,
                               **kwargs) -> 'Predictions':
         """
         StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
         """
 
-        kwargs = {
-            'state_means': preds[0],
-            'state_covs': preds[1],
-            'R': kwargs['R'],
-            'H': kwargs['H'],
-            'model': self
-        }
         if updates is not None:
             kwargs.update(update_means=updates[0], update_covs=updates[1])
-        return Predictions(**kwargs)
+        preds = Predictions(
+            *preds,
+            R=kwargs.pop('R'),
+            H=kwargs.pop('H'),
+            model=self,
+            **kwargs
+        )
+        return preds.set_metadata(
+            start_offsets=start_offsets,
+            dt_unit=self.dt_unit
+        )
 
     @torch.jit.ignore
     def _prepare_initial_state(self,
