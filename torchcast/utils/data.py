@@ -634,6 +634,7 @@ def complete_times(data: 'DataFrame',
         warn("Please pass `group_colnames` instead of `group_colname`", DeprecationWarning)
         group_colnames = [group_colname]
     if max_dt_colname and max_dt_colname not in group_colnames:
+        assert (data.groupby(group_colnames)[max_dt_colname].nunique() == 1).all()
         group_colnames.append(max_dt_colname)
 
     if time_colname is None:
