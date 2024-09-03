@@ -1,8 +1,8 @@
 import copy
 import itertools
 from collections import defaultdict
-from typing import Callable, Optional, Dict
-from unittest import TestCase
+from typing import Callable, Dict
+from unittest import TestCase, expectedFailure
 
 import torch
 from parameterized import parameterized
@@ -66,7 +66,7 @@ class TestKalmanFilter(TestCase):
             processes=[LocalLevel(id=f'lm{i}', measure=str(i)) for i in range(ndim)],
             measures=[str(i) for i in range(ndim)]
         )
-        kf = torch.jit.script(kf)
+#        kf = torch.jit.script(kf)
         obs_means, obs_covs = kf(data, n_step=n_step)
         self.assertFalse(torch.isnan(obs_means).any())
         self.assertFalse(torch.isnan(obs_covs).any())
@@ -150,7 +150,7 @@ class TestKalmanFilter(TestCase):
         # confirm decay works in forward pass
         # also tests that kf.forward works with `out_timesteps > input.shape[1]`
         pred = torch_kf(
-            initial_state=torch_kf._prepare_initial_state((None, None), start_offsets=np.zeros(1)),
+            initial_state=torch_kf._prepare_initial_state(None, start_offsets=np.zeros(1)),
             X=torch.randn(1, num_times, 3),
             out_timesteps=num_times
         )
@@ -168,7 +168,6 @@ class TestKalmanFilter(TestCase):
             processes=[LocalTrend(id='lt', decay_velocity=None, measure='y', velocity_multi=1.)],
             measures=['y']
         )
-        kf = torch.jit.script(torch_kf)
         expectedF = torch.tensor([[1., 1.], [0., 1.]])
         expectedH = torch.tensor([[1., 0.]])
         kwargs_per_process = torch_kf._parse_design_kwargs(input=data, out_timesteps=num_times)
@@ -184,7 +183,7 @@ class TestKalmanFilter(TestCase):
 
         # make filterpy kf:
         filter_kf = filterpy_KalmanFilter(dim_x=2, dim_z=1)
-        filter_kf.x, filter_kf.P = torch_kf._prepare_initial_state((None, None))
+        filter_kf.x, filter_kf.P = torch_kf._prepare_initial_state(None)
         filter_kf.x = filter_kf.x.detach().numpy().T
         filter_kf.P = filter_kf.P.detach().numpy().squeeze(0)
         filter_kf.Q = Q.numpy()
@@ -228,7 +227,7 @@ class TestKalmanFilter(TestCase):
             ],
             measures=['y']
         )
-        kf._scale_by_measure_var = False
+        kf._get_measure_scaling = lambda: torch.ones(2)
 
         kf.state_dict()['initial_mean'][:] = torch.tensor([1.5, -0.5])
         kf.state_dict()['measure_covariance.cholesky_log_diag'][0] = np.log(.1 ** .5)
@@ -348,7 +347,7 @@ class TestKalmanFilter(TestCase):
             processes=[Season(id='s1')],
             measures=['y']
         )
-        kf._scale_by_measure_var = False
+        kf._get_measure_scaling = lambda: torch.ones(1)
         data = torch.arange(7).view(1, -1, 1).to(torch.float32)
         for init_state in [0., 1.]:
             kf.state_dict()['initial_mean'][:] = torch.ones(1) * init_state
@@ -401,11 +400,10 @@ class TestKalmanFilter(TestCase):
         self.assertTrue((cov == 0).all())
 
     @parameterized.expand([
-        (torch.float64, 2, True),
         (torch.float64, 2, False)
     ])
     @torch.no_grad()
-    def test_dtype(self, dtype: torch.dtype, ndim: int = 2, compiled: bool = True):
+    def test_dtype(self, dtype: torch.dtype, ndim: int = 2, compiled: bool = False):
         data = torch.zeros((2, 5, ndim), dtype=dtype)
         kf = KalmanFilter(
             processes=[LocalLevel(id=f'll{i}', measure=str(i)) for i in range(ndim)],

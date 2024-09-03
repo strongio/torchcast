@@ -19,7 +19,7 @@ import torch
 from torch import nn, Tensor
 from typing_extensions import Final
 
-from torchcast.utils.outliers import mahalanobis_dist
+from torchcast.utils.outliers import get_outlier_multi
 
 
 class KalmanStep(StateSpaceStep):
@@ -56,24 +56,37 @@ class KalmanStep(StateSpaceStep):
             })
             return masked_input, new_kwargs
 
-    def _update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+    def _update(self,
+                input: Tensor,
+                mean: Tensor,
+                cov: Tensor,
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         H = kwargs['H']
         R = kwargs['R']
         Ht = H.permute(0, 2, 1)
-        system_covariance = torch.baddbmm(R, H @ cov, Ht)
+
+        # residuals:
+        if 'measured_mean' in kwargs:  # calculated by super
+            measured_mean = kwargs['measured_mean']
+        else:
+            measured_mean = (H @ mean.unsqueeze(-1)).squeeze(-1)
+        resid = input - measured_mean
+
+        HcHt = H @ cov @ Ht
+        system_covariance = HcHt + R
+
+        # # outlier-rejection:
+        # if (kwargs['outlier_threshold'] != 0).any():
+        #     multi = get_outlier_multi(
+        #         resid=resid,
+        #         cov=system_covariance,
+        #         outlier_threshold=kwargs['outlier_threshold']
+        #     )
+        #     R = R * multi.unsqueeze(-1).unsqueeze(-1)
+        #     system_covariance = HcHt + R
 
         # kalman-gain:
         K = self._kalman_gain(cov=cov, Ht=Ht, system_covariance=system_covariance)
-
-        # residuals:
-        measured_mean = (H @ mean.unsqueeze(-1)).squeeze(-1)
-        resid = input - measured_mean
-
-        # outlier-rejection:
-        if kwargs['outlier_threshold'] > 0:
-            mdist = mahalanobis_dist(resid, system_covariance)
-            multi = (mdist - kwargs['outlier_threshold']).clamp(min=0) + 1
-            R = R * multi.unsqueeze(-1).unsqueeze(-1)
 
         # update:
         new_mean = mean + (K @ resid.unsqueeze(-1)).squeeze(-1)
@@ -119,9 +132,7 @@ class KalmanFilter(StateSpaceModel):
                  processes: Sequence[Process],
                  measures: Optional[Sequence[str]] = None,
                  process_covariance: Optional[Covariance] = None,
-                 measure_covariance: Optional[Covariance] = None,
-                 outlier_threshold: float = 0.,
-                 outlier_burnin: Optional[int] = None):
+                 measure_covariance: Optional[Covariance] = None):
 
         initial_covariance = Covariance.from_processes(processes, cov_type='initial')
 
@@ -136,9 +147,7 @@ class KalmanFilter(StateSpaceModel):
         super().__init__(
             processes=processes,
             measures=measures,
-            measure_covariance=measure_covariance,
-            outlier_threshold=outlier_threshold,
-            outlier_burnin=outlier_burnin
+            measure_covariance=measure_covariance
         )
         self.process_covariance = process_covariance.set_id('process_covariance')
         self.initial_covariance = initial_covariance.set_id('initial_covariance')

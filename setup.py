@@ -12,6 +12,7 @@ setup(
     install_requires=[
         'torch>=1.12',
         'numpy>=1.4',
+        'scipy>=1.10'
     ],
     extras_require={
         'tests': ['parameterized>=0.7', 'filterpy>=1.4', 'pandas>=1.0'],

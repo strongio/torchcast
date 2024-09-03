@@ -1,7 +1,7 @@
 Kalman Filter
 =============
 
-.. automodule:: torchcast.kalman_filter
+.. automodule:: torchcast.kalman_filter.kalman_filter
    :members: KalmanFilter
    :exclude-members: ss_step_cls
    :show-inheritance:

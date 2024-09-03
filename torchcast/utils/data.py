@@ -43,6 +43,8 @@ class TimeSeriesDataset(TensorDataset):
         assert len(tensors) == len(measures)
 
         for i, (tensor, tensor_measures) in enumerate(zip(tensors, measures)):
+            if isinstance(tensor_measures, str):
+                raise ValueError(f"Expected measures to be a list of lists/tuples, but element-{i} is a string.")
             if len(tensor.shape) < 3:
                 raise ValueError(f"Tensor {i} has < 3 dimensions")
             if tensor.shape[0] != len(group_names):
@@ -51,7 +53,7 @@ class TimeSeriesDataset(TensorDataset):
                 raise ValueError(f"Tensor {i}'s 3rd dimension has length != len({tensor_measures}).")
 
         self.measures = tuple(tuple(m) for m in measures)
-        self.all_measures = tuple(itertools.chain.from_iterable(self.measures))
+
         self.group_names = group_names
         self.dt_unit = None
         if dt_unit:
@@ -73,6 +75,10 @@ class TimeSeriesDataset(TensorDataset):
                 )
         self.start_times = start_times
         super().__init__(*tensors)
+
+    @property
+    def all_measures(self) -> tuple:
+        return tuple(itertools.chain.from_iterable(self.measures))
 
     def to(self, *args, **kwargs) -> 'TimeSeriesDataset':
         new_tensors = [x.to(*args, **kwargs) for x in self.tensors]
@@ -151,15 +157,19 @@ class TimeSeriesDataset(TensorDataset):
         return train_dataset, val_dataset
 
     def with_new_start_times(self,
-                             start_times: Union[np.ndarray, Sequence],
+                             start_times: Union[datetime.datetime, np.datetime64, np.ndarray, Sequence],
+                             n_timesteps: Optional[int] = None,
                              quiet: bool = False) -> 'TimeSeriesDataset':
         """
         Subset a :class:`.TimeSeriesDataset` so that some/all of the groups have later start times.
 
-        :param start_times: An array/list of new datetimes.
+        :param start_times: An array/list of new datetimes, or a single datetime that will be used for all groups.
+        :param n_timesteps: The number of timesteps in the output (nan-padded).
         :param quiet: If True, will not emit a warning for groups having only `nan` after the start-time.
         :return: A new :class:`.TimeSeriesDataset`.
         """
+        if isinstance(start_times, (datetime.datetime, np.datetime64)):
+            start_times = np.full(len(self.group_names), start_times, dtype='datetime64[ns]' if self.dt_unit else 'int')
         new_tensors = []
         for i, tens in enumerate(self.tensors):
             times = self.times(i)
@@ -185,6 +195,14 @@ class TimeSeriesDataset(TensorDataset):
                     end_idx = true1d_idx(~all_nan).max() + 1
                 new_tens.append(g_tens[:end_idx].unsqueeze(0))
             new_tens = ragged_cat(new_tens, ragged_dim=1, cat_dim=0)
+            if n_timesteps:
+                if new_tens.shape[1] > n_timesteps:
+                    new_tens = new_tens[:, :n_timesteps, :]
+                else:
+                    tmp = torch.empty((new_tens.shape[0], n_timesteps, new_tens.shape[2]), dtype=new_tens.dtype)
+                    tmp[:] = float('nan')
+                    tmp[:, :new_tens.shape[1], :] = new_tens
+                    new_tens = tmp
             new_tensors.append(new_tens)
         return type(self)(
             *new_tensors,
@@ -311,13 +329,14 @@ class TimeSeriesDataset(TensorDataset):
         assert tensor.shape[1] <= times.shape[1]
         assert tensor.shape[2] == len(measures)
 
+        _all_nan_groups = []
         dfs = []
         for g, group_name in enumerate(group_names):
             # get values, don't store trailing nans:
             values = tensor[g]
             all_nan_per_row = np.min(np.isnan(values), axis=1)
             if all_nan_per_row.all():
-                warn(f"Group {group_name} has only missing values.")
+                _all_nan_groups.append(group_name)
                 continue
             end_idx = true1d_idx(~all_nan_per_row).max() + 1
             # convert to dataframe:
@@ -326,6 +345,9 @@ class TimeSeriesDataset(TensorDataset):
             df[time_colname] = np.nan
             df[time_colname] = times[g, 0:len(df.index)]
             dfs.append(df)
+        if _all_nan_groups:
+            warn(f"Groups have only missing values:{_all_nan_groups}")
+
         if dfs:
             return concat(dfs)
         else:
@@ -586,6 +608,7 @@ def complete_times(data: 'DataFrame',
                    group_colnames: Sequence[str] = None,
                    time_colname: Optional[str] = None,
                    dt_unit: Optional[str] = None,
+                   max_dt_colname: Optional[str] = None,
                    global_max: Union[bool, datetime.datetime] = False,
                    group_colname: Optional[str] = None):
     """
@@ -594,10 +617,10 @@ def complete_times(data: 'DataFrame',
     :param data: A pandas dataframe.
     :param group_colnames: The column name(s) for the groups.
     :param time_colname: The column name for the times. Will attempt to guess based on common labels.
-    :param dt_unit: A :class:`numpy.datetime64` or string representing the datetime increments. If not supplied will
-     try to guess based on the smallest difference in the data.
-    :param global_max: If `True`, will use the max time of all groups for the max time of each group. If false, will
-     keep times past each group's max time as implicitly missing. If a datetime is passed, will use that as the max.
+    :param dt_unit: Passed to ``pandas.date_range``. If not passed, will attempt to guess based on the minimum
+     difference between times.
+    :param max_dt_colname: Optional, a column-name that indicates the maximum time for each group. If not supplied, the
+     actual maximum time for each group will be used.
     :return: A dataframe where implicit missings are converted to explicit missings, but the min/max time for each
      group is preserved.
     """
@@ -610,6 +633,9 @@ def complete_times(data: 'DataFrame',
             raise TypeError("Missing required argument `group_colnames`")
         warn("Please pass `group_colnames` instead of `group_colname`", DeprecationWarning)
         group_colnames = [group_colname]
+    if max_dt_colname and max_dt_colname not in group_colnames:
+        assert (data.groupby(group_colnames)[max_dt_colname].nunique() == 1).all()
+        group_colnames.append(max_dt_colname)
 
     if time_colname is None:
         for col in ('datetime', 'date', 'timestamp', 'time', 'dt'):
@@ -628,31 +654,26 @@ def complete_times(data: 'DataFrame',
         # (e.g. does not match behavior of `my_dates.to_period('W').dt.to_timestamp()`)
         dt_unit = pd.Timedelta('7 days 00:00:00')
 
-    max_time = data[time_colname].max()
-    if global_max is True:  # they can specify a specific value, or pass True for the max in the data
-        global_max = max_time
-    # or they can leave global_max=None, in which case will filter to group-specific max below
-
-    df_grid = pd.DataFrame(
-        {time_colname: pd.date_range(data[time_colname].min(), global_max or max_time, freq=dt_unit)}
-    )
-
-    df_group_summary = data. \
-        groupby(group_colnames). \
-        agg(_min=(time_colname, 'min'),
-            _max=(time_colname, 'max')). \
-        reset_index()
     if global_max:
-        df_group_summary['_max'] = global_max
+        warn("`global_max=True` is deprecated, use `max_dt_colname` instead.", DeprecationWarning)
+
+    df_group_summary = (data
+                        .groupby(group_colnames)
+                        .agg(_min=(time_colname, 'min'), _max=(time_colname, 'max'))
+                        .reset_index())
+    if max_dt_colname:
+        df_group_summary['_max'] = df_group_summary[max_dt_colname]
+
+    max_of_maxes = df_group_summary['_max'].max()
+
+    df_grid = pd.DataFrame({time_colname: pd.date_range(data[time_colname].min(), max_of_maxes, freq=dt_unit)})
 
     # cross-join for all times to all groups (todo: not very memory efficient)
-    df_cj = df_grid. \
-        assign(_cj=1). \
-        merge(df_group_summary.assign(_cj=1), how='left', on=['_cj'])
+    df_cj = df_grid.merge(df_group_summary, how='cross')
     # filter to min/max for each group
-    df_cj = df_cj. \
-        loc[df_cj[time_colname].between(df_cj['_min'], df_cj['_max']), group_colnames + [time_colname]]. \
-        reset_index(drop=True)
+    df_cj = (df_cj
+             .loc[df_cj[time_colname].between(df_cj['_min'], df_cj['_max']), group_colnames + [time_colname]]
+             .reset_index(drop=True))
     return df_cj.merge(data, how='left', on=group_colnames + [time_colname])
 
 

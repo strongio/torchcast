@@ -1,4 +1,4 @@
-from typing import Type, Tuple, Dict, Optional
+from typing import Tuple, Dict, Optional
 
 import torch
 from torch import Tensor
@@ -10,11 +10,6 @@ class StateSpaceStep(torch.nn.Module):
     """
     Base-class for modules that handle predict/update within a state-space model.
     """
-
-    # this would ideally be a class-attribute but torch.jit.trace strips them
-    @torch.jit.ignore()
-    def get_distribution(self) -> Type[torch.distributions.Distribution]:
-        return torch.distributions.MultivariateNormal
 
     def forward(self,
                 input: Tensor,
@@ -29,7 +24,11 @@ class StateSpaceStep(torch.nn.Module):
     def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         raise NotImplementedError
 
-    def _update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+    def _update(self,
+                input: Tensor,
+                mean: Tensor,
+                cov: Tensor,
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         raise NotImplementedError
 
     def update(self, input: Tensor, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
@@ -55,8 +54,11 @@ class StateSpaceStep(torch.nn.Module):
             new_cov = cov.clone()
             for groups, val_idx in get_nan_groups(isnan):
                 masked_input, masked_kwargs = self._mask_mats(groups, val_idx, input=input, kwargs=kwargs)
-                m,c = self._update(
-                    input=masked_input, mean=mean[groups], cov=cov[groups], kwargs=masked_kwargs
+                m, c = self._update(
+                    input=masked_input,
+                    mean=mean[groups],
+                    cov=cov[groups],
+                    kwargs=masked_kwargs
                 )
                 new_mean[groups] = m
                 if c is None:
