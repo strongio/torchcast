@@ -154,3 +154,12 @@ def true1d_idx(arr: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
 def is_near_zero(tens: torch.Tensor, rtol: float = 1e-05, atol: float = 1e-08, equal_nan: bool = False) -> torch.Tensor:
     z = torch.zeros(1, dtype=tens.dtype, device=tens.device)
     return torch.isclose(tens, other=z, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
+
+def repeat(x: Union[torch.Tensor, np.ndarray], times: int, dim: int) -> Union[torch.Tensor, np.ndarray]:
+    reps = [1 for _ in x.shape]
+    reps[dim] = times
+    if isinstance(x, np.ndarray):
+        return np.tile(x, reps=reps)
+    else:
+        return x.repeat(*reps)

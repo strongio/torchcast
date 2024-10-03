@@ -167,18 +167,18 @@ class Predictions(nn.Module):
             raise ValueError("`nans` in `update_covs`")
         return self._update_covs
 
-    def get_timeslice(self,
-                      times: Union[np.ndarray, np.datetime64],
-                      n_timesteps: int,
-                      **kwargs) -> 'Predictions':
+    def with_new_start_times(self,
+                             start_times: Union[np.ndarray, np.datetime64],
+                             n_timesteps: int,
+                             **kwargs) -> 'Predictions':
         """
-        :param times: An array/sequence containing the start time for each group; or a single datetime to apply to all
-         groups. If the model/predictions are dateless (no dt_unit) then simply an array of indices.
+        :param start_times: An array/sequence containing the start time for each group; or a single datetime to apply
+         to all groups. If the model/predictions are dateless (no dt_unit) then simply an array of indices.
         :param n_timesteps: Each group will be sliced to this many timesteps, so times is start and times + n_timesteps
         is end.
         :return: A new ``Predictions`` object, with the state and measurement tensors sliced to the given times.
         """
-        start_indices = self._standardize_times(times=times, *kwargs)
+        start_indices = self._standardize_times(times=start_times, *kwargs)
         time_indices = np.arange(n_timesteps)[None, ...] + start_indices[:, None, ...]
         return self[np.arange(self.num_groups)[:, None, ...], time_indices]
 
@@ -200,7 +200,7 @@ class Predictions(nn.Module):
         :return: A tuple of state-means and state-covs, appropriate for forecasting by passing as `initial_state`
          for :func:`StateSpaceModel.forward()`.
         """
-        preds = self.get_timeslice(times=times, n_timesteps=1, **kwargs)
+        preds = self.with_new_start_times(start_times=times, n_timesteps=1, **kwargs)
         if type_.startswith('pred'):
             return preds.state_means.squeeze(1), preds.state_covs.squeeze(1)
         elif type_.startswith('update'):
@@ -217,24 +217,31 @@ class Predictions(nn.Module):
                 "Passing `start_offsets` as an argument is deprecated, first call ``set_metadata()``",
                 DeprecationWarning
             )
-            start_offsets = self.dataset_metadata.start_offsets or start_offsets
         if dt_unit is not None:
             warn(
                 "Passing `dt_unit` as an argument is deprecated, first call ``set_metadata()``",
                 DeprecationWarning
             )
-            dt_unit = self.dataset_metadata.dt_unit or dt_unit
+        if self.dataset_metadata.start_offsets is not None:
+            start_offsets = self.dataset_metadata.start_offsets
+        if self.dataset_metadata.dt_unit is not None:
+            dt_unit = self.dataset_metadata.dt_unit
 
         if not isinstance(times, (list, tuple, np.ndarray)):
             times = [times] * self.num_groups
-        times = np.asanyarray(times)
+        times = np.asanyarray(times, dtype='datetime64' if dt_unit else 'int')
 
-        if start_offsets is not None:
+        if start_offsets is None:
+            if dt_unit is not None:
+                raise ValueError("If `dt_unit` is specified, then `start_offsets` must also be specified.")
+        else:
             if isinstance(dt_unit, str):
                 dt_unit = np.timedelta64(1, dt_unit)
             times = times - start_offsets
             if dt_unit is not None:
                 times = times // dt_unit  # todo: validate int?
+            else:
+                assert times.dtype.name.startswith('int')
 
         assert len(times.shape) == 1
         assert times.shape[0] == self.num_groups
@@ -364,6 +371,8 @@ class Predictions(nn.Module):
                 conf = None
             else:
                 raise TypeError(msg)
+        if kwargs:
+            raise TypeError(f"Unexpected keyword arguments: {set(kwargs)}")
 
         named_tensors = {}
         if dataset is None:

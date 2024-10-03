@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch import nn, Tensor
 
-from torchcast.internals.utils import get_owned_kwargs
+from torchcast.internals.utils import get_owned_kwargs, repeat
 from torchcast.covariance import Covariance
 from torchcast.state_space.predictions import Predictions
 from torchcast.state_space.ss_step import StateSpaceStep
@@ -265,7 +265,7 @@ class StateSpaceModel(nn.Module):
                 n_step: Union[int, float] = 1,
                 start_offsets: Optional[Sequence] = None,
                 out_timesteps: Optional[Union[int, float]] = None,
-                initial_state: Union[Tensor, Tuple[Optional[Tensor], Optional[Tensor]]] = (None, None),
+                initial_state: Optional[Tuple[Tensor, Tensor]] = None,
                 every_step: bool = True,
                 include_updates_in_output: bool = False,
                 simulate: Optional[int] = None,
@@ -283,9 +283,9 @@ class StateSpaceModel(nn.Module):
         :param out_timesteps: The number of timesteps to produce in the output. This is useful when passing a tensor
          of predictors that goes later in time than the `input` tensor -- you can specify ``out_timesteps=X.shape[1]``
          to get forecasts into this later time horizon.
-        :param initial_state: The initial prediction for the state of the system. XXX (single tensor for mean always
-         supported. for kf child class, can pass (mean,cov) tuple. this is usually if you're feeding from a previous
-         output. for exp-smooth child class, latter isn't supported.
+        :param initial_state: The initial prediction for the state of the system: a tuple of mean, cov tensors. This
+         would usually come from a previous call to this model, which produces a ``Predictions`` object, which you can
+         then call :func:`get_state_at_times()` on.
         :param every_step: By default, ``n_step`` ahead predictions will be generated at every timestep. If
          ``every_step=False``, then these predictions will only be generated every `n_step` timesteps. For example,
          with hourly data, ``n_step=24`` and ``every_step=True``, each timepoint would be a forecast generated with
@@ -313,16 +313,17 @@ class StateSpaceModel(nn.Module):
         if out_timesteps is None and input is None:
             raise RuntimeError("If no input is passed, must specify `out_timesteps`")
 
-        if isinstance(initial_state, Tensor):
-            initial_state = (initial_state, None)
         initial_state = self._prepare_initial_state(
             initial_state,
             start_offsets=start_offsets,
         )
         if simulate and simulate > 1:
             init_mean, init_cov = initial_state
-            initial_state = init_mean.repeat(simulate, 1), init_cov.repeat(simulate, 1, 1)
-            kwargs = {k: v.repeat(simulate, 1) for k, v in kwargs.items()}
+            initial_state = repeat(init_mean, simulate, dim=0), repeat(init_cov, simulate, dim=0)
+            if start_offsets is not None:
+                start_offsets = repeat(np.asarray(start_offsets), simulate, dim=0)
+            kwargs = {k: (repeat(v, simulate, dim=0) if isinstance(v, (Tensor, np.ndarray)) else v)
+                      for k, v in kwargs.items()}
 
         if isinstance(n_step, float):
             if not n_step.is_integer():
@@ -346,18 +347,20 @@ class StateSpaceModel(nn.Module):
             ),
             simulate=bool(simulate)
         )
-        return self._generate_predictions(
+        preds = self._generate_predictions(
             preds=preds,
             updates=updates if include_updates_in_output else None,
-            start_offsets=start_offsets,
             **design_mats,
+        )
+        return preds.set_metadata(
+            start_offsets=start_offsets,
+            dt_unit=self.dt_unit
         )
 
     @torch.jit.ignore
     def _generate_predictions(self,
                               preds: Tuple[List[Tensor], List[Tensor]],
                               updates: Optional[Tuple[List[Tensor], List[Tensor]]] = None,
-                              start_offsets: Optional[np.ndarray] = None,
                               **kwargs) -> 'Predictions':
         """
         StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
@@ -372,50 +375,50 @@ class StateSpaceModel(nn.Module):
             model=self,
             **kwargs
         )
-        return preds.set_metadata(
-            start_offsets=start_offsets,
-            dt_unit=self.dt_unit
-        )
+        return preds
 
     @torch.jit.ignore
     def _prepare_initial_state(self,
-                               initial_state: Tuple[Optional[Tensor], Optional[Tensor]],
+                               initial_state: Optional[Tuple[Tensor, Tensor]],
                                start_offsets: Optional[Sequence] = None) -> Tuple[Tensor, Tensor]:
-        init_mean, init_cov = initial_state
-        if init_mean is None:
-            init_mean = self.initial_mean[None, :].clone()
-        elif len(init_mean.shape) != 2:
-            raise ValueError(
-                f"Expected ``init_mean`` to have two-dimensions for (num_groups, state_dim), got {init_mean.shape}"
-            )
 
-        if init_cov is None:
+        if initial_state is None:
+            init_mean = self.initial_mean[None, :].clone()
             init_cov = self.initial_covariance({}, num_groups=1, num_times=1, _ignore_input=True)[:, 0]
-        elif len(init_cov.shape) != 3:
-            raise ValueError(
-                f"Expected ``init_cov`` to be 3-D with (num_groups, state_dim, state_dim), got {init_cov.shape}"
-            )
+        else:
+            init_mean, init_cov = initial_state
+            if len(init_mean.shape) != 2:
+                raise ValueError(
+                    f"Expected ``init_mean`` to have two-dimensions for (num_groups, state_dim), got {init_mean.shape}"
+                )
+            if len(init_cov.shape) != 3:
+                raise ValueError(
+                    f"Expected ``init_cov`` to be 3-D with (num_groups, state_dim, state_dim), got {init_cov.shape}"
+                )
 
         measure_scaling = torch.diag_embed(self._get_measure_scaling().unsqueeze(0))
         init_cov = measure_scaling @ init_cov @ measure_scaling
 
-        # seasonal processes need to offset the initial mean:
         if start_offsets is not None:
             if init_mean.shape[0] == 1:
                 init_mean = init_mean.expand(len(start_offsets), -1)
             elif init_mean.shape[0] != len(start_offsets):
                 raise ValueError("Expected ``len(start_offets) == initial_state[0].shape[0]``")
 
-            init_mean_w_offset = []
-            for pid in self.processes:
-                p = self.processes[pid]
-                _process_slice = slice(*self.process_to_slice[pid])
-                init_mean_w_offset.append(p.offset_initial_state(init_mean[:, _process_slice], start_offsets))
-            init_mean_offset = torch.cat(init_mean_w_offset, 1)
-        else:
-            init_mean_offset = init_mean
+            if initial_state is None:
+                # seasonal processes need to offset the initial mean:
+                # TODO: should also handle cov?
+                init_mean_w_offset = []
+                for pid in self.processes:
+                    p = self.processes[pid]
+                    _process_slice = slice(*self.process_to_slice[pid])
+                    init_mean_w_offset.append(p.offset_initial_state(init_mean[:, _process_slice], start_offsets))
+                init_mean = torch.cat(init_mean_w_offset, 1)
+            else:
+                # if they passed an initial_state, we assume it's from a previous call to forward, so already offset
+                pass
 
-        return init_mean_offset, init_cov
+        return init_mean, init_cov
 
     @torch.jit.export
     def _script_forward(self,
@@ -491,25 +494,22 @@ class StateSpaceModel(nn.Module):
             )
             mean1s.append(mean1step)
             cov1s.append(cov1step)
-            if t < len(inputs):
+
+            if simulate:
+                meanu = torch.distributions.MultivariateNormal(mean1step, cov1step, validate_args=False).sample()
+                covu = torch.eye(meanu.shape[-1]) * 1e-6
+            elif t < len(inputs):
                 update_kwargs_t = {k: v[t] for k, v in update_kwargs.items()}
                 # update_kwargs_t['outlier_threshold'] = torch.tensor(outlier_threshold if t > outlier_burnin else 0.)
-                if simulate:
-                    meanu = torch.distributions.MultivariateNormal(mean1step, cov1step).sample()
-                    covu = torch.eye(meanu.shape[-1]) * 1e-6
-                else:
-                    meanu, covu = self.ss_step.update(
-                        inputs[t],
-                        mean1step,
-                        cov1step,
-                        update_kwargs_t,
-                    )
+                meanu, covu = self.ss_step.update(
+                    inputs[t],
+                    mean1step,
+                    cov1step,
+                    update_kwargs_t,
+                )
             else:
-                if simulate:
-                    meanu = torch.distributions.MultivariateNormal(mean1step, cov1step).sample()
-                    covu = torch.eye(meanu.shape[-1]) * 1e-6
-                else:
-                    meanu, covu = mean1step, cov1step
+                meanu, covu = mean1step, cov1step
+
             meanus.append(meanu)
             covus.append(covu)
 
@@ -626,7 +626,7 @@ class StateSpaceModel(nn.Module):
     @torch.jit.ignore()
     def simulate(self,
                  out_timesteps: int,
-                 initial_state: Tuple[Optional[Tensor], Optional[Tensor]] = (None, None),
+                 initial_state: Optional[Tuple[Tensor, Tensor]] = None,
                  start_offsets: Optional[Sequence] = None,
                  num_sims: int = 1,
                  num_groups: Optional[int] = None,
@@ -635,12 +635,14 @@ class StateSpaceModel(nn.Module):
         Generate simulated state-trajectories from your model.
 
         :param out_timesteps: The number of timesteps to generate in the output.
-        :param initial_state: The initial state of the system: a tuple of `mean`, `cov`.
+        :param initial_state: The initial state of the system: a tuple of `mean`, `cov`. Can be obtained from previous
+         model-predictions by calling ``get_state_at_times()`` on the output predictions.
         :param start_offsets: If your model includes seasonal processes, then these needs to know the start-time for
-         each group in ``input``. If you passed ``dt_unit`` when constructing those processes, then you should pass an
-         array datetimes here. Otherwise you can pass an array of integers (or leave `None` if there are no seasonal
-         processes).
-        :param num_sims: The number of state-trajectories to simulate per group.
+         each group in ``initial_state``. If you passed ``dt_unit`` when constructing those processes, then you should
+         pass an array of datetimes here, otherwise an array of ints. If there are no seasonal processes you can omit.
+        :param num_sims: The number of state-trajectories to simulate per group. The output will be laid out in blocks
+         (e.g. if there are 10 groups, the first ten elements of the output are sim 1, the next 10 elements are sim 2,
+         etc.). Tensors associated with this output can be reshaped with ``tensor.reshape(num_sims, num_groups, ...)``.
         :param num_groups: The number of groups; if `None` will be inferred from the shape of `initial_state` and/or
          ``start_offsets``.
         :param kwargs: Further arguments passed to the `processes`.

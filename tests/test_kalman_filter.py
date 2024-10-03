@@ -150,7 +150,7 @@ class TestKalmanFilter(TestCase):
         # confirm decay works in forward pass
         # also tests that kf.forward works with `out_timesteps > input.shape[1]`
         pred = torch_kf(
-            initial_state=torch_kf._prepare_initial_state((None, None), start_offsets=np.zeros(1)),
+            initial_state=torch_kf._prepare_initial_state(None, start_offsets=np.zeros(1)),
             X=torch.randn(1, num_times, 3),
             out_timesteps=num_times
         )
@@ -183,7 +183,7 @@ class TestKalmanFilter(TestCase):
 
         # make filterpy kf:
         filter_kf = filterpy_KalmanFilter(dim_x=2, dim_z=1)
-        filter_kf.x, filter_kf.P = torch_kf._prepare_initial_state((None, None))
+        filter_kf.x, filter_kf.P = torch_kf._prepare_initial_state(None)
         filter_kf.x = filter_kf.x.detach().numpy().T
         filter_kf.P = filter_kf.P.detach().numpy().squeeze(0)
         filter_kf.Q = Q.numpy()
