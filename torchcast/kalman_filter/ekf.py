@@ -82,19 +82,17 @@ class EKFPredictions(Predictions):
             return torch.stack(out, -1).numpy()
 
     def to_dataframe(self,
-                     dataset: Union[TimeSeriesDataset, dict],
+                     dataset: Optional[TimeSeriesDataset] = None,
                      type: str = 'predictions',
-                     group_colname: str = 'group',
-                     time_colname: str = 'time',
-                     conf: Optional[float] = .95,
-                     multi: Optional[float] = None) -> pd.DataFrame:
+                     group_colname: Optional[str] = None,
+                     time_colname: Optional[str] = None,
+                     conf: Optional[float] = .95) -> pd.DataFrame:
         df = super().to_dataframe(
             dataset=dataset,
             type=type,
             group_colname=group_colname,
             time_colname=time_colname,
-            conf=None,
-            multi=multi
+            conf=None
         )
         df[['mean', 'lower', 'upper']] = self._adjust_measured_mean(df['mean'], df.pop('std'), conf=conf)
         return df
