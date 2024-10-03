@@ -371,6 +371,8 @@ class Predictions(nn.Module):
                 conf = None
             else:
                 raise TypeError(msg)
+        if kwargs:
+            raise TypeError(f"Unexpected keyword arguments: {set(kwargs)}")
 
         named_tensors = {}
         if dataset is None:
