@@ -108,3 +108,4 @@ docs/_html/*
 *.pt
 *.gz
 docs/examples/lightning_logs/*
+docs/examples/electricity/*.pq

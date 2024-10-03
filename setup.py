@@ -28,6 +28,13 @@ setup(
             'pytorch_lightning>=1.5',
             'torch_optimizer>=0.3.0',
             'matplotlib'
+        ],
+        'demo': [
+            'dash',
+            'dash_daq',
+            'jupyter-dash',
+            'pandas',
+            'pyarrow',  # to support parquet files
         ]
     }
 )
