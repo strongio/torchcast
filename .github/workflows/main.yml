@@ -1,0 +1,48 @@
+name: torchcast
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        py-version: [ '3.8', '3.9', '3.10' ]
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          cache: 'pip'
+          cache-dependency-path: pyproject.toml
+          python-version: ${{ matrix.py-version }}
+
+      - name: Install torchcast
+        run: pip install .[tests]
+
+      - name: Run tests
+        run: python3 -m unittest
+
+  release:
+    needs: test
+    concurrency:
+      group: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade python-semantic-release
+
+      - name: Release
+        run: |
+          git clone https://${{ secrets.STRONGIO_MACHINE_PAT }}:@github.com/strongio/torchcast
+          cd torchcast
+          semantic-release version --push --changelog --vcs-release --commit
+        env:
+          GH_TOKEN: ${{ secrets.STRONGIO_MACHINE_PAT }}
