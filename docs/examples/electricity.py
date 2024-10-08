@@ -594,19 +594,18 @@ ss_trainer = StateSpaceTrainer(
 try:
     _path = os.path.join(BASE_DIR, f"kf_nn{SEASON_EMBED_NDIM}.pt")
     kf_nn = torch.load(_path)
-except FileNotFoundError as e:
-    from IPython.display import clear_output
-    
+except FileNotFoundError as e:    
     ss_trainer.loss_history = []
     for loss in ss_trainer(dataloaderX):
         ss_trainer.loss_history.append(loss)
         print(loss)
+
+        torch.save(kf_nn, _path)
     
         # TODO
         if len(ss_trainer.loss_history) > 100:
             break
 
-    torch.save(ss_trainer, _path)
 
 # %%
 with torch.inference_mode():
