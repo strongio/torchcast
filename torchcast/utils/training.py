@@ -62,14 +62,13 @@ class BaseTrainer:
             try:
                 for batch in dataloader:
                     closure = self._get_closure(batch)
-                    self.optimizer.step(closure)
-                    loss = closure()
+                    loss = self.optimizer.step(closure)
                     batch_n = self._get_batch_numel(batch)
                     epoch_loss += (loss.item() * batch_n)
                     n += batch_n
                     if prog:
                         prog.update()
-                        prog.set_description(f'Epoch: {self.epoch}')
+                        prog.set_description(f'Epoch {self.epoch}')
             except KeyboardInterrupt:
                 if prog:
                     prog.close()
@@ -142,7 +141,7 @@ class StateSpaceTrainer(BaseTrainer):
     def get_loss(self, pred: Predictions, y: torch.Tensor) -> torch.Tensor:
         return -pred.log_prob(y).mean()
 
-    def _getXy(self, batch: TimeSeriesDataset) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    def _batch_to_args(self, batch: TimeSeriesDataset) -> Tuple[torch.Tensor, dict]:
         y = batch.tensors[0]
 
         if callable(self.kwargs_getter):
@@ -164,13 +163,15 @@ class StateSpaceTrainer(BaseTrainer):
                         f"elements: {batch}"
                     )
                 kwargs[k] = t
-
         return y, kwargs
 
     def _get_closure(self, batch: TimeSeriesDataset) -> callable:
-        y, kwargs = self._getXy(batch)
 
         def closure():
+            # we call _batch_to_args from inside the closure in case `kwargs_getter` is callable & involves grad.
+            # only scenario this would matter is if optimizer is LBFGS (or another custom optimizer that calls closure
+            # multiple times per step), in which case grad from callable would be lost after the first step.
+            y, kwargs = self._batch_to_args(batch)
             self.optimizer.zero_grad()
             pred = self.module(y, **kwargs)
             loss = self.get_loss(pred, y)

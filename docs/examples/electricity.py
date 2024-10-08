@@ -562,17 +562,26 @@ kf_nn = KalmanFilter(
         LocalTrend(id='trend'),
     ]
 )
-# TODO: register the module?
-# kf_nn.season_embedder = season_embedder # register the module
+kf_nn.season_embedder = season_embedder # register the module
+
 
 # %% [markdown]
 # For this notebook, we'll just use a simple trainer, but you might consider more feature-robust tools like Pytorch Lightning for other applications:
 
 # %%
+def _make_kf_nn_kwargs(batch: 'TimeSeriesDataset') -> dict:
+    return {
+        'X' : kf_nn.season_embedder(batch.tensors[1]),
+        'n_step' : int(24 * 7.5),
+        'every_step' : False
+    }
+
+
+# %%
 from torchcast.utils.training import StateSpaceTrainer
 ss_trainer = StateSpaceTrainer(
     module=kf_nn, 
-    kwargs_getter=torch.no_grad()(lambda batch: {'X' : season_embedder(batch.tensors[1])})
+    kwargs_getter=_make_kf_nn_kwargs
 )
 
 # %% [markdown]
@@ -592,16 +601,9 @@ except FileNotFoundError as e:
         ss_trainer.loss_history.append(loss)
         print(loss)
     
-        # # plot:
-        # clear_output(wait=True)
-        # plt.plot(season_trainer.loss_history)
-        # plt.ylim(0, 8)
-        # plt.ylabel('MSE')
-        # plt.show()
-    
-        # # stop after converges (in our case, about 150 iterations):
-        # if len(season_trainer.loss_history) > 150:
-        #     break
+        # TODO
+        if len(ss_trainer.loss_history) > 100:
+            break
 
     torch.save(ss_trainer, _path)
 
