@@ -62,6 +62,7 @@ except FileNotFoundError as e:
 
     with ZipFile(BytesIO(response.content)) as f:
         df_raw = pd.read_table(f.open('LD2011_2014.txt'), sep=";", decimal=",")
+    df_raw['dt'] = df_raw.pop('Unnamed: 0').astype('datetime64[ns]')
 
     # melt from wide -> long; aggregate from every-15min to every hour
     df_elec = (df_raw
@@ -262,7 +263,7 @@ except FileNotFoundError:
 es2_predictions = es2(
     ds_example_train.tensors[0], 
     start_offsets=ds_example_train.start_datetimes,
-    out_timesteps=ds_example_building.tensors[0].shape[1] # <---- TODO explain
+    out_timesteps=ds_example_building.num_timesteps
 )
 es2_predictions.plot(es2_predictions.to_dataframe(ds_example_building), split_dt=SPLIT_DT)
 
@@ -456,7 +457,7 @@ try:
 except FileNotFoundError as e:
     from IPython.display import clear_output
     
-    #season_trainer.loss_history = []
+    season_trainer.loss_history = []
     for loss in season_trainer(season_dl):
         season_trainer.loss_history.append(loss)
     
@@ -471,7 +472,7 @@ except FileNotFoundError as e:
         if len(season_trainer.loss_history) > 150:
             break
 
-    torch.save(_path)
+    torch.save(season_trainer, _path)
 
 # %% [markdown]
 # Let's visualize the output of this neural network, with each color being a separate output:
