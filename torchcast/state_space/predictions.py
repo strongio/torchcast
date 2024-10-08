@@ -11,7 +11,7 @@ import pandas as pd
 from functools import cached_property
 
 from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims
-from torchcast.utils import conf2bounds, TimeSeriesDataset
+from torchcast.utils import conf2bounds, TimeSeriesDataset, class_or_instancemethod
 
 if TYPE_CHECKING:
     from torchcast.state_space import StateSpaceModel
@@ -470,9 +470,9 @@ class Predictions(nn.Module):
 
         return out
 
-    @classmethod
+    @class_or_instancemethod
     def plot(cls,
-             df: pd.DataFrame,
+             df: Optional[pd.DataFrame] = None,
              group_colname: str = None,
              time_colname: str = None,
              max_num_groups: int = 1,
@@ -496,8 +496,12 @@ class Predictions(nn.Module):
         if isinstance(cls, Predictions):  # using it as an instance-method
             group_colname = group_colname or cls.dataset_metadata.group_colname
             time_colname = time_colname or cls.dataset_metadata.time_colname
+            if df is None:
+                df = cls.to_dataframe()
         elif not group_colname or not time_colname:
             raise TypeError("Please specify group_colname and time_colname")
+        elif df is None:
+            raise TypeError("Please specify a dataframe `df`")
 
         is_components = 'process' in df.columns
         if is_components and 'state_element' not in df.columns:
