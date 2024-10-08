@@ -142,6 +142,7 @@ class StateSpaceTrainer(BaseTrainer):
         return -pred.log_prob(y).mean()
 
     def _batch_to_args(self, batch: TimeSeriesDataset) -> Tuple[torch.Tensor, dict]:
+        batch = batch.to(self._device)
         y = batch.tensors[0]
 
         if callable(self.kwargs_getter):
@@ -232,7 +233,7 @@ class SeasonalEmbeddingsTrainer(BaseTrainer):
         batch = batch.to(self._device)
 
         y, *_other = batch.tensors
-        X = self.times_to_model_mat(batch.times()).to(y.dtype)
+        X = self.times_to_model_mat(batch.times()).to(dtype=y.dtype, device=self._device)
 
         if len(_other) == 1:
             X = torch.cat([X, _other[0]], -1)
