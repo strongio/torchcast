@@ -97,6 +97,10 @@ class TimeSeriesDataset(TensorDataset):
     def sizes(self) -> Sequence:
         return [t.size() for t in self.tensors]
 
+    @property
+    def num_timesteps(self) -> int:
+        return max(tensor.shape[1] for tensor in self.tensors)  # todo: why are we supporting this?
+
     # Subsetting ------------------------:
     @torch.no_grad()
     def train_val_split(self,
@@ -276,6 +280,10 @@ class TimeSeriesDataset(TensorDataset):
     # Creation/Transformation ------------------------:
     @classmethod
     def make_collate_fn(cls, pad_X: Union[float, str, None] = 'ffill') -> Callable:
+        do_ffill = isinstance(pad_X, str) and pad_X == 'ffill'
+        pad_X = None
+
+        @torch.no_grad()
         def collate_fn(batch: Sequence['TimeSeriesDataset']) -> 'TimeSeriesDataset':
             to_concat = {
                 'tensors': [batch[0].tensors],
@@ -295,7 +303,13 @@ class TimeSeriesDataset(TensorDataset):
 
             tensors = []
             for i, t in enumerate(zip(*to_concat['tensors'])):
-                tensors.append(ragged_cat(t, ragged_dim=1, padding=None if i == 0 else pad_X))
+                catted = ragged_cat(t, ragged_dim=1, padding=None if i == 0 else pad_X)
+                if do_ffill:
+                    any_measured_bool = ~np.isnan(catted.numpy()).all(2)
+                    for g in range(catted.shape[0]):
+                        last_measured_idx = np.max(true1d_idx(any_measured_bool[g]).numpy(), initial=0)
+                        catted[g, (last_measured_idx + 1):, :] = catted[g, last_measured_idx, :]
+                tensors.append(catted)
 
             return cls(
                 *tensors,
@@ -501,10 +515,7 @@ class TimeSeriesDataset(TensorDataset):
          constructing the `times` array? Defaults to the one with the most timesteps.
         :return: A 2D numpy array of datetimes (or integers if dt_unit is None).
         """
-        if which is None:
-            num_timesteps = max(tensor.shape[1] for tensor in self.tensors)
-        else:
-            num_timesteps = self.tensors[which].shape[1]
+        num_timesteps = self.num_timesteps if which is None else self.tensors[which].shape[1]
         offsets = np.arange(0, num_timesteps) * (self.dt_unit if self.dt_unit else 1)
         return self.start_times[:, None] + offsets
 
