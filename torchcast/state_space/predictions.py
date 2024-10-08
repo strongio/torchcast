@@ -173,9 +173,9 @@ class Predictions(nn.Module):
                              **kwargs) -> 'Predictions':
         """
         :param start_times: An array/sequence containing the start time for each group; or a single datetime to apply
-         to all groups. If the model/predictions are dateless (no dt_unit) then simply an array of indices.
+          to all groups. If the model/predictions are dateless (no dt_unit) then simply an array of indices.
         :param n_timesteps: Each group will be sliced to this many timesteps, so times is start and times + n_timesteps
-        is end.
+          is end.
         :return: A new ``Predictions`` object, with the state and measurement tensors sliced to the given times.
         """
         start_indices = self._standardize_times(times=start_times, *kwargs)
