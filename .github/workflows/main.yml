@@ -39,14 +39,9 @@ jobs:
         run: |
           pip install --upgrade python-semantic-release
 
-      - name: Setup SSH Key
-        uses: webfactory/ssh-agent@v0.5.4
-        with:
-          ssh-private-key: ${{ secrets.STRONGMACHINE_PRIVATE_KEY }}
-
       - name: Release
         run: |
-          git clone git@github.com:strongio/torchcast
+          git clone https://${{ secrets.STRONGIO_MACHINE_PAT }}:@github.com/strongio/torchcast
           cd torchcast
           semantic-release version --push --changelog --vcs-release --commit
         env:
