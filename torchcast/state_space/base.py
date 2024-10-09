@@ -109,9 +109,7 @@ class StateSpaceModel(nn.Module):
          Default is ``lambda pred, y: -pred.log_prob(y).mean()``.
         :param loss_callback: Deprecated; use ``get_loss`` instead.
         :param set_initial_values: Will set ``initial_mean`` to sensible value given ``y``, which helps speed
-         up training if the data are not centered. This argument determines the number of timesteps of ``y`` to use
-         when doing so (default 1). Set to 0/`False``, if you're resuming training from a previous ``fit()`` call. Set
-         to a larger value for sparse data where the first timestep isn't informative enough.
+         up training if the data are not centered.
         :param kwargs: Further keyword-arguments passed to :func:`StateSpaceModel.forward()`.
         :param callable_kwargs: The kwargs passed to the forward pass are static, but sometimes you want to recompute
          them each iteration. The values in this dictionary are functions that will be called each iteration to
@@ -126,8 +124,8 @@ class StateSpaceModel(nn.Module):
         if optimizer is None:
             optimizer = torch.optim.LBFGS([p for p in self.parameters() if p.requires_grad],
                                           max_iter=10, line_search_fn='strong_wolfe', lr=.5)
-
-        self.set_initial_values(y, n=set_initial_values, verbose=verbose > 1)
+        if set_initial_values:
+            self.set_initial_values(y, verbose=verbose > 1)
 
         if not get_loss:
             get_loss = lambda pred, y: -pred.log_prob(y).mean()
@@ -184,7 +182,7 @@ class StateSpaceModel(nn.Module):
         return self
 
     @torch.jit.ignore()
-    def set_initial_values(self, y: Tensor, n: int, ilink: Optional[callable] = None, verbose: bool = True):
+    def set_initial_values(self, y: Tensor, ilink: Optional[callable] = None, verbose: bool = True):
         if not n:
             return
         if 'initial_mean' not in self.state_dict():
@@ -208,7 +206,7 @@ class StateSpaceModel(nn.Module):
                 se_idx = process.state_elements.index('position')
                 measure_idx = list(self.measures).index(process.measure)
                 with torch.no_grad():
-                    t0 = y[:, 0:n, measure_idx]
+                    t0 = y[..., measure_idx]
                     init_mean = ilink(t0[~torch.isnan(t0) & ~torch.isinf(t0)].mean())
                     if verbose:
                         print(f"Initializing {pid}.position to {init_mean.item()}")
