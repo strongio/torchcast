@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           cache: 'pip'
           cache-dependency-path: pyproject.toml
@@ -48,8 +48,7 @@ jobs:
         run: |
           git clone git@github.com:strongio/torchcast
           cd torchcast
-          semantic-release version --no-push --changelog --vcs-release --commit
-          git push origin main
+          semantic-release version --push --changelog --vcs-release --commit
         env:
           GH_TOKEN: ${{ secrets.STRONGIO_MACHINE_PAT }}
 
