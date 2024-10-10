@@ -44,13 +44,17 @@ class BaseTrainer:
         self._device = device
         return self
 
-    def _get_closure(self, batch: any) -> callable:
+    def _get_closure(self, batch: any, forward_kwargs: dict) -> callable:
         raise NotImplementedError
 
     def _get_batch_numel(self, batch: any) -> int:
         raise NotImplementedError
 
-    def __call__(self, dataloader: DataLoader, prog: bool = True) -> Generator[float, None, None]:
+    def __call__(self,
+                 dataloader: DataLoader,
+                 prog: bool = True,
+                 forward_kwargs: dict = None) -> Generator[float, None, None]:
+        forward_kwargs = forward_kwargs or {}
         if prog:
             prog = tqdm(total=len(dataloader))
 
@@ -61,7 +65,7 @@ class BaseTrainer:
             n = 0
             try:
                 for batch in dataloader:
-                    closure = self._get_closure(batch)
+                    closure = self._get_closure(batch, forward_kwargs)
                     loss = self.optimizer.step(closure)
                     batch_n = self._get_batch_numel(batch)
                     epoch_loss += (loss.item() * batch_n)
@@ -95,7 +99,7 @@ class SimpleTrainer(BaseTrainer):
         self.loss_fn = loss_fn
         super().__init__(module=module, optimizer=optimizer)
 
-    def _get_closure(self, batch: Dataset) -> callable:
+    def _get_closure(self, batch: Dataset, forward_kwargs: dict) -> callable:
         inputs, targets, *_other = batch
         if len(_other) and not self._warned:
             warnings.warn("Ignoring additional tensors in batch.")
@@ -104,7 +108,7 @@ class SimpleTrainer(BaseTrainer):
 
         def closure():
             self.optimizer.zero_grad()
-            outputs = self.module(inputs)
+            outputs = self.module(inputs, **forward_kwargs)
             loss = self.loss_fn(outputs, targets)
             loss.backward()
             return loss
@@ -166,13 +170,14 @@ class StateSpaceTrainer(BaseTrainer):
                 kwargs[k] = t
         return y, kwargs
 
-    def _get_closure(self, batch: TimeSeriesDataset) -> callable:
+    def _get_closure(self, batch: TimeSeriesDataset, forward_kwargs: dict) -> callable:
 
         def closure():
             # we call _batch_to_args from inside the closure in case `kwargs_getter` is callable & involves grad.
             # only scenario this would matter is if optimizer is LBFGS (or another custom optimizer that calls closure
             # multiple times per step), in which case grad from callable would be lost after the first step.
             y, kwargs = self._batch_to_args(batch)
+            kwargs.update(forward_kwargs)
             self.optimizer.zero_grad()
             pred = self.module(y, **kwargs)
             loss = self.get_loss(pred, y)
@@ -242,12 +247,12 @@ class SeasonalEmbeddingsTrainer(BaseTrainer):
             self._warned = True
         return X, y
 
-    def _get_closure(self, batch: TimeSeriesDataset) -> callable:
+    def _get_closure(self, batch: TimeSeriesDataset, forward_kwargs: dict) -> callable:
         X, y = self._getXy(batch)
 
         def closure():
             self.optimizer.zero_grad()
-            emb = self.module(X)
+            emb = self.module(X, **forward_kwargs)
             outputs = LinearModel.solve_and_predict(y=y, X=emb)  # handles nans
             loss = self.get_loss(outputs, y)
             loss.backward()

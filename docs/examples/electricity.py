@@ -1,7 +1,7 @@
 # ---
 # jupyter:
 #   jupytext:
-#     formats: py:percent
+#     formats: py:percent,ipynb
 #     text_representation:
 #       extension: .py
 #       format_name: percent
@@ -45,6 +45,7 @@ import pandas as pd
 # %%
 BASE_DIR = 'electricity'
 SPLIT_DT = np.datetime64('2013-06-01')
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # %% [markdown]
 # ## Data-Prep
@@ -356,32 +357,30 @@ plot_2x2(es2_predictions.to_dataframe(ds_example_building))
 # %%
 from torchcast.utils import add_season_features
 
-df_elec = (df_elec
-           .pipe(add_season_features, K=8, period='yearly')
-           .pipe(add_season_features, K=3, period='weekly')
-           .pipe(add_season_features, K=10, period='daily'))
+df_example = (df_elec[df_elec['group'] == example_group]
+              .reset_index(drop=True)
+              .pipe(add_season_features, K=8, period='yearly')
+              .pipe(add_season_features, K=3, period='weekly')
+              .pipe(add_season_features, K=8, period='daily'))
 
-yearly_season_feats = df_elec.columns[df_elec.columns.str.startswith('yearly_')].tolist()
-weekly_season_feats = df_elec.columns[df_elec.columns.str.startswith('weekly_')].tolist()
-daily_season_feats = df_elec.columns[df_elec.columns.str.startswith('daily_')].tolist()
+yearly_season_feats = df_example.columns[df_example.columns.str.startswith('yearly_')].tolist()
+weekly_season_feats = df_example.columns[df_example.columns.str.startswith('weekly_')].tolist()
+daily_season_feats = df_example.columns[df_example.columns.str.startswith('daily_')].tolist()
 season_feats = yearly_season_feats + weekly_season_feats + daily_season_feats
 
 # %% [markdown]
 # Let's visualize these waves:
 
 # %%
-(df_elec
- .loc[df_elec['group'] == example_group, yearly_season_feats + ['time']]
+(df_example[yearly_season_feats + ['time']]
  .query("time.dt.year == 2013")
  .plot(x='time', figsize=(8,4), legend=False, title='Yearly Fourier Terms'))
 
-(df_elec
- .loc[df_elec['group'] == example_group, weekly_season_feats + ['time']]
+(df_example[weekly_season_feats + ['time']]
  .query("(time.dt.year == 2013) & (time.dt.month == 6) & (time.dt.day < 14)")
  .plot(x='time', figsize=(8,4), legend=False, title='Weekly Fourier Terms'))
 
-(df_elec
- .loc[df_elec['group'] == example_group, daily_season_feats + ['time']]
+(df_example[daily_season_feats + ['time']]
  .query("(time.dt.year == 2013) & (time.dt.month == 6) & (time.dt.day == 1)")
  .plot(x='time', figsize=(8,4), legend=False, title='Daily Fourier Terms'))
 
@@ -408,21 +407,21 @@ season_feats = yearly_season_feats + weekly_season_feats + daily_season_feats
 # %%
 from torchcast.utils.training import SeasonalEmbeddingsTrainer
 
-SEASON_EMBED_NDIM = 12
+SEASON_EMBED_NDIM = 20
 
 season_embedder = torch.nn.Sequential(
     torch.nn.LazyLinear(out_features=48),
     torch.nn.Tanh(),
     torch.nn.Linear(48, 48),
     torch.nn.Tanh(),
-    torch.nn.Linear(48, SEASON_EMBED_NDIM, bias=False)
+    torch.nn.Linear(48, SEASON_EMBED_NDIM)
 )
 
 season_trainer = SeasonalEmbeddingsTrainer(
     module=season_embedder,
     yearly=8,
     weekly=3,
-    daily=10
+    daily=8
 )
 
 # %% [markdown]
@@ -447,32 +446,35 @@ season_dl = TimeSeriesDataLoader.from_dataframe(
 # %%
 try:
     _path = os.path.join(BASE_DIR, f"season_trainer{SEASON_EMBED_NDIM}.pt")
-    season_trainer = torch.load(_path)
+    raise FileNotFoundError
+    season_trainer = torch.load(_path, map_location=DEVICE).to(DEVICE)
     season_embedder = season_trainer.module
     plt.plot(season_trainer.loss_history)
-    plt.ylim(0, 8)
+    plt.ylim(None, max(season_trainer.loss_history[5:]))
     plt.ylabel('MSE')
     plt.show()
     
 except FileNotFoundError as e:
     from IPython.display import clear_output
-    
+
     season_trainer.loss_history = []
     for loss in season_trainer(season_dl):
         season_trainer.loss_history.append(loss)
-    
+
         # plot:
-        clear_output(wait=True)
-        plt.plot(season_trainer.loss_history)
-        plt.ylim(0, 8)
-        plt.ylabel('MSE')
-        plt.show()
-    
-        # stop after converges (in our case, about 150 iterations):
-        if len(season_trainer.loss_history) > 150:
+        if len(season_trainer.loss_history) > 5:
+            clear_output(wait=True)
+            plt.plot(season_trainer.loss_history)
+            plt.ylim(None, max(season_trainer.loss_history[5:]))
+            plt.ylabel('MSE')
+            plt.show()
+
+        if len(season_trainer.loss_history) > 500:
             break
 
     torch.save(season_trainer, _path)
+    
+season_trainer.to(torch.device('cpu'))
 
 # %% [markdown]
 # Let's visualize the output of this neural network, with each color being a separate output:
@@ -481,10 +483,15 @@ except FileNotFoundError as e:
 with torch.no_grad():
     times = ds_example_building.times().squeeze()
     pred = season_trainer.module(season_trainer.times_to_model_mat(times).to(torch.float))
-    (pd.DataFrame(pred.numpy())
-         .assign(time=times)
+    _df_pred = pd.DataFrame(pred.numpy()).assign(time=times)
+    
+    (_df_pred
          .query("(time.dt.year == 2013) & (time.dt.month == 6) & (time.dt.day < 7)")
-         .plot(x='time', figsize=(10,5), legend=False, title=f'Season NN (dim={SEASON_EMBED_NDIM}) Output'))
+         .plot(x='time', figsize=(10,5), legend=False, title=f'Season NN (dim={SEASON_EMBED_NDIM}) Output', alpha=0.5))
+
+    (_df_pred
+         .query("(time.dt.year == 2013) & (time.dt.month < 6)")
+         .plot(x='time', figsize=(10,5), legend=False, title=f'Season NN (dim={SEASON_EMBED_NDIM}) Output', alpha=0.25))
 
 # %% [markdown]
 # You can think of each colored line as equivalent to the sin/cos waves above; but now, instead of dozens of these, we have far fewer, that should *hopefully* be able to capture interacting seasonal effects.
@@ -508,22 +515,17 @@ plt.show()
 # ### Step 2: Incorporate our Seasonal-Embeddings into our Time-Series Model
 
 # %% [markdown]
-# How should we incorporate our `season_embedder` neural-network into a state-space model? 
+# How should we incorporate our `season_embedder` neural-network into a state-space model? There are at least two options:
 #
-# One simple option is just to leverage the util methods in the `SeasonalEmbeddingsTrainer`, which handles converting a `TimeSeriesDataset` into a tensor of fourier terms:
+# #### Option 1
+#
+# The first option is to create our fourier-features on the dataframe, and pass these as features into a dataloader.
+#
+# First, we create our time-series model. As mentioned above, we use a KalmanFilter instead of ExpSmoother because only the former can learn relationships specific to each time-series.
 #
 # ```python
-# class SeasonNNKalmanFilter(KalmanFilter):
-#     def __init__(self, season_trainer: SeasonalEmbeddingsTrainer, **kwargs):
-#         super().__init__(**kwargs)
-#         self.season_trainer = season_trainer
-#         self.add_module('season_nn', season_trainer.module)
-#
-#     def forward(self,
-#                 batch: 'TimeSeriesDataset',
-#                 **kwargs) -> Predictions:
-#         X = self.season_trainer.times_to_model_mat(batch.times())
-#         return super().forward(batch.tensors[0], X=self.season_nn(X), **kwargs)
+# from torchcast.kalman_filter import KalmanFilter
+# from torchcast.process import LinearModel
 #
 # kf_nn = KalmanFilter(
 #     measures=['kW_sqrt_c'],
@@ -531,58 +533,99 @@ plt.show()
 #         LinearModel(id='nn_output', predictors=[f'nn{i}' for i in range(SEASON_EMBED_NDIM)]),
 #         LocalTrend(id='trend'),
 #     ]
+# ).to(DEVICE)
+#
+# # we register the season-embedder NN with our time-series model, so that pytorch is aware of
+# # the season-embedder's parameters (and can continue to train them)
+# kf_nn.season_nn = season_embedder 
+# ```
+#
+# 2. Next, we create add our season features to the dataframe, and create a dataloader, passing these feature-names to the `X_colnames` argument:
+#
+# ```python
+# dataloader_kf_nn = TimeSeriesDataLoader.from_dataframe(
+#     df_elec
+#         .query("dataset=='train'")
+#         .pipe(add_season_features, K=8, period='yearly')
+#         .pipe(add_season_features, K=3, period='weekly')
+#         .pipe(add_season_features, K=8, period='daily')
+#     ,
+#     group_colname='subgroup',
+#     time_colname='time',
+#     dt_unit='h',
+#     y_colnames=['kW_sqrt_c'],
+#     X_colnames=season_feats,
+#     batch_size=50
 # )
 # ```
 #
-# However, we'll use a somewhat more generalizable approach that shows how you can add arbitrary predictors to a `TimeSeriesDataLoader`.
+# Finally, we train the model, either rolling our own training loop...
 #
-# We already have our fourier terms added to the main `df_elec` dataframe, so we can just pass those via `X_colnames`:
-
-# %%
-dataloaderX = TimeSeriesDataLoader.from_dataframe(
-    df_elec.query("dataset=='train'"),
-    group_colname='subgroup',
-    time_colname='time',
-    dt_unit='h',
-    y_colnames=['kW_sqrt_c'],
-    X_colnames=season_feats,
-    batch_size=50 
-)
+# ```python
+# for i in range(num_epochs):
+#     for batch in dataloader_kf_nn:
+#         batch = batch.to(DEVICE)
+#         y, X = batch.tensors
+#         predictions = kf_nn(y, X=X, start_offsets=batch.start_offsets)
+#         # use predictions.log_prob on optimizer, etc.
+# ```
+#
+# ...or, even better, using a tool like Pytorch Lightning. Torchcast also includes a simple tool for this, the `StateSpaceTrainer`:
+#
+# ```python
+# from torchcast.utils.training import StateSpaceTrainer
+#
+# ss_trainer = StateSpaceTrainer(
+#     module=kf_nn, 
+#     kwargs_getter=lambda batch: {'X' : kf_nn.season_nn(batch.tensors[1])},
+# )
+#
+# for loss in ss_trainer:
+#     print(loss)
+#     # etc...
+# ```
 
 # %% [markdown]
-# Now we'll set up our model. Note we are setting up the LinearModel to take the neural network *outputs* as its own *inputs*:
+# #### Option 2
+#
+# An even simpler (though less general) option is just to leverage the util methods in the `SeasonalEmbeddingsTrainer`, which handles converting a `TimeSeriesDataset` into a tensor of fourier terms:
 
 # %%
 from torchcast.kalman_filter import KalmanFilter
 from torchcast.process import LinearModel
+from torchcast.utils.training import StateSpaceTrainer
 
+# subclass KalmanFilter so that `forward` creates the fourier model mat and passes it to the `season_nn`:
+# class SeasonNNKalmanFilter(KalmanFilter):
+#     def __init__(self, season_trainer: SeasonalEmbeddingsTrainer, **kwargs):
+#         super().__init__(**kwargs)
+#         self.season_trainer = season_trainer
+#         self.add_module('season_nn', season_trainer.module)
+
+#     def forward(self,
+#                 batch: 'TimeSeriesDataset',
+#                 **kwargs) -> 'Predictions':
+#         seasonX = self.season_trainer.times_to_model_mat(batch.times())
+#         return super().forward(batch.tensors[0], X=self.season_nn(seasonX), **kwargs)
+
+# TODO:
 kf_nn = KalmanFilter(
     measures=['kW_sqrt_c'],
     processes=[
         LinearModel(id='nn_output', predictors=[f'nn{i}' for i in range(SEASON_EMBED_NDIM)]),
         LocalTrend(id='trend'),
-    ]
+    ],
 )
-kf_nn.season_embedder = season_embedder # register the module
 
+# TODO:
+kf_nn.season_nn = season_trainer.module
+kf_nn.season_nn.requires_grad_(False) # TODO: explain
 
-# %% [markdown]
-# For this notebook, we'll just use a simple trainer, but you might consider more feature-robust tools like Pytorch Lightning for other applications:
-
-# %%
-def _make_kf_nn_kwargs(batch: 'TimeSeriesDataset') -> dict:
-    return {
-        'X' : kf_nn.season_embedder(batch.tensors[1]),
-        'n_step' : int(24 * 7.5),
-        'every_step' : False
-    }
-
-
-# %%
-from torchcast.utils.training import StateSpaceTrainer
+# TODO:
 ss_trainer = StateSpaceTrainer(
     module=kf_nn, 
-    kwargs_getter=_make_kf_nn_kwargs
+    kwargs_getter=lambda batch: {'X' : kf_nn.season_nn(season_trainer.times_to_model_mat(batch.times()).to(torch.float))},
+    optimizer=torch.optim.Adam([p for p in kf_nn.parameters() if p.requires_grad], lr=.01)
 )
 
 # %% [markdown]
@@ -591,12 +634,24 @@ ss_trainer = StateSpaceTrainer(
 # In practice, neural-networks have many more parameters and take many more epochs than our state-space models (and conversely, our state-space models are much slower to train _per_ epoch). So it's much more efficient to pre-train the network first. Then it's up to us whether we want to continue training the network, or just freeze its weights (i.e. exclude it from the optimizer) and just train the state-space models' paramters.
 
 # %%
+dataloader_kf_nn = TimeSeriesDataLoader.from_dataframe(
+    df_elec.query("dataset=='train'"),
+    group_colname='subgroup',
+    time_colname='time',
+    dt_unit='h',
+    measure_colnames=['kW_sqrt_c'],
+    batch_size=50
+)
+
+# %%
 try:
     _path = os.path.join(BASE_DIR, f"kf_nn{SEASON_EMBED_NDIM}.pt")
+    raise FileNotFoundError
     kf_nn = torch.load(_path)
-except FileNotFoundError as e:    
+except FileNotFoundError as e:
+    
     ss_trainer.loss_history = []
-    for loss in ss_trainer(dataloaderX):
+    for loss in ss_trainer(dataloader_kf_nn, forward_kwargs={'n_step' : 25*7, 'every_step' : False}):
         ss_trainer.loss_history.append(loss)
         print(loss)
 
@@ -604,8 +659,10 @@ except FileNotFoundError as e:
     
         # TODO
         if len(ss_trainer.loss_history) > 100:
-            break
+            break    
 
+# %%
+plt.plot(ss_trainer.loss_history)
 
 # %%
 with torch.inference_mode():
@@ -631,6 +688,9 @@ with torch.inference_mode():
         )
 df_all_preds = pd.concat(df_all_preds).reset_index(drop=True)
 df_all_preds
+
+# %%
+# !say done
 
 # %% [markdown]
 # # END
