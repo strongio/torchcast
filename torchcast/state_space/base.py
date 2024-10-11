@@ -183,8 +183,6 @@ class StateSpaceModel(nn.Module):
 
     @torch.jit.ignore()
     def set_initial_values(self, y: Tensor, ilink: Optional[callable] = None, verbose: bool = True):
-        if not n:
-            return
         if 'initial_mean' not in self.state_dict():
             return
 
