@@ -304,7 +304,7 @@ class TimeSeriesDataset(TensorDataset):
             tensors = []
             for i, t in enumerate(zip(*to_concat['tensors'])):
                 catted = ragged_cat(t, ragged_dim=1, padding=None if i == 0 else pad_X)
-                if do_ffill:
+                if do_ffill and i > 0:  # i==0 is y, not X; but only want to ffill X
                     any_measured_bool = ~np.isnan(catted.numpy()).all(2)
                     for g in range(catted.shape[0]):
                         last_measured_idx = np.max(true1d_idx(any_measured_bool[g]).numpy(), initial=0)

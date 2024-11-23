@@ -240,9 +240,9 @@ class SeasonalEmbeddingsTrainer(BaseTrainer):
         y, *_other = batch.tensors
         X = self.times_to_model_mat(batch.times()).to(dtype=y.dtype, device=self._device)
 
-        if len(_other) == 1:
+        if len(_other):
             X = torch.cat([X, _other[0]], -1)
-        elif len(_other) and not self._warned:
+        if len(_other) > 1 and not self._warned:
             warnings.warn("Ignoring additional tensors in batch.")
             self._warned = True
         return X, y
