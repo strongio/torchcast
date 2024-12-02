@@ -1,18 +1,3 @@
-# ---
-# jupyter:
-#   jupytext:
-#     formats: py:percent,ipynb
-#     text_representation:
-#       extension: .py
-#       format_name: percent
-#       format_version: '1.3'
-#       jupytext_version: 1.16.2
-#   kernelspec:
-#     display_name: Python 3 (ipykernel)
-#     language: python
-#     name: python3
-# ---
-
 # %% nbsphinx="hidden"
 from typing import Sequence
 
@@ -72,22 +57,22 @@ except FileNotFoundError as e:
                .groupby(['group', 'time'])
                ['kW'].mean()
                .reset_index())
-    
+
     # find start time for each group:
     group_starts = df_elec[df_elec['kW'] > 0].groupby('group')['time'].min()
-    
+
     # filter to start time:
     df_elec = (df_elec
                .loc[df_elec['time'] >= df_elec['group'].map(group_starts), :]
                .reset_index(drop=True))
-    
-    # from dataset documentation: "Every year in March time change day (which has only 23 hours) 
+
+    # from dataset documentation: "Every year in March time change day (which has only 23 hours)
     # the values between 1:00 am and 2:00 am are zero for all points"
     zero_counts = df_elec.loc[df_elec['kW'] == 0,'time'].value_counts()
     df_elec.loc[df_elec['time'].isin(zero_counts.index[zero_counts>100]),'kW'] = float('nan')
 
-    # Some groups have data that isn't really appropriate for modeling -- for example, exhibiting near-zero 
-    # variation (e.g. MT_003). For some rudimentary cleaning, we'll remove these kinds of regions of flatness. 
+    # Some groups have data that isn't really appropriate for modeling -- for example, exhibiting near-zero
+    # variation (e.g. MT_003). For some rudimentary cleaning, we'll remove these kinds of regions of flatness.
     # For simplicity we'll just drop buildings that are flat in this way for a non-trivial amount of time.
     df_elec['roll_std'] = df_elec.groupby('group')['kW'].rolling(48).std().reset_index(0, drop=True)
     # set to missing when it's low
@@ -96,7 +81,7 @@ except FileNotFoundError as e:
     group_missingness = df_elec.assign(missing=lambda df: df['kW'].isnull()).groupby('group')['missing'].mean()
     df_elec = df_elec.loc[df_elec['group'].map(group_missingness) < .01, :].reset_index(drop=True)
 
-    # We'll split the data at mid-2013. For half the groups, the holdout will be used as validation data; for the other 
+    # We'll split the data at mid-2013. For half the groups, the holdout will be used as validation data; for the other
     # half, it will be used as test data.
     df_elec['_use_holdout_as_test'] = (df_elec['group'].str.replace('MT_', '').astype('int') % 2) == 0
     df_elec['dataset'] = 'train'
@@ -109,7 +94,7 @@ except FileNotFoundError as e:
                         ['time'].agg(['min', 'max'])
                         .reset_index()
                         .assign(history_len=lambda df: (df['max'] - df['min']).dt.days))
-    
+
     all_groups = set(df_group_summary['group'])
     train_groups = sorted(df_group_summary.query("(dataset=='train') & (history_len >= 365)")['group'])
     df_elec = df_elec.loc[df_elec['group'].isin(train_groups), :].reset_index(drop=True)
@@ -117,7 +102,7 @@ except FileNotFoundError as e:
     # inconveniently, there is only a single observation in 2015, which leads to annoyances later. just drop that one observation:
     assert (df_elec['time'].dt.year >= 2015).sum() <= df_elec['group'].nunique()
     df_elec = df_elec[df_elec['time'].dt.year < 2015].reset_index(drop=True)
-        
+
     # save
     df_elec.to_csv(os.path.join(BASE_DIR, "df_electricity.csv.gz"), index=False)
 
@@ -166,7 +151,7 @@ es = ExpSmoother(
 # transform and center:
 df_elec['kW_sqrt'] = np.sqrt(df_elec['kW'])
 group_means = df_elec.query("dataset=='train'").groupby('group')['kW_sqrt'].mean().to_dict()
-df_elec['kW_sqrt_c'] = df_elec['kW_sqrt'] - df_elec['group'].map(group_means) 
+df_elec['kW_sqrt_c'] = df_elec['kW_sqrt'] - df_elec['group'].map(group_means)
 
 # %%
 ds_example_building = TimeSeriesDataset.from_dataframe(
@@ -190,15 +175,15 @@ except FileNotFoundError:
     torch.save(es.state_dict(), os.path.join(BASE_DIR, f"es_{example_group}.pt"))
 
 
-# %% [markdown]
+# %% [markdown] id="4a82175c-56c8-454a-925f-9cabfbedd079"
 # The first thing you'll notice about this approach is that it's **incredibly slow to train**. The second problem is that the forecasts are **terrible**:
 
 # %%
 es_predictions = es(
-    ds_example_train.tensors[0], 
+    ds_example_train.tensors[0],
     start_offsets=ds_example_train.start_datetimes,
     # note we *not* getting `num_timesteps` from `ds_example_train`, since we want to forecast outside the training time:
-    out_timesteps=ds_example_building.num_timesteps 
+    out_timesteps=ds_example_building.num_timesteps
 )
 es_predictions.plot()
 
@@ -262,7 +247,7 @@ except FileNotFoundError:
 
 # %%
 es2_predictions = es2(
-    ds_example_train.tensors[0], 
+    ds_example_train.tensors[0],
     start_offsets=ds_example_train.start_datetimes,
     out_timesteps=ds_example_building.num_timesteps
 )
@@ -302,10 +287,10 @@ def plot_2x2(df: pd.DataFrame,
                        night=lambda df: (df[time_colname].dt.hour.isin(night_hours)).astype('int'),
                        date=lambda df: df[time_colname].dt.normalize())
                 .groupby(['date', 'weekend', 'night'])
-                .agg(forecast=(pred_colname, 'mean'), 
+                .agg(forecast=(pred_colname, 'mean'),
                      actual=(actual_colname, 'mean'))
                 .reset_index())
-            
+
     kwargs['subplot_kw'] = kwargs.get('subplot_kw', {})
     if 'ylim' not in kwargs['subplot_kw']:
         kwargs['subplot_kw']['ylim'] = (df_split['actual'].min(), df_split['actual'].max())
@@ -446,7 +431,6 @@ season_dl = TimeSeriesDataLoader.from_dataframe(
 # %%
 try:
     _path = os.path.join(BASE_DIR, f"season_trainer{SEASON_EMBED_NDIM}.pt")
-    raise FileNotFoundError
     season_trainer = torch.load(_path, map_location=DEVICE).to(DEVICE)
     season_embedder = season_trainer.module
     plt.plot(season_trainer.loss_history)
@@ -473,7 +457,7 @@ except FileNotFoundError as e:
             break
 
     torch.save(season_trainer, _path)
-    
+
 season_trainer.to(torch.device('cpu'))
 
 # %% [markdown]
@@ -493,7 +477,7 @@ with torch.no_grad():
          .query("(time.dt.year == 2013) & (time.dt.month < 6)")
          .plot(x='time', figsize=(10,5), legend=False, title=f'Season NN (dim={SEASON_EMBED_NDIM}) Output', alpha=0.25))
 
-# %% [markdown]
+# %% [markdown] id="8579c309-c90d-49c7-b369-16bfcec68b87"
 # You can think of each colored line as equivalent to the sin/cos waves above; but now, instead of dozens of these, we have far fewer, that should *hopefully* be able to capture interacting seasonal effects.
 #
 # But is that hope founded in anything? Let's see if our embeddings are able to capture what we want for our example building.
@@ -537,7 +521,7 @@ plt.show()
 #
 # # we register the season-embedder NN with our time-series model, so that pytorch is aware of
 # # the season-embedder's parameters (and can continue to train them)
-# kf_nn.season_nn = season_embedder 
+# kf_nn.season_nn = season_embedder
 # ```
 #
 # 2. Next, we create add our season features to the dataframe, and create a dataloader, passing these feature-names to the `X_colnames` argument:
@@ -576,7 +560,7 @@ plt.show()
 # from torchcast.utils.training import StateSpaceTrainer
 #
 # ss_trainer = StateSpaceTrainer(
-#     module=kf_nn, 
+#     module=kf_nn,
 #     kwargs_getter=lambda batch: {'X' : kf_nn.season_nn(batch.tensors[1])},
 # )
 #
@@ -592,28 +576,15 @@ plt.show()
 
 # %%
 from torchcast.kalman_filter import KalmanFilter
-from torchcast.process import LinearModel
+from torchcast.process import LinearModel, LocalLevel
 from torchcast.utils.training import StateSpaceTrainer
-
-# subclass KalmanFilter so that `forward` creates the fourier model mat and passes it to the `season_nn`:
-# class SeasonNNKalmanFilter(KalmanFilter):
-#     def __init__(self, season_trainer: SeasonalEmbeddingsTrainer, **kwargs):
-#         super().__init__(**kwargs)
-#         self.season_trainer = season_trainer
-#         self.add_module('season_nn', season_trainer.module)
-
-#     def forward(self,
-#                 batch: 'TimeSeriesDataset',
-#                 **kwargs) -> 'Predictions':
-#         seasonX = self.season_trainer.times_to_model_mat(batch.times())
-#         return super().forward(batch.tensors[0], X=self.season_nn(seasonX), **kwargs)
 
 # TODO:
 kf_nn = KalmanFilter(
     measures=['kW_sqrt_c'],
     processes=[
         LinearModel(id='nn_output', predictors=[f'nn{i}' for i in range(SEASON_EMBED_NDIM)]),
-        LocalTrend(id='trend'),
+        LocalLevel(id='level'),
     ],
 )
 
@@ -621,48 +592,52 @@ kf_nn = KalmanFilter(
 kf_nn.season_nn = season_trainer.module
 kf_nn.season_nn.requires_grad_(False) # TODO: explain
 
+def _kwargs_getter(batch: TimeSeriesDataset) -> dict:
+    seasonX = season_trainer.times_to_model_mat(batch.times()).to(dtype=torch.float, device=DEVICE)
+    return {'X' : kf_nn.season_nn(seasonX)}
+
 # TODO:
 ss_trainer = StateSpaceTrainer(
-    module=kf_nn, 
-    kwargs_getter=lambda batch: {'X' : kf_nn.season_nn(season_trainer.times_to_model_mat(batch.times()).to(torch.float))},
-    optimizer=torch.optim.Adam([p for p in kf_nn.parameters() if p.requires_grad], lr=.01)
+    module=kf_nn,
+    kwargs_getter=_kwargs_getter,
+    optimizer=torch.optim.Adam([p for p in kf_nn.parameters() if p.requires_grad], lr=.05)
 )
 
-# %% [markdown]
-# But wait: if we're just passing the outputs of `season_embedder` to our time-series model, why did we bother pre-training `season_embedder`? In fact, `torchcast` _does_ support end to end modeling, so in principle we could pass use a completely untrained neural-network here. 
+# %% [markdown] id="0e86ec5f-4963-42a8-aaa4-79dba72efefb"
+# But wait: if we're just passing the outputs of `season_embedder` to our time-series model, why did we bother pre-training `season_embedder`? In fact, `torchcast` _does_ support end to end modeling, so in principle we could pass use a completely untrained neural-network here.
 #
 # In practice, neural-networks have many more parameters and take many more epochs than our state-space models (and conversely, our state-space models are much slower to train _per_ epoch). So it's much more efficient to pre-train the network first. Then it's up to us whether we want to continue training the network, or just freeze its weights (i.e. exclude it from the optimizer) and just train the state-space models' paramters.
 
 # %%
 dataloader_kf_nn = TimeSeriesDataLoader.from_dataframe(
     df_elec.query("dataset=='train'"),
-    group_colname='subgroup',
+    group_colname='group',
     time_colname='time',
     dt_unit='h',
     measure_colnames=['kW_sqrt_c'],
-    batch_size=50
+    batch_size=40
 )
+#[len(b) for b in dataloader_kf_nn]
 
 # %%
 try:
-    _path = os.path.join(BASE_DIR, f"kf_nn{SEASON_EMBED_NDIM}.pt")
-    raise FileNotFoundError
-    kf_nn = torch.load(_path)
+    _path = os.path.join(BASE_DIR, f"ss_trainer{SEASON_EMBED_NDIM}.pt")
+    ss_trainer = torch.load(_path, map_location=DEVICE).to(DEVICE)
+    kf_nn = ss_trainer.module
+    plt.plot(ss_trainer.loss_history)
+    plt.show()
 except FileNotFoundError as e:
-    
+    torch.cuda.empty_cache()
     ss_trainer.loss_history = []
-    for loss in ss_trainer(dataloader_kf_nn, forward_kwargs={'n_step' : 25*7, 'every_step' : False}):
+    for loss in ss_trainer(dataloader_kf_nn, forward_kwargs={'n_step' : 14*7*24, 'every_step' : False}):
         ss_trainer.loss_history.append(loss)
         print(loss)
 
-        torch.save(kf_nn, _path)
-    
-        # TODO
-        if len(ss_trainer.loss_history) > 100:
-            break    
+        torch.save(ss_trainer, _path)
 
-# %%
-plt.plot(ss_trainer.loss_history)
+        # TODO
+        if len(ss_trainer.loss_history) > 30:
+            break
 
 # %%
 with torch.inference_mode():
@@ -673,78 +648,42 @@ with torch.inference_mode():
         group_colname='group',
         time_colname='time',
         dt_unit='h',
-        y_colnames=['kW_sqrt_c'],
-        X_colnames=season_feats,
-        batch_size=50 
+        measure_colnames=['kW_sqrt_c'],
+        batch_size=50
     )
-    
+
     df_all_preds = []
     for batch in tqdm(dataloader_all):
-        y, X = batch.tensors
-        df_all_preds.append(
-            kf_nn(y, X=season_embedder(X), start_offsets=batch.start_offsets)
-            .to_dataframe(batch)
-            .drop(columns=['actual'])
-        )
+        batch = batch.to(DEVICE)
+        seasonX = season_trainer.times_to_model_mat(batch.times()).to(dtype=torch.float, device=DEVICE)
+        pred = kf_nn(batch.tensors[0], X=kf_nn.season_nn(seasonX), start_offsets=batch.start_offsets)
+        df_all_preds.append(pred.to_dataframe(batch).drop(columns=['actual']))
 df_all_preds = pd.concat(df_all_preds).reset_index(drop=True)
 df_all_preds
 
-# %%
-# !say done
-
-# %% [markdown]
+# %% [markdown] id="f897e420-ff9a-46d1-9962-787fc2d52b8f"
 # # END
 
 # %%
 foo = df_all_preds.merge(df_elec.query("group==@example_group"))
 plot_2x2(foo, actual_colname='kW_sqrt_c')
 
-# %%
-from torchcast.process import LinearModel, LocalLevel
-
-es_nn = ExpSmoother(
-    measures=['kW_sqrt_c'],
-    processes=[
-        # trend:
-        LocalTrend(id='trend'),
-        # static seasonality:
-        LinearModel(id='season', predictors=['nn_output']),
-        # local deviations from typical behavior:
-        LocalLevel(id='local_level', decay=True),
-        Season(id='local_hour_in_day', period=24, dt_unit='h', K=6, decay=True),
-    ]
-)
-
 # %% [markdown]
 # #### Evaluation
 #
-# Reviewing the same example-building from before, we see the forecasts are more closely hewing to the actual seasonal structure for each time of day/week. Instead of the forecasts in each panel being essentially identical, each differs in shape. 
+# Reviewing the same example-building from before, we see the forecasts are more closely hewing to the actual seasonal structure for each time of day/week. Instead of the forecasts in each panel being essentially identical, each differs in shape.
 
-# %% nbsphinx="hidden"
-es_nn_lightning.to(maybe_cuda)
-df_forecast_nn = []
-with torch.no_grad():
-    for _batch in make_dataloader('all', batch_size=25):
-        _batch = _batch.to(maybe_cuda)
-        forecast_batch = _batch.with_new_tensors(
-            _batch.train_val_split(dt=SPLIT_DT)[0].tensors[0],
-            _batch.tensors[1]
-        )
-        forecast_nn = es_nn_lightning(forecast_batch, out_timesteps=_batch.tensors[1].shape[1])
-        df_forecast_nn.append(forecast_nn.to_dataframe(_batch))
-df_forecast_nn = pd.concat(df_forecast_nn).query("actual.notnull()", engine='python').reset_index(drop=True)
-
-# %%
+# %% id="090f81cd"
 plot_forecasts(df_forecast_nn.query("group==@example_group & time.dt.year==2013 & time.dt.month==6"))
 
-# %%
+# %% id="4890ca25"
 plot_2x2(df_forecast_nn.query("group==@example_group"))
 
 
-# %% [markdown]
+# %% [markdown] id="013f7ad2"
 # Let's confirm quantitatively that the 2nd model does indeed substantially reduce forecast error, relative to the 'standard' model:
 
-# %%
+# %% id="169f9b15"
 def inverse_transform(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     for col in ['mean', 'lower', 'upper', 'actual']:
@@ -753,7 +692,7 @@ def inverse_transform(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# %%
+# %% id="c6619767"
 df_nn_err = df_forecast_nn. \
     pipe(inverse_transform).\
     assign(error=lambda df: (df['mean'] - df['actual']).abs(),
