@@ -31,7 +31,8 @@ class LinearModel(Process):
                  predictors: Sequence[str],
                  measure: Optional[str] = None,
                  fixed: bool = True,
-                 decay: Optional[Tuple[float, float]] = None):
+                 decay: Optional[Tuple[float, float]] = None,
+                 model_mat_kwarg_name: str = 'X'):
 
         super().__init__(
             id=id,
@@ -50,7 +51,7 @@ class LinearModel(Process):
             if isinstance(decay, tuple):
                 decay = SingleOutput(numel=len(predictors), transform=Bounded(*decay))
             self.f_modules['all_self'] = decay
-        self.expected_kwargs = ['X']
+        self.expected_kwargs = [model_mat_kwarg_name]
 
     def _build_h_mat(self, inputs: Dict[str, torch.Tensor], num_groups: int, num_times: int) -> torch.Tensor:
         # if not torch.jit.is_scripting():
@@ -59,7 +60,7 @@ class LinearModel(Process):
         #     except KeyError as e:
         #         raise TypeError(f"Missing required keyword-arg `X` (or `{self.id}__X`).") from e
         # else:
-        X = inputs['X']
+        X = inputs[self.expected_kwargs[0]]
         assert not torch.isnan(X).any()
         assert not torch.isinf(X).any()
 

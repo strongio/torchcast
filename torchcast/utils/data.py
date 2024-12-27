@@ -231,38 +231,26 @@ class TimeSeriesDataset(TensorDataset):
         """
         return self[np.isin(self.group_names, groups)]
 
-    def split_measures(self, *measure_groups, which: Optional[int] = None) -> 'TimeSeriesDataset':
+    def split_measures(self, *measure_groups) -> 'TimeSeriesDataset':
         """
-        Take a dataset with one tensor, split it into a dataset with multiple tensors.
+        Take a dataset and split it into a dataset with multiple tensors.
 
-        :param measure_groups: Each argument should be be a list of measure-names, or an indexer (i.e. list of ints or
-         a slice).
-        :param which: If there are already multiple measure groups, the split will occur within one of them; must
-         specify which.
+        :param measure_groups: Each argument should be a list of measure-names.
         :return: A :class:`.TimeSeriesDataset`, now with multiple tensors for the measure-groups.
         """
+        concat_tensors = torch.cat(self.tensors, dim=2)
 
-        if which is None:
-            if len(self.measures) > 1:
-                raise RuntimeError(f"Must pass `which` if there's more than one groups:\n{self.measures}")
-            which = 0
-
-        self_tensor = self.tensors[which]
-        self_measures = self.measures[which]
-
-        idxs = []
+        idx_groups = []
         for measure_group in measure_groups:
-            if isinstance(measure_group, slice) or isinstance(measure_group[0], int):
-                idxs.append(measure_group)
-            else:
-                idxs.append([self_measures.index(m) for m in measure_group])
+            idx_groups.append([])
+            for measure in measure_group:
+                idx_groups[-1].append(self.all_measures.index(measure))
 
-        self_measures = np.array(self_measures)
         return type(self)(
-            *(self_tensor[:, :, idx].clone() for idx in idxs),
+            *(concat_tensors[:, :, idxs] for idxs in idx_groups),
             start_times=self.start_times,
             group_names=self.group_names,
-            measures=[tuple(self_measures[idx]) for idx in idxs],
+            measures=measure_groups,
             dt_unit=self.dt_unit
         )
 
