@@ -112,14 +112,6 @@ class BernoulliFilter(KalmanFilter):
             kwargs.update(update_means=updates[0], update_covs=updates[1])
         return BernoulliPredictions(**kwargs)
 
-    @torch.jit.ignore()
-    def set_initial_values(self, y: Tensor, n: int, ilink: Optional[callable] = None, verbose: bool = True):
-        if n is True:
-            # use a different default, only one timestep is too stringent
-            num_timesteps = y.shape[1]
-            n = max(int(num_timesteps * 0.10), 1)
-        return super().set_initial_values(y=y, n=n, ilink=functools.partial(torch.logit, eps=.001), verbose=verbose)
-
 
 _warn_once = {}
 

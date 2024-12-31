@@ -7,7 +7,7 @@ from torch import Tensor
 
 from .kalman_filter import KalmanStep
 from ..state_space import Predictions
-from ..utils import TimeSeriesDataset
+from ..utils import TimeSeriesDataset, class_or_instancemethod
 
 
 class EKFStep(KalmanStep):
@@ -36,8 +36,6 @@ class EKFStep(KalmanStep):
                 mean: Tensor,
                 cov: Tensor,
                 kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        if (kwargs['outlier_threshold'] != 0).any():
-            raise NotImplementedError("Outlier rejection is not yet supported for EKF")
 
         orig_H = kwargs['H']
         h_dot_state = (orig_H @ mean.unsqueeze(-1)).squeeze(-1)
@@ -97,7 +95,7 @@ class EKFPredictions(Predictions):
         df[['mean', 'lower', 'upper']] = self._adjust_measured_mean(df['mean'], df.pop('std'), conf=conf)
         return df
 
-    @classmethod
+    @class_or_instancemethod
     def plot(cls,
              df: pd.DataFrame,
              group_colname: str = None,
