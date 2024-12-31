@@ -1,24 +1,26 @@
-# %% nbsphinx="hidden"
+# + nbsphinx="hidden"
 from typing import Sequence
 
 import torch
 import copy
 import os
 
-import matplotlib.pyplot as plt
-
+from torchcast.state_space import Predictions
 from torchcast.exp_smooth import ExpSmoother
 from torchcast.utils.data import TimeSeriesDataset, TimeSeriesDataLoader
+
+from matplotlib import pyplot as plt
+from plotnine import facet_wrap
 
 from tqdm.auto import tqdm
 
 import numpy as np
 import pandas as pd
+# -
 
-# %% [markdown]
 # # Using NN's for Long-Range Forecasts: Electricity Data
 #
-# In this example we'll show how to handle complex series. The domain here -- electricity-usage data (using a dataset from the [UCI Machine Learning Data Repository](https://archive.ics.uci.edu/ml/datasets/ElectricityLoadDiagrams20112014)) -- is a great example of a challenge for traditional forecasting applications. In these traditional approaches, we divide our model into siloed processes that each contribute to separate behaviors of the time-series. For example:
+# In this example we'll show how to handle complex series. The domain here is electricity-usage data (using a dataset from the [UCI Machine Learning Data Repository](https://archive.ics.uci.edu/ml/datasets/ElectricityLoadDiagrams20112014)), and it's a great example of a challenge for traditional forecasting applications. In these traditional approaches, we divide our model into siloed processes that each contribute to separate behaviors of the time-series. For example:
 #
 # - Hour-in-day effects
 # - Day-in-week effects
@@ -27,15 +29,16 @@ import pandas as pd
 #
 # However, with electricity data, it's limiting to model these separately, because **these effects all interact**: the impact of hour-in-day depends on the day-of-week, the impact of the day-of-week depends on the season of the year, etc.
 
-# %%
+#
+# (toc)
+
 BASE_DIR = 'electricity'
 SPLIT_DT = np.datetime64('2013-06-01')
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# %% [markdown]
 # ## Data-Prep
 
-# %% nbsphinx="hidden"
+# + nbsphinx="hidden"
 try:
     df_elec = pd.read_csv(os.path.join(BASE_DIR, 'df_electricity.csv.gz'), parse_dates=['time'])
 except FileNotFoundError as e:
@@ -106,33 +109,57 @@ except FileNotFoundError as e:
     # save
     df_elec.to_csv(os.path.join(BASE_DIR, "df_electricity.csv.gz"), index=False)
 
+assert df_elec['kW'].isnull().mean() < .001
+assert df_elec.groupby('group')['time'].is_monotonic_increasing.all()
+df_elec['kW'] = df_elec.groupby('group')['kW'].ffill()
+
 np.random.seed(2024-10-4)
 torch.manual_seed(2024-10-4)
+# -
 
-# %% [markdown]
 # Our dataset consists of hourly kW readings for multiple buildings:
 
-# %%
 df_elec.head()
 
-# %% [markdown]
 # Let's pick an example group to focus on, for demonstrative purposes:
 
-# %%
 example_group = 'MT_358'
 
-# %%
 df_elec.query(f"group=='{example_group}'").plot('time', 'kW', figsize=(20, 5))
 
-# %% [markdown]
+# +
+# we'll apply a sqrt transformation and center before training, and inverse these for plotting/eval:
+group_means = (df_elec
+               .assign(kW_sqrt = lambda df: np.sqrt(df['kW']))
+               .query("dataset=='train'")
+               .groupby('group')
+               ['kW_sqrt'].mean()
+               .to_dict())
+
+def add_transformed(df: pd.DataFrame) -> pd.DataFrame:
+    return df.assign(kW_sqrt_c = lambda df: np.sqrt(df['kW']) - df['group'].map(group_means))
+
+def add_inv_transformed(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    cols = [c for c in ['lower', 'upper', 'mean', 'actual'] if c in df.columns]
+    df[cols] += df['group'].map(group_means).to_numpy()[:, None]
+    df[cols] = df[cols].clip(lower=0) ** 2
+    if 'measure' in df.columns:
+        df['measure'] = df['measure'].str.replace('_sqrt_c', '')
+    return df
+
+
+# -
+
+df_elec = add_transformed(df_elec)
+
 # ## A Standard Forecasting Approach
 
-# %% [markdown]
 # ### Attempt 1
 #
 # First, let's try a standard exponential-smoothing algorithm on one of the series.
 
-# %%
+# +
 from torchcast.process import LocalTrend, Season
 
 es = ExpSmoother(
@@ -146,14 +173,8 @@ es = ExpSmoother(
         LocalTrend(id='trend'),
     ]
 )
+# -
 
-# %%
-# transform and center:
-df_elec['kW_sqrt'] = np.sqrt(df_elec['kW'])
-group_means = df_elec.query("dataset=='train'").groupby('group')['kW_sqrt'].mean().to_dict()
-df_elec['kW_sqrt_c'] = df_elec['kW_sqrt'] - df_elec['group'].map(group_means)
-
-# %%
 ds_example_building = TimeSeriesDataset.from_dataframe(
     df_elec.query("group == @example_group"),
     group_colname='group',
@@ -164,7 +185,6 @@ ds_example_building = TimeSeriesDataset.from_dataframe(
 ds_example_train, _ = ds_example_building.train_val_split(dt=SPLIT_DT)
 ds_example_train
 
-# %%
 try:
     es.load_state_dict(torch.load(os.path.join(BASE_DIR, f"es_{example_group}.pt")))
 except FileNotFoundError:
@@ -175,10 +195,10 @@ except FileNotFoundError:
     torch.save(es.state_dict(), os.path.join(BASE_DIR, f"es_{example_group}.pt"))
 
 
-# %% [markdown] id="4a82175c-56c8-454a-925f-9cabfbedd079"
+# + [markdown] id="4a82175c-56c8-454a-925f-9cabfbedd079"
 # The first thing you'll notice about this approach is that it's **incredibly slow to train**. The second problem is that the forecasts are **terrible**:
+# -
 
-# %%
 es_predictions = es(
     ds_example_train.tensors[0],
     start_offsets=ds_example_train.start_datetimes,
@@ -187,15 +207,12 @@ es_predictions = es(
 )
 es_predictions.plot()
 
-
-# %% [markdown]
 # The most obvious issue here is the discrepancy between the predictions on the training data (which look sane) and the validation data (which look insane). 
 #
-# **This isn't overfitting, but instead the difference between one-step-ahead predictions vs. long-range forecasts.**
+# This isn't overfitting, but instead the difference between one-step-ahead predictions vs. long-range forecasts.
 #
 # What's going on here? Part of the problem is that **the model wasn't actually trained to generate long-range forecasts.** The standard approach has us train on one-step-ahead predictions -- here, that means one *hour* ahead predictions.
 
-# %% [markdown]
 # ### Attempt 2
 #
 # Let's see if we can improve on this. We'll leave the model unchanged but make two changes:
@@ -203,13 +220,10 @@ es_predictions.plot()
 # - Use the `n_step` argument to train our model on one-week ahead forecasts, instead of one step (i.e. hour) ahead. This improves the efficiency of training by encouraging the model to 'care about' longer range forecasts vs. over-focusing on the easier problem of forecasting the next hour.
 # - Split our single series into multiple groups. This is helpful to speed up training, since pytorch has a non-trivial overhead for separate tensors: i.e., it scales well with an increasing batch-size (fewer, but bigger, tensors), but poorly with an increasing time-series length (smaller, but more, tensors).
 
-# %%
-def make_subgroup(df: pd.DataFrame) -> pd.Series:
-    return df['group'] + ':' + df['time'].dt.year.astype('str') + ':' + df['time'].dt.quarter.astype('str')
-df_elec['subgroup'] = make_subgroup(df_elec)
+df_elec['subgroup'] = df_elec['group'] + ':' + df_elec['time'].dt.year.astype('str') + ':' + df_elec['time'].dt.quarter.astype('str')
 df_elec.head()
 
-# %%
+# +
 ds_example_building2 = TimeSeriesDataset.from_dataframe(
     df_elec.query("group == @example_group"),
     group_colname='subgroup',
@@ -223,7 +237,7 @@ ds_example_train2, _ = ds_example_building2.train_val_split(dt=SPLIT_DT, quiet=T
 ds_example_train2 = ds_example_train2[ds_example_train2.get_durations() > 1400]
 ds_example_train2
 
-# %%
+# +
 es2 = ExpSmoother(
     measures=['kW_sqrt_c'],
     processes=[
@@ -244,8 +258,8 @@ except FileNotFoundError:
         every_step=False, # this speeds up training when n_step > 1
     )
     torch.save(es2.state_dict(), os.path.join(BASE_DIR, f"es_{example_group}_2.pt"))
+# -
 
-# %%
 es2_predictions = es2(
     ds_example_train.tensors[0],
     start_offsets=ds_example_train.start_datetimes,
@@ -253,93 +267,83 @@ es2_predictions = es2(
 )
 es2_predictions.plot(es2_predictions.to_dataframe(ds_example_building), split_dt=SPLIT_DT)
 
-# %% [markdown]
 # Seems like a massive improvement... Unfortunately, with hourly data, visualizing long-range forecasts in this way isn't very illuminating: it's just really hard to see the data! 
 #
 # We can try zooming in:
 
-# %%
 es2_predictions.plot(
-    es2_predictions.to_dataframe(ds_example_building).query("time.between('2013-05-15', '2013-06-15')"),
+    es2_predictions
+    .to_dataframe(ds_example_building).query("time.between('2013-05-15', '2013-06-15')")
+    .pipe(add_inv_transformed),
     split_dt=SPLIT_DT
 )
 
 
-# %% [markdown]
 # This is better for actually seeing the data, but ideally we'd still like to get a view of the long range. 
 #
 # Let's instead try splitting it into weekdays vs. weekends and daytimes vs. nightimes:
 
-# %%
-def plot_2x2(df: pd.DataFrame,
+def plot_2x2(df: pd.DataFrame, 
+             pred_colname: str = 'mean', 
+             actual_colname: str = 'actual', 
+             group_colname: str = 'group',
              time_colname: str = 'time',
-             pred_colname: str = 'mean',
-             actual_colname: str = 'actual',
-             day_hours: tuple = (14, 15, 16, 17, 18),
-             night_hours: tuple = (2, 3, 4, 5, 6),
              **kwargs):
     """
     Plot predicted vs. actual for a single group, splitting into 2x2 facets of weekday/end * day/night.
     """
-
-    df_split = (df.loc[df[time_colname].dt.hour.isin(day_hours) | df[time_colname].dt.hour.isin(night_hours), :]
-                .assign(weekend=lambda df: df[time_colname].dt.weekday.isin([5, 6]).astype('int'),
-                       night=lambda df: (df[time_colname].dt.hour.isin(night_hours)).astype('int'),
-                       date=lambda df: df[time_colname].dt.normalize())
-                .groupby(['date', 'weekend', 'night'])
-                .agg(forecast=(pred_colname, 'mean'),
-                     actual=(actual_colname, 'mean'))
-                .reset_index())
-
-    kwargs['subplot_kw'] = kwargs.get('subplot_kw', {})
-    if 'ylim' not in kwargs['subplot_kw']:
-        kwargs['subplot_kw']['ylim'] = (df_split['actual'].min(), df_split['actual'].max())
-
-    _, axes = plt.subplots(ncols=2, nrows=2, figsize=(15, 10), **kwargs)
-    for (wknd, night), df in df_split.groupby(['weekend', 'night']):
-        df.plot('date', 'actual', ax=axes[wknd, night], linewidth=.5, color='black')
-        df.plot('date', 'forecast', ax=axes[wknd, night], alpha=.75, color='red')
-        axes[wknd, night].axvline(x=SPLIT_DT, color='black', ls='dashed')
-        axes[wknd, night].set_title("{}, {}".format('Weekend' if wknd else 'Weekday', 'Night' if night else 'Day'))
-    plt.tight_layout()
+    df_plot = df.assign(
+        time_of_day=None, 
+        weekend=lambda df: np.where(df[time_colname].dt.weekday.isin([5, 6]), 'weekend', 'weekday'),
+        date=lambda df: df[time_colname].dt.normalize()
+    )
+    df_plot.loc[df_plot[time_colname].dt.hour.isin([14, 15, 16, 17, 18]), 'time_of_day'] = 'day'
+    df_plot.loc[df_plot[time_colname].dt.hour.isin([2, 3, 4, 5, 6]), 'time_of_day'] = 'night'
+    df_plot[time_colname] = df_plot.pop('date')
+    _agg = [pred_colname, actual_colname]
+    if 'upper' in df_plot.columns:
+        _agg.extend(['upper', 'lower'])
+    df_plot = df_plot.groupby([group_colname, time_colname, 'weekend', 'time_of_day'])[_agg].mean().reset_index()
+    df_plot['measure'] = df_plot['weekend'] + ' ' + df_plot['time_of_day']
+    df_plot['mean'] = df_plot.pop(pred_colname)
+    df_plot['actual'] = df_plot.pop(actual_colname)
+    if 'upper' not in df_plot.columns:
+        df_plot['lower'] = df_plot['upper'] = float('nan')
+    return Predictions.plot(df_plot, time_colname=time_colname, group_colname=group_colname, **kwargs) + facet_wrap('measure')
 
 
-# %%
-plot_2x2(es2_predictions.to_dataframe(ds_example_building))
-#plt.show()
+plot_2x2(es2_predictions
+         .to_dataframe(ds_example_building)
+         .pipe(add_inv_transformed)
+         ,split_dt=SPLIT_DT)
 
-# %% [markdown]
-# Viewing the forecasts in this way helps us see a lingering serious issue: the annual seasonal pattern is very different for daytimes and nighttimes, but the model isn't capturing that. 
+# Viewing the forecasts in this way helps us see a lingering serious issue: the annual seasonal pattern is very different for daytimes and nighttimes, but the model isn't capturing that at all. (In fact, even the lower amplitude in annual seasonality for nighttime forecasts is just an artifact of our sqrt-transform, not a product of the model.)
 #
-# The limitation is inherent to the model: it only allows for a single seasonal pattern, rather than a separate one for different times of the day and days of the week.
+# The limitation is inherent to the model: it only allows for a single seasonal pattern, rather than a separate one for different times of the day and days of the week. 
 
-# %% [markdown]
 # ## Incorporating a Neural Network
 #
 # We saw our time-series model wasn't allowing for interactions among the components of our time-series model. A natural solution to this is to incorporate a neural network -- learning arbitrary/complex interactions is exactly what they are for.
 #
 # Of course, this requires scaling up our dataset: **we want to learn across multiple series, so that our network can build representations of patterns that are shared across multiple buildings.**
 
-# %% [markdown]
 # ### Encoding Seasonlity as Fourier Terms
 #
 # We're going to need to encode the seasonal cycles in our data into features that a neural-network can use as inputs.
 #
 # There are multiple ways we can do this. For example, one option would be to extract each component of our datetimes and one-hot encode it:
 
-# %%
 (df_elec
  .loc[df_elec['group']==example_group,['time']]
  .assign(hod=lambda df: df['time'].dt.hour, dow=lambda df: df['time'].dt.dayofweek)
  .pipe(pd.get_dummies, columns=['hod', 'dow'], dtype='float')
  .head())
 
-# %% [markdown]
-# Instead, we'll use a different approach based on **fourier series**. Basically, we encoded our times into sin/cos waves. The number of waves is a hyper-parameter that can be tuned (though obviously there are natural upper-bounds: for weekly seasonality you don't need more that the days in the week) and helps us control how 'wiggly' we'll allow the seasons to be. For more reading on using fourier series for modeling seasonality, see [here](https://otexts.com/fpp2/useful-predictors.html#fourier-series) and [here](https://otexts.com/fpp2/complexseasonality.html#dynamic-harmonic-regression-with-multiple-seasonal-periods).
+# Instead, we'll use a different approach based on **fourier series**. Basically, we encoded our times into sine/cosine waves. The number of waves is a hyper-parameter that can be tuned and helps us control how 'wiggly' we'll allow the seasons to be. For more reading on using fourier series for modeling seasonality, see [here](https://otexts.com/fpp2/useful-predictors.html#fourier-series) and [here](https://otexts.com/fpp2/complexseasonality.html#dynamic-harmonic-regression-with-multiple-seasonal-periods).
 #
 # For visualization (and shortly, modeling), we'll use `torchcast`'s `add_season_features` function:
 
-# %%
+# +
 from torchcast.utils import add_season_features
 
 df_example = (df_elec[df_elec['group'] == example_group]
@@ -352,11 +356,11 @@ yearly_season_feats = df_example.columns[df_example.columns.str.startswith('year
 weekly_season_feats = df_example.columns[df_example.columns.str.startswith('weekly_')].tolist()
 daily_season_feats = df_example.columns[df_example.columns.str.startswith('daily_')].tolist()
 season_feats = yearly_season_feats + weekly_season_feats + daily_season_feats
+# -
 
-# %% [markdown]
 # Let's visualize these waves:
 
-# %%
+# +
 (df_example[yearly_season_feats + ['time']]
  .query("time.dt.year == 2013")
  .plot(x='time', figsize=(8,4), legend=False, title='Yearly Fourier Terms'))
@@ -368,8 +372,8 @@ season_feats = yearly_season_feats + weekly_season_feats + daily_season_feats
 (df_example[daily_season_feats + ['time']]
  .query("(time.dt.year == 2013) & (time.dt.month == 6) & (time.dt.day == 1)")
  .plot(x='time', figsize=(8,4), legend=False, title='Daily Fourier Terms'))
+# -
 
-# %% [markdown]
 # ### Step 1: Pre-Training a Seasonal-Embeddings NN
 #
 # For this task, we'll switch from exponential smoothing (with `ExpSmoother`) to a full state-space model (with `KalmanFilter`). This is because only the latter can learn relationships specific to each time-series.
@@ -384,12 +388,11 @@ season_feats = yearly_season_feats + weekly_season_feats + daily_season_feats
 #
 # Here we are using `LinearModel` a little differently: rather than it taking as input predictors, it will take as input the *output* of a neural-network, which itself will take predictors (the calendar-features we just defined).
 
-# %% [markdown]
 # What we'd like to do is train a neural network to embed the seasonality (as represented by our fourier terms) into a lower dimensional space, then we'll pass that lower dimensional representation onto our KalmanFilter/LinearModel, which will learn how each time-series behaves in relation to that space. Basically, we are reducing the dozens of calendar-features (and their hundreds of interactions) into an efficient low-dimensional representation.
 #
 # For this purpose, `torchcast` provides the `SeasonalEmbeddingsTrainer` class:
 
-# %%
+# +
 from torchcast.utils.training import SeasonalEmbeddingsTrainer
 
 SEASON_EMBED_NDIM = 20
@@ -408,14 +411,12 @@ season_trainer = SeasonalEmbeddingsTrainer(
     weekly=3,
     daily=8
 )
+# -
 
-# %% [markdown]
 # Again, the number of embedding dimensions is a hyper-parameter, where we trade off computational efficiency for precision.
 
-# %% [markdown]
 # Since we'll be training on the whole dataset instead of just one example building, we'll switch from a `TimeSeriesDataset` to a `TimeSeriesDataLoader`, which lets us iterate over the whole dataset in a training loop:
 
-# %%
 season_dl = TimeSeriesDataLoader.from_dataframe(
     df_elec.query("dataset=='train'"),
     group_colname='group',
@@ -425,10 +426,9 @@ season_dl = TimeSeriesDataLoader.from_dataframe(
     batch_size=45 # fairly even batch sizes
 )
 
-# %% [markdown]
 # Let's use our trainer to train `season_embedder`:
 
-# %%
+# +
 try:
     _path = os.path.join(BASE_DIR, f"season_trainer{SEASON_EMBED_NDIM}.pt")
     season_trainer = torch.load(_path, map_location=DEVICE).to(DEVICE)
@@ -459,11 +459,10 @@ except FileNotFoundError as e:
     torch.save(season_trainer, _path)
 
 season_trainer.to(torch.device('cpu'))
+# -
 
-# %% [markdown]
 # Let's visualize the output of this neural network, with each color being a separate output:
 
-# %%
 with torch.no_grad():
     times = ds_example_building.times().squeeze()
     pred = season_trainer.module(season_trainer.times_to_model_mat(times).to(torch.float))
@@ -477,72 +476,60 @@ with torch.no_grad():
          .query("(time.dt.year == 2013) & (time.dt.month < 6)")
          .plot(x='time', figsize=(10,5), legend=False, title=f'Season NN (dim={SEASON_EMBED_NDIM}) Output', alpha=0.25))
 
-# %% [markdown] id="8579c309-c90d-49c7-b369-16bfcec68b87"
+# + [markdown] id="8579c309-c90d-49c7-b369-16bfcec68b87"
 # You can think of each colored line as equivalent to the sin/cos waves above; but now, instead of dozens of these, we have far fewer, that should *hopefully* be able to capture interacting seasonal effects.
 #
-# But is that hope founded in anything? Let's see if our embeddings are able to capture what we want for our example building.
-#
-# The season-trainer lets us pass these outputs through a linear-model, to visualize how these embeddings can be used to predict the actual series values:
+# Let's verify this. The season-trainer has a `predict` method that lets us visualize how these embeddings can be used to predict the actual series values:
+# -
 
-# %%
 with torch.no_grad():
-    (ds_example_building
-     .to_dataframe()
-     .assign(pred=season_trainer.predict(ds_example_building).squeeze())
-     .pipe(plot_2x2, actual_colname='kW_sqrt_c', pred_colname='pred'))
-plt.show()
+    display(ds_example_building
+             .to_dataframe()
+             .assign(pred=season_trainer.predict(ds_example_building).squeeze())
+             .pipe(plot_2x2, actual_colname='kW_sqrt_c', pred_colname='pred', split_dt=SPLIT_DT))
 
-# %% [markdown]
 # Success! We now have different seasonal patterns depending on the time of the day.
 
-# %% [markdown]
 # ### Step 2: Incorporate our Seasonal-Embeddings into our Time-Series Model
 
-# %% [markdown]
 # How should we incorporate our `season_embedder` neural-network into a state-space model? There are at least two options:
 #
 # #### Option 1
 #
 # The first option is to create our fourier-features on the dataframe, and pass these as features into a dataloader.
 #
-# First, we create our time-series model. As mentioned above, we use a KalmanFilter instead of ExpSmoother because only the former can learn relationships specific to each time-series.
-#
-# ```python
-# from torchcast.kalman_filter import KalmanFilter
-# from torchcast.process import LinearModel
-#
-# kf_nn = KalmanFilter(
-#     measures=['kW_sqrt_c'],
-#     processes=[
-#         LinearModel(id='nn_output', predictors=[f'nn{i}' for i in range(SEASON_EMBED_NDIM)]),
-#         LocalTrend(id='trend'),
-#     ]
-# ).to(DEVICE)
-#
-# # we register the season-embedder NN with our time-series model, so that pytorch is aware of
-# # the season-embedder's parameters (and can continue to train them)
-# kf_nn.season_nn = season_embedder
-# ```
-#
+# 1. First, we create our time-series model:
+
+# +
+from torchcast.kalman_filter import KalmanFilter
+from torchcast.process import LinearModel, LocalLevel
+
+kf_nn = KalmanFilter(
+    measures=['kW_sqrt_c'],
+    processes=[
+        LinearModel(id='nn_output', predictors=[f'nn{i}' for i in range(SEASON_EMBED_NDIM)]),
+        LocalLevel(id='level'),
+    ],
+).to(DEVICE)
+# -
+
 # 2. Next, we create add our season features to the dataframe, and create a dataloader, passing these feature-names to the `X_colnames` argument:
-#
-# ```python
-# dataloader_kf_nn = TimeSeriesDataLoader.from_dataframe(
-#     df_elec
-#         .query("dataset=='train'")
-#         .pipe(add_season_features, K=8, period='yearly')
-#         .pipe(add_season_features, K=3, period='weekly')
-#         .pipe(add_season_features, K=8, period='daily')
-#     ,
-#     group_colname='subgroup',
-#     time_colname='time',
-#     dt_unit='h',
-#     y_colnames=['kW_sqrt_c'],
-#     X_colnames=season_feats,
-#     batch_size=50
-# )
-# ```
-#
+
+dataloader_kf_nn = TimeSeriesDataLoader.from_dataframe(
+    df_elec
+        .query("dataset=='train'")
+        .pipe(add_season_features, K=8, period='yearly')
+        .pipe(add_season_features, K=3, period='weekly')
+        .pipe(add_season_features, K=8, period='daily')
+    ,
+    group_colname='subgroup',
+    time_colname='time',
+    dt_unit='h',
+    y_colnames=['kW_sqrt_c'],
+    X_colnames=season_feats,
+    batch_size=50
+)
+
 # Finally, we train the model, either rolling our own training loop...
 #
 # ```python
@@ -555,60 +542,39 @@ plt.show()
 # ```
 #
 # ...or, even better, using a tool like Pytorch Lightning. Torchcast also includes a simple tool for this, the `StateSpaceTrainer`:
-#
-# ```python
-# from torchcast.utils.training import StateSpaceTrainer
-#
-# ss_trainer = StateSpaceTrainer(
-#     module=kf_nn,
-#     kwargs_getter=lambda batch: {'X' : kf_nn.season_nn(batch.tensors[1])},
-# )
-#
-# for loss in ss_trainer:
+
+# +
+from torchcast.utils.training import StateSpaceTrainer
+
+ss_trainer = StateSpaceTrainer(
+    module=kf_nn,
+    kwargs_getter=lambda batch: {'X' : season_trainer.module(batch.tensors[1])},
+)
+
+## commented out since we're going with option 2 below
+# for loss in ss_trainer(dataloader_kf_nn):
 #     print(loss)
 #     # etc...
-# ```
+# -
 
-# %% [markdown]
 # #### Option 2
 #
 # An even simpler (though less general) option is just to leverage the util methods in the `SeasonalEmbeddingsTrainer`, which handles converting a `TimeSeriesDataset` into a tensor of fourier terms:
 
-# %%
-from torchcast.kalman_filter import KalmanFilter
-from torchcast.process import LinearModel, LocalLevel
-from torchcast.utils.training import StateSpaceTrainer
-
-# TODO:
-kf_nn = KalmanFilter(
-    measures=['kW_sqrt_c'],
-    processes=[
-        LinearModel(id='nn_output', predictors=[f'nn{i}' for i in range(SEASON_EMBED_NDIM)]),
-        LocalLevel(id='level'),
-    ],
-)
-
-# TODO:
-kf_nn.season_nn = season_trainer.module
-kf_nn.season_nn.requires_grad_(False) # TODO: explain
-
+# +
 def _kwargs_getter(batch: TimeSeriesDataset) -> dict:
     seasonX = season_trainer.times_to_model_mat(batch.times()).to(dtype=torch.float, device=DEVICE)
-    return {'X' : kf_nn.season_nn(seasonX)}
+    return {'X' : season_trainer.module.season_nn(seasonX)}
 
-# TODO:
 ss_trainer = StateSpaceTrainer(
     module=kf_nn,
     kwargs_getter=_kwargs_getter,
-    optimizer=torch.optim.Adam([p for p in kf_nn.parameters() if p.requires_grad], lr=.05)
+    optimizer=torch.optim.Adam(kf_nn.parameters(), lr=.05)
 )
+# -
 
-# %% [markdown] id="0e86ec5f-4963-42a8-aaa4-79dba72efefb"
-# But wait: if we're just passing the outputs of `season_embedder` to our time-series model, why did we bother pre-training `season_embedder`? In fact, `torchcast` _does_ support end to end modeling, so in principle we could pass use a completely untrained neural-network here.
-#
-# In practice, neural-networks have many more parameters and take many more epochs than our state-space models (and conversely, our state-space models are much slower to train _per_ epoch). So it's much more efficient to pre-train the network first. Then it's up to us whether we want to continue training the network, or just freeze its weights (i.e. exclude it from the optimizer) and just train the state-space models' paramters.
+# Then we don't need to use `add_season_features` when creating our data-loader, since `times_to_model_mat` will create them per-batch as needed (which will be much easier on our GPU's memory):
 
-# %%
 dataloader_kf_nn = TimeSeriesDataLoader.from_dataframe(
     df_elec.query("dataset=='train'"),
     group_colname='group',
@@ -617,9 +583,13 @@ dataloader_kf_nn = TimeSeriesDataLoader.from_dataframe(
     measure_colnames=['kW_sqrt_c'],
     batch_size=40
 )
-#[len(b) for b in dataloader_kf_nn]
 
-# %%
+# <div class="alert alert-info">
+#     <b>Training End-to-End</b>
+#     <p>Above, we never actually registered <code>season_trainer.module</code> as an attribute of our KalmanFilter (i.e. we didn't do <code>kf_nn.season_nn = season_trainer.module</code>). This means that we won't continue training the embeddings as we train our KalmanFilter. Why not? For that matter, why did we pre-train in the first place? Couldn't we have just registered an untrained embeddings network and trained the whole thing end to end?</p>
+#     <p>In practice, neural-networks have many more parameters and take many more epochs than our state-space models (and conversely, our state-space models are much slower to train _per_ epoch). So it's much more efficient to pre-train the network first. Then it's up to us whether we want to continue training the network, or just freeze its weights (i.e. exclude it from the optimizer) and just train the state-space models' parameters. Here we're freezing them by not assigning the network as an attribute (so that the parameters don't get passed to when we run <code>torch.optim.Adam(kf_nn.parameters(), lr=.05)</code>.</p>
+# </div>
+
 try:
     _path = os.path.join(BASE_DIR, f"ss_trainer{SEASON_EMBED_NDIM}.pt")
     ss_trainer = torch.load(_path, map_location=DEVICE).to(DEVICE)
@@ -635,11 +605,13 @@ except FileNotFoundError as e:
 
         torch.save(ss_trainer, _path)
 
-        # TODO
         if len(ss_trainer.loss_history) > 30:
             break
 
-# %%
+# ### Evaluation
+
+# #### Generating Torchcast Forecasts for all groups
+
 with torch.inference_mode():
     dataloader_all = TimeSeriesDataLoader.from_dataframe(
         # importantly, we'll set to `nan` our target when it's outside the training dates
@@ -654,60 +626,101 @@ with torch.inference_mode():
 
     df_all_preds = []
     for batch in tqdm(dataloader_all):
+        # if example_group not in batch.group_names:
+        #     continue
         batch = batch.to(DEVICE)
         seasonX = season_trainer.times_to_model_mat(batch.times()).to(dtype=torch.float, device=DEVICE)
-        pred = kf_nn(batch.tensors[0], X=kf_nn.season_nn(seasonX), start_offsets=batch.start_offsets)
+        pred = kf_nn(batch.tensors[0], X=season_trainer.module(seasonX), start_offsets=batch.start_offsets)
         df_all_preds.append(pred.to_dataframe(batch).drop(columns=['actual']))
 df_all_preds = pd.concat(df_all_preds).reset_index(drop=True)
+# back-transform:
+df_all_preds = (df_all_preds
+                 .merge(df_elec[['group','time','kW','dataset']])
+                 .pipe(add_inv_transformed))
 df_all_preds
 
-# %% [markdown] id="f897e420-ff9a-46d1-9962-787fc2d52b8f"
-# # END
+plot_2x2(df_all_preds.query("group==@example_group"), actual_colname='kW', split_dt=SPLIT_DT)
 
-# %%
-foo = df_all_preds.merge(df_elec.query("group==@example_group"))
-plot_2x2(foo, actual_colname='kW_sqrt_c')
-
-# %% [markdown]
-# #### Evaluation
+# #### A Simple Baseline
 #
-# Reviewing the same example-building from before, we see the forecasts are more closely hewing to the actual seasonal structure for each time of day/week. Instead of the forecasts in each panel being essentially identical, each differs in shape.
+# We've see that, for this dataset, generating forecasts that are *sane* is an already an achievement.
+#
+# But of course, ideally we'd actually have some kind of a quantitative measure of how good our forecasts are.
+#
+# For this, it's helpful to compare to a baseline. `torchcast` provides a simple baseline which just forecasts based on N-timesteps ago, with options for first smoothing the historical data. In this case, we forecast based on the same timepoint 365 days ago, after first applying a rolling-average with a 4-hour window.
 
-# %% id="090f81cd"
-plot_forecasts(df_forecast_nn.query("group==@example_group & time.dt.year==2013 & time.dt.month==6"))
+# +
+from torchcast.utils import make_baseline
 
-# %% id="4890ca25"
-plot_2x2(df_forecast_nn.query("group==@example_group"))
+df_baseline365 = make_baseline(df_elec,
+                                group_colnames=['group'],
+                                time_colname='time',
+                                value_colname='kW',
+                                is_train=lambda df: df['dataset']=='train',
+                                lag=int(365*24), 
+                                smooth=4)
+plot_2x2(
+    df_baseline365.query("group==@example_group").merge(df_elec), 
+    pred_colname='baseline',
+    actual_colname='kW', 
+    split_dt=SPLIT_DT
+)
+# -
 
+# We can see this baseline provides sensible enough forecasts on our example building.
 
-# %% [markdown] id="013f7ad2"
-# Let's confirm quantitatively that the 2nd model does indeed substantially reduce forecast error, relative to the 'standard' model:
+# #### Comparison of Performance
+#
+# Now that we have something to compare our torchcast model to, we can evaluate its performance.
 
-# %% id="169f9b15"
-def inverse_transform(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    for col in ['mean', 'lower', 'upper', 'actual']:
-        df[col] = df[col] + df['group'].map(group_means)
-        df[col] = df[col].clip(lower=0) ** 2
-    return df
+# +
+df_compare = (df_all_preds[['group', 'mean', 'time', 'kW', 'dataset']]
+             .rename(columns={'mean' : 'torchcast'})
+             .merge(df_baseline365, how='left'))
+assert (df_compare['baseline'].notnull() | (df_compare['dataset'] == 'train')).all()
+assert df_compare['torchcast'].notnull().all()
 
+df_compare_long = df_compare.melt(
+    id_vars=['group', 'time', 'kW', 'dataset'], 
+    value_vars=['torchcast', 'baseline'], 
+    var_name='model', 
+    value_name='forecast'
+)
+df_compare_long['error'] = np.abs(df_compare_long['forecast'] - df_compare_long['kW'])
+df_compare_long
+# -
 
-# %% id="c6619767"
-df_nn_err = df_forecast_nn. \
-    pipe(inverse_transform).\
-    assign(error=lambda df: (df['mean'] - df['actual']).abs(),
-           validation=lambda df: df['time'] > SPLIT_DT). \
-    groupby(['group', 'validation']). \
-    agg(error=('error', 'mean')). \
-    reset_index()
+# **Over Time**
+#
+# First let's compare abs(error) over time, across all groups:
 
-df_forecast_ex2. \
-    pipe(inverse_transform).\
-    assign(error=lambda df: (df['mean'] - df['actual']).abs(),
-           validation=lambda df: df['time'] > SPLIT_DT). \
-    groupby(['group', 'validation']). \
-    agg(error=('error', 'mean')). \
-    reset_index(). \
-    merge(df_nn_err, on=['group', 'validation'], suffixes=('_es', '_es_nn'))
+df_compare_per_date = (df_compare_long
+                       .query("dataset!='train'")
+                       .assign(date=lambda df: df['time'].dt.normalize())
+                       .groupby(['date', 'model'])
+                       ['error'].mean()
+                       .reset_index())
+df_compare_per_date.pivot(index='date', columns='model', values='error').plot(ylim=(0, 300))
+
+# We can see that the torchcast model beats the baseline *almost* ever day. The clear exception is holidays (e.g. Thanksgiving and Christmas), which makes sense: we didn't add any features for these to our torchcast model, while the baseline model essentially gets these for free. Future attempts could resolve this straightforwardly by adding dummy-features to our `LinearModel`, or by increasing the `K` (aka "wiggliness") parameter (see _"Encoding Seasonlity as Fourier Terms"_ above).
+
+# **By Group**
+#
+# Now let's compare over the whole validation period, focusing on _percent_ error (relative to that group's average) so that we can weight small and large groups equally.
+
+# +
+df_compare_per_group = (df_compare_long
+                         .groupby(['group', 'dataset', 'model'])
+                         [['error', 'kW']].mean()
+                         .reset_index()
+                         .assign(prop_error=lambda df: df['error'] / df['kW']))
+
+compare_per_group_agg = (df_compare_per_group
+                         .groupby(['dataset', 'model'])
+                         .agg(prop_error=('prop_error', 'mean'), sem=('prop_error', 'sem')))
+compare_per_group_agg.loc['test']['prop_error'].plot(kind='bar', yerr=compare_per_group_agg.loc['test']['sem'])
+# -
+
+# We see that the torchcast forecasts have significantly lower % error on average.
 
 
