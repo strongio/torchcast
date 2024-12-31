@@ -11,3 +11,4 @@ from .features import add_season_features
 from .data import TimeSeriesDataset, TimeSeriesDataLoader, complete_times
 from .stats import conf2bounds
 from .misc import class_or_instancemethod
+from .baseline import make_baseline
