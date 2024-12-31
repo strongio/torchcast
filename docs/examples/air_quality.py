@@ -97,7 +97,7 @@ forecast = kf_pm_univariate(
 )
 
 df_forecast = inverse_transform(forecast.to_dataframe(dataset_pm_univariate, conf=None))
-print(forecast.plot(df_forecast, max_num_groups=3, split_dt=SPLIT_DT))
+print(forecast.plot(df_forecast, max_num_groups=3, split_dt=SPLIT_DT, time_colname='time', group_colname='group'))
 
 # %% [markdown]
 # #### Evaluating Performance: Expanding Window
@@ -185,7 +185,10 @@ torch.sum(pred_4step.means, 2)
 # In our case this unfortunately won't work: we have log-transformed our measures. This seems like it was the right choice (i.e. our residuals look reasonably normal and i.i.d):
 
 # %%
-pred_4step.plot(pred_4step.to_dataframe(dataset_pm_multivariate, type='components').query("process=='residuals'"))
+pred_4step.plot(
+    pred_4step.to_dataframe(dataset_pm_multivariate, type='components').query("process=='residuals'"),
+    time_colname='time', group_colname='group'
+)
 
 
 # %% [markdown]
@@ -308,7 +311,7 @@ with torch.no_grad():
     )
 pred_4step.plot(
     pred_4step.to_dataframe(dataset_pm_lm, type='components').query("process.str.contains('lm')"),
-    split_dt=SPLIT_DT
+    split_dt=SPLIT_DT, time_colname='time', group_colname='group'
 )
 
 # %% [markdown]

@@ -97,9 +97,14 @@ class TimeSeriesDataset(TensorDataset):
     def sizes(self) -> Sequence:
         return [t.size() for t in self.tensors]
 
+    @property
+    def num_timesteps(self) -> int:
+        return max(tensor.shape[1] for tensor in self.tensors)  # todo: why are we supporting this?
+
     # Subsetting ------------------------:
     @torch.no_grad()
     def train_val_split(self,
+                        *args,
                         train_frac: float = None,
                         dt: Union[np.datetime64, dict] = None,
                         quiet: bool = False) -> Tuple['TimeSeriesDataset', 'TimeSeriesDataset']:
@@ -109,8 +114,13 @@ class TimeSeriesDataset(TensorDataset):
          neither `train_frac` nor `dt` are passed, ``train_frac=.75`` is used.
         :param dt: A datetime to use in dividing train/validation (first datetime for validation), or a dictionary of
          group-names : date-times.
+        :param quiet: If True, will not emit a warning for groups having only `nan` after `dt`
         :return: Two ``TimeSeriesDatasets``, one with data before the split, the other with >= the split.
         """
+        if args:
+            raise TypeError(
+                f"`train_val_split` takes no positional args but {len(args)} {'were' if len(args) > 1 else 'was'} provided"
+            )
 
         # get split times:
         if dt is None:
@@ -118,7 +128,7 @@ class TimeSeriesDataset(TensorDataset):
                 train_frac = .75
             assert 0 < train_frac < 1
             # for each group, find the last non-nan, take `frac` of that to find the train/val split point:
-            split_idx = np.array([int(idx * train_frac) for idx in self._last_measured_idx()], dtype='int')
+            split_idx = np.array([int((dur - 1) * train_frac) for dur in self.get_durations()], dtype='int')
             _times = self.times(0)
             split_times = np.array([_times[i, t] for i, t in enumerate(split_idx)])
         else:
@@ -176,11 +186,13 @@ class TimeSeriesDataset(TensorDataset):
             new_tens = []
             for g, (new_time, old_times) in enumerate(zip(start_times, times)):
                 if (old_times <= new_time).all():
-                    warn(f"{new_time} is later than all the times for group {self.group_names[g]}")
+                    if not quiet:
+                        warn(f"{new_time} is later than all the times for group {self.group_names[g]}")
                     new_tens.append(tens[[g], 0:0])
                     continue
                 elif (old_times > new_time).all():
-                    warn(f"{new_time} is earlier than all the times for group {self.group_names[g]}")
+                    if not quiet:
+                        warn(f"{new_time} is earlier than all the times for group {self.group_names[g]}")
                     new_tens.append(tens[[g], 0:0])
                     continue
                 # drop if before new_time:
@@ -219,38 +231,26 @@ class TimeSeriesDataset(TensorDataset):
         """
         return self[np.isin(self.group_names, groups)]
 
-    def split_measures(self, *measure_groups, which: Optional[int] = None) -> 'TimeSeriesDataset':
+    def split_measures(self, *measure_groups) -> 'TimeSeriesDataset':
         """
-        Take a dataset with one tensor, split it into a dataset with multiple tensors.
+        Take a dataset and split it into a dataset with multiple tensors.
 
-        :param measure_groups: Each argument should be be a list of measure-names, or an indexer (i.e. list of ints or
-         a slice).
-        :param which: If there are already multiple measure groups, the split will occur within one of them; must
-         specify which.
+        :param measure_groups: Each argument should be a list of measure-names.
         :return: A :class:`.TimeSeriesDataset`, now with multiple tensors for the measure-groups.
         """
+        concat_tensors = torch.cat(self.tensors, dim=2)
 
-        if which is None:
-            if len(self.measures) > 1:
-                raise RuntimeError(f"Must pass `which` if there's more than one groups:\n{self.measures}")
-            which = 0
-
-        self_tensor = self.tensors[which]
-        self_measures = self.measures[which]
-
-        idxs = []
+        idx_groups = []
         for measure_group in measure_groups:
-            if isinstance(measure_group, slice) or isinstance(measure_group[0], int):
-                idxs.append(measure_group)
-            else:
-                idxs.append([self_measures.index(m) for m in measure_group])
+            idx_groups.append([])
+            for measure in measure_group:
+                idx_groups[-1].append(self.all_measures.index(measure))
 
-        self_measures = np.array(self_measures)
         return type(self)(
-            *(self_tensor[:, :, idx].clone() for idx in idxs),
+            *(concat_tensors[:, :, idxs] for idxs in idx_groups),
             start_times=self.start_times,
             group_names=self.group_names,
-            measures=[tuple(self_measures[idx]) for idx in idxs],
+            measures=measure_groups,
             dt_unit=self.dt_unit
         )
 
@@ -268,6 +268,10 @@ class TimeSeriesDataset(TensorDataset):
     # Creation/Transformation ------------------------:
     @classmethod
     def make_collate_fn(cls, pad_X: Union[float, str, None] = 'ffill') -> Callable:
+        do_ffill = isinstance(pad_X, str) and pad_X == 'ffill'
+        pad_X = None
+
+        @torch.no_grad()
         def collate_fn(batch: Sequence['TimeSeriesDataset']) -> 'TimeSeriesDataset':
             to_concat = {
                 'tensors': [batch[0].tensors],
@@ -287,7 +291,13 @@ class TimeSeriesDataset(TensorDataset):
 
             tensors = []
             for i, t in enumerate(zip(*to_concat['tensors'])):
-                tensors.append(ragged_cat(t, ragged_dim=1, padding=None if i == 0 else pad_X))
+                catted = ragged_cat(t, ragged_dim=1, padding=None if i == 0 else pad_X)
+                if do_ffill and i > 0:  # i==0 is y, not X; but only want to ffill X
+                    any_measured_bool = ~np.isnan(catted.numpy()).all(2)
+                    for g in range(catted.shape[0]):
+                        last_measured_idx = np.max(true1d_idx(any_measured_bool[g]).numpy(), initial=0)
+                        catted[g, (last_measured_idx + 1):, :] = catted[g, last_measured_idx, :]
+                tensors.append(catted)
 
             return cls(
                 *tensors,
@@ -493,10 +503,7 @@ class TimeSeriesDataset(TensorDataset):
          constructing the `times` array? Defaults to the one with the most timesteps.
         :return: A 2D numpy array of datetimes (or integers if dt_unit is None).
         """
-        if which is None:
-            num_timesteps = max(tensor.shape[1] for tensor in self.tensors)
-        else:
-            num_timesteps = self.tensors[which].shape[1]
+        num_timesteps = self.num_timesteps if which is None else self.tensors[which].shape[1]
         offsets = np.arange(0, num_timesteps) * (self.dt_unit if self.dt_unit else 1)
         return self.start_times[:, None] + offsets
 
@@ -511,18 +518,39 @@ class TimeSeriesDataset(TensorDataset):
     def start_offsets(self) -> np.ndarray:
         return self.start_times
 
-    def _last_measured_idx(self) -> np.ndarray:
+    @torch.no_grad()
+    def get_durations(self, which: int = 0) -> np.ndarray:
         """
-        :return: The indices of the last measurement in the first tensor, where a measurement is any non-nan value in at
-         least on dimension.
+        Get an array (algined with self.group_names) with the number of 'duration' for each group, defined as the
+        number of timesteps until the last measurement (i.e. the last timestep after which all measures are `nan`).
+
+        Since TimeSeriesDatasets are padded, this can be a helpful way to get the length of each time-series.
         """
-        tens, *_ = self.tensors
-        any_measured_bool = ~np.isnan(tens.numpy()).all(2)
+        any_measured_bool = ~np.isnan(self.tensors[which].numpy()).all(2)
         last_measured_idx = np.array(
-            [np.max(true1d_idx(any_measured_bool[g]), initial=0) for g in range(len(self.group_names))],
+            [np.max(true1d_idx(any_measured_bool[g]).numpy(), initial=0) for g in range(len(self.group_names))],
             dtype='int'
         )
-        return last_measured_idx
+        return last_measured_idx + 1
+
+    @torch.no_grad()
+    def trimmed(self, using: int = 0) -> 'TimeSeriesDataset':
+        """
+        Return a new TimeSeriesDataset with unneeded padding removed. This is useful if we've subset a dataset and the
+        remaining time-serieses are all shorter than the previous longest time-series' length.
+
+        For example, this method combined with ``get_durations()`` can be helpful for splitting a single dataset with
+        time-series of heterogeneous lengths into multiple datasets:
+
+        >>> ds_all = TimeSeriesDataset(x, group_names=group_names, start_times=start_dts)
+        >>> durations = ds_all.get_durations()
+        >>> ds_long = ds_all[durations >= 8784]  # >= a year
+        >>> ds_short = ds_all[durations < 8784].trimmed()  # shorter than a year
+        >>> assert ds_short.tensors.shape[0] < ds_long.tensors.shape[0]
+        """
+        last_dur = self.get_durations(using).max()
+        new_tensors = [tens[:, :last_dur] for i, tens in enumerate(self.tensors)]
+        return self.with_new_tensors(*new_tensors)
 
 
 class TimeSeriesDataLoader(DataLoader):

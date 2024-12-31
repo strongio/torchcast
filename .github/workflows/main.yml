@@ -1,0 +1,87 @@
+name: torchcast
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        py-version: [ '3.8', '3.9', '3.10' ]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          cache: 'pip'
+          cache-dependency-path: pyproject.toml
+          python-version: ${{ matrix.py-version }}
+
+      - name: Install torchcast
+        run: pip install .[tests]
+
+      - name: Run tests
+        run: python3 -m unittest
+
+  release:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    concurrency:
+      group: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade python-semantic-release
+
+      - name: Release
+        run: |
+          git clone https://${{ secrets.STRONGIO_MACHINE_PAT }}:@github.com/strongio/torchcast
+          cd torchcast
+          semantic-release version --push --changelog --vcs-release --commit
+        env:
+          GH_TOKEN: ${{ secrets.STRONGIO_MACHINE_PAT }}
+
+  docs:
+    needs: release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # to access AWS
+      contents: read # to clone repo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: 'pyproject.toml'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: 'arn:aws:iam::606444696334:role/strong-github-actions-role'
+          aws-region: us-east-1
+
+      - name: Setup SSH Key
+        uses: webfactory/ssh-agent@v0.5.4
+        with:
+          ssh-private-key: ${{ secrets.STRONGMACHINE_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: |
+          pip install awscli
+          pip install ".[docs]"
+
+      - name: Install pandoc
+        uses: pandoc/actions/setup@main
+
+      - name: Build docs
+        run: cd ./docs && make html
+
+      - name: Upload docs to S3
+        run: |
+          aws s3 cp --recursive docs/_build/html s3://docs.strong.io/torchcast --acl public-read

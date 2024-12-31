@@ -31,7 +31,8 @@ class LinearModel(Process):
                  predictors: Sequence[str],
                  measure: Optional[str] = None,
                  fixed: bool = True,
-                 decay: Optional[Tuple[float, float]] = None):
+                 decay: Optional[Tuple[float, float]] = None,
+                 model_mat_kwarg_name: str = 'X'):
 
         super().__init__(
             id=id,
@@ -50,7 +51,7 @@ class LinearModel(Process):
             if isinstance(decay, tuple):
                 decay = SingleOutput(numel=len(predictors), transform=Bounded(*decay))
             self.f_modules['all_self'] = decay
-        self.expected_kwargs = ['X']
+        self.expected_kwargs = [model_mat_kwarg_name]
 
     def _build_h_mat(self, inputs: Dict[str, torch.Tensor], num_groups: int, num_times: int) -> torch.Tensor:
         # if not torch.jit.is_scripting():
@@ -59,7 +60,7 @@ class LinearModel(Process):
         #     except KeyError as e:
         #         raise TypeError(f"Missing required keyword-arg `X` (or `{self.id}__X`).") from e
         # else:
-        X = inputs['X']
+        X = inputs[self.expected_kwargs[0]]
         assert not torch.isnan(X).any()
         assert not torch.isinf(X).any()
 
@@ -96,13 +97,16 @@ class LinearModel(Process):
 
         # Xty:
         Xty_els = X * y
-        Xty = torch.zeros(num_groups, num_preds, dtype=y.dtype, device=y.device). \
-            scatter_add(0, group_ids_broad.unsqueeze(-1).expand_as(Xty_els), Xty_els)
+        Xty = (torch.zeros(num_groups, num_preds, dtype=y.dtype, device=y.device)
+               .scatter_add(0, group_ids_broad.unsqueeze(-1).expand_as(Xty_els), Xty_els))
 
         # XtX:
         XtX = torch.stack([Xg.t() @ Xg for Xg, in chunk_grouped_data(X, group_ids=group_ids_broad.cpu())])
         XtXp = XtX
         if prior_precision is not None:
+            if prior_precision.shape != (num_preds, num_preds):
+                raise ValueError(f"prior_precision must have shape ({num_preds}, {num_preds}), but got shape "
+                                 f"{prior_precision.shape} (did you remember bias?)")
             XtXp = XtXp + prior_precision
 
         return torch.linalg.solve(XtXp, Xty.unsqueeze(-1))
@@ -111,6 +115,7 @@ class LinearModel(Process):
     def solve_and_predict(cls,
                           y: torch.Tensor,
                           X: torch.Tensor,
+                          add_bias: bool = True,
                           prior_precision: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Given tensors y,X in the format expected by ``StateSpaceModel`` -- 3D arrays with groups*times*measures --
@@ -120,9 +125,15 @@ class LinearModel(Process):
 
         :param y: A 3d tensor of time-series values.
         :param X: A 3d tensor of predictors.
+        :param add_bias: Whether to add a bias-term.
         :param prior_precision: Optional. A penalty matrix.
         :return: A tensor with the same dimensions as ``y`` with the predictions.
         """
+        if add_bias:
+            X = torch.cat([torch.ones_like(X[..., :1]), X], -1)
         coefs = cls._l2_solve(y=y, X=X, prior_precision=prior_precision)
-        return (coefs.transpose(-1, -2) * X).sum(-1).unsqueeze(-1)
+        return cls.predict(X, coefs)
 
+    @classmethod
+    def predict(cls, X: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
+        return (coefs.transpose(-1, -2) * X).sum(-1).unsqueeze(-1)

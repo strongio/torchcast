@@ -39,6 +39,10 @@ class Process(nn.Module):
         self.measure: str = '' if measure is None else measure
 
         # elements without process covariance, defaults to none
+        if fixed_state_elements is not None:
+            extra = set(fixed_state_elements) - set(state_elements)
+            if extra:
+                raise ValueError(f"fixed_state_elements contains elements not in state_elements: {extra}")
         self.fixed_state_elements: Optional[List[str]] = fixed_state_elements
 
         # can/should be overridden by subclasses:

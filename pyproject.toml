@@ -1,0 +1,77 @@
+[project]
+name = "torchcast"
+description = "Forecasting in PyTorch"
+readme = "README.md"
+requires-python = ">= 3.8"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+]
+license = { file = "LICENSE" }
+authors = [
+    { name = "Jacob Dink", email = "jacob.dink@strong.io" }
+]
+dependencies = [
+    "torch>=1.12",
+    "numpy>=1.4",
+    "scipy>=1.10",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/strongio/torchcast"
+"Bug Tracker" = "https://github.com/strongio/torchcast/issues"
+Documentation = "https://torchcast.readthedocs.io/en/latest/"
+
+[project.optional-dependencies]
+dev = [
+    "isort",
+    "black",
+]
+tests = [
+    "parameterized>=0.7",
+    "filterpy>=1.4",
+    "pandas>=1.0"
+]
+docs = [
+    "jupytext>=1.11",
+    "plotnine>=0.8",
+    "nbsphinx>=0.8.2",
+    "ipykernel>=5.3.4",
+    "tqdm>=4.59",
+    "ipywidgets>=7.6.3",
+    "pandoc>=1.0.2",
+    "pytorch_lightning>=1.5",
+    "torch_optimizer>=0.3.0",
+    "matplotlib",
+    "strong-sphinx-theme @ git+ssh://git@github.com/strongio/strong-sphinx-theme.git"
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "torchcast.__version__" }
+
+[tool.cibuildwheel]
+build-frontend = "build"
+
+[tool.black]
+line-length = 120
+skip-string-normalization = true
+
+[tool.isort]
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+line_length = 120
+
+[tool.semantic_release]
+version_variables = ["torchcast/__init__.py:__version__"]
+commit_author = "Strong Analytics <access@strong.io>"
+commit_message = "Bump to {version} [skip ci]"
+
+[tool.semantic_release.publish]
+upload_to_vcs_release = true
