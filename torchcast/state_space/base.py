@@ -38,8 +38,6 @@ class StateSpaceModel(nn.Module):
         if self.measure_covariance:
             self.measure_covariance.set_id('measure_covariance')
 
-        self.ss_step = self.ss_step_cls()
-
         # measures:
         self.measures = measures
         self.measure_to_idx = {m: i for i, m in enumerate(self.measures)}
@@ -56,6 +54,10 @@ class StateSpaceModel(nn.Module):
 
         # the initial mean
         self.initial_mean = torch.nn.Parameter(.1 * torch.randn(self.state_rank))
+
+    @property
+    def ss_step(self) -> StateSpaceStep:
+        return self.ss_step_cls()
 
     @property
     def dt_unit(self) -> Optional[np.timedelta64]:

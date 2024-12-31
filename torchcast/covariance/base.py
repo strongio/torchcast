@@ -8,7 +8,7 @@ import torch
 from torch import Tensor, nn, jit
 
 from torchcast.process.utils import Identity
-from torchcast.covariance.util import num_off_diag
+from torchcast.covariance.util import num_off_diag, mini_cov_mask
 from torchcast.internals.utils import is_near_zero, validate_gt_shape
 from torchcast.process.base import Process
 
@@ -173,12 +173,7 @@ class Covariance(nn.Module):
         empty_idx = set(empty_idx)
         assert all(isinstance(x, int) for x in empty_idx)
         self.param_rank = self.rank - len(empty_idx)
-        mask = torch.zeros((self.rank, self.param_rank))
-        c = 0
-        for r in range(self.rank):
-            if r not in empty_idx:
-                mask[r, c] = 1.
-                c += 1
+        mask = mini_cov_mask(rank=self.rank, empty_idx=empty_idx)
         self.register_buffer('mask', mask)
 
         self._set_params(method, init_diag_multi)

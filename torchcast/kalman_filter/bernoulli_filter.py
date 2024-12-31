@@ -9,9 +9,11 @@ import torch
 from torch import Tensor, nn
 
 from torchcast.covariance import Covariance
+from torchcast.covariance.util import mini_cov_mask
 from torchcast.kalman_filter import KalmanFilter
 from torchcast.kalman_filter.ekf import EKFStep, EKFPredictions
 from torchcast.process import Process
+from torchcast.state_space.ss_step import StateSpaceStep
 from torchcast.utils import conf2bounds
 
 if TYPE_CHECKING:
@@ -21,6 +23,10 @@ sigmoid = nn.Sigmoid()
 
 
 class BernoulliStep(EKFStep):
+    def __init__(self, binary_idx: Optional[Sequence[int]] = None):
+        super().__init__()
+        self.binary_idx = binary_idx
+
     def _adjust_h(self, mean: Tensor, H: Tensor) -> Tensor:
         """
         >>> import sympy
@@ -60,17 +66,46 @@ class BernoulliStep(EKFStep):
         """
         # this assert should not fail, b/c all processes only support a single measure
         assert not ((H != 0).sum(-2) > 1).any(), "BernoulliFilter does not support the provided measurement-matrix"
-        h_dot_state = H @ mean.unsqueeze(-1)
-        numer = torch.exp(-h_dot_state)
-        denom = (torch.exp(-h_dot_state) + 1) ** 2
-        return H * (numer / denom)
+        all_idx = list(range(H.shape[-1]))  # TODO: confirm
+        binary_idx = list(all_idx if self.binary_idx is None else self.binary_idx)
+        h_dot_state = (H @ mean.unsqueeze(-1)).squeeze(-1)
+        adjustment = torch.ones_like(h_dot_state)
+        numer = torch.exp(-h_dot_state[..., binary_idx])
+        denom = (torch.exp(-h_dot_state[..., binary_idx]) + 1) ** 2
+        adjustment[..., binary_idx] = numer / denom
+        return H * adjustment.unsqueeze(-1)
 
     def _adjust_r(self, measured_mean: Tensor, R: Optional[Tensor]) -> Tensor:
-        var = measured_mean * (1 - measured_mean)
-        return torch.diag_embed(var)  # variance = mean
+        all_idx = list(range(R.shape[-1]))
+        binary_idx = list(all_idx if self.binary_idx is None else self.binary_idx)
+        gaussian_idx = [idx for idx in all_idx if idx not in binary_idx]
+
+        newR = torch.zeros_like(R)
+        # for binary measures, var==mean:
+        newR[..., binary_idx, binary_idx] = measured_mean[..., binary_idx] * (1 - measured_mean[..., binary_idx])
+
+        if gaussian_idx:
+            # for gaussian measures, would be much more readable code if we just looped over the gaussian dims
+            # and modified newR in-place. but now that newR has grad, that's no good. so we use masking trick
+            gaussian_idx = torch.as_tensor(gaussian_idx, device=measured_mean.device)
+            gaussian_mask = torch.meshgrid(torch.arange(newR.shape[0]), gaussian_idx, gaussian_idx, indexing='ij')
+            expand_mask = mini_cov_mask(rank=len(all_idx), empty_idx=binary_idx)  # todo: cache?
+            gaussianR = expand_mask @ R[gaussian_mask] @ expand_mask.transpose(-1, -2)
+            newR = newR + gaussianR
+
+        return newR
 
     def _adjust_measurement(self, x: Tensor) -> Tensor:
-        return sigmoid(x)
+        all_idx = list(range(x.shape[-1]))
+        binary_idx = list(all_idx if self.binary_idx is None else self.binary_idx)
+        gaussian_idx = [idx for idx in all_idx if idx not in binary_idx]
+
+        # again some awkwardness due to avoiding in-place on tensors with grad
+        binary_out = torch.zeros_like(x)
+        binary_out[..., binary_idx] = sigmoid(x[..., binary_idx])
+        gaussian_out = torch.zeros_like(x)
+        gaussian_out[..., gaussian_idx] = x[..., gaussian_idx]
+        return binary_out + gaussian_out
 
 
 class BernoulliFilter(KalmanFilter):
@@ -79,19 +114,29 @@ class BernoulliFilter(KalmanFilter):
     def __init__(self,
                  processes: Sequence[Process],
                  measures: Optional[Sequence[str]] = None,
+                 binary_measures: Optional[Sequence[str]] = None,
                  process_covariance: Optional[Covariance] = None):
 
+        if isinstance(measures, str):
+            raise ValueError(f"`measures` should be a list of strings not a string.")
+        self.binary_measures = measures if binary_measures is None else binary_measures
         super().__init__(
             processes=processes,
             measures=measures,
             process_covariance=process_covariance,
             measure_covariance=Covariance(
                 rank=len(measures),
-                empty_idx=[i for i, m in enumerate(measures)]  # all zero (future: support gaussian, some bern)
+                empty_idx=[i for i, m in enumerate(measures) if m in self.binary_measures]
             ),
         )
 
+    @property
+    def ss_step(self) -> StateSpaceStep:
+        return self.ss_step_cls(binary_idx=[idx for idx, m in enumerate(self.measures) if m in self.binary_measures])
+
     def _get_measure_scaling(self) -> Tensor:
+        if set(self.binary_measures) != set(self.measures):
+            raise NotImplementedError("TODO")
         mcov = self.measure_covariance({}, num_groups=1, num_times=1, _ignore_input=True)[0, 0]
         return torch.ones((self.state_rank,), dtype=mcov.dtype, device=mcov.device)
 
@@ -103,14 +148,18 @@ class BernoulliFilter(KalmanFilter):
         """
         StateSpace subclasses may pass subclasses of `Predictions` (e.g. for custom log-prob)
         """
-        kwargs.update({
-            'state_means': preds[0],
-            'state_covs': preds[1],
-            'model': self
-        })
+
         if updates is not None:
             kwargs.update(update_means=updates[0], update_covs=updates[1])
-        return BernoulliPredictions(**kwargs)
+        preds = BernoulliPredictions(
+            *preds,
+            R=kwargs.pop('R'),
+            H=kwargs.pop('H'),
+            model=self,
+            binary_idx=[idx for idx, m in enumerate(self.measures) if m in self.binary_measures],
+            **kwargs
+        )
+        return preds
 
 
 _warn_once = {}
@@ -118,9 +167,31 @@ _warn_once = {}
 
 class BernoulliPredictions(EKFPredictions):
 
+    def __init__(self,
+                 state_means: Sequence[Tensor],
+                 state_covs: Sequence[Tensor],
+                 R: Sequence[Tensor],
+                 H: Sequence[Tensor],
+                 model: Union['StateSpaceModel', 'StateSpaceModelMetadata'],
+                 binary_idx: Sequence[int],
+                 update_means: Optional[Sequence[Tensor]] = None,
+                 update_covs: Optional[Sequence[Tensor]] = None):
+        super().__init__(
+            state_means=state_means,
+            state_covs=state_covs,
+            R=R,
+            H=H,
+            model=model,
+            update_means=update_means,
+            update_covs=update_covs
+        )
+        self.binary_idx = binary_idx
+
     def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
         num_samples = 600  # TODO: how to allow user to customize?
         torch.manual_seed(0)  # TODO: this is a hack; instead need to sample white noise once per training session
+        if len(self.binary_idx) < obs.shape[-1]:
+            raise NotImplementedError("TODO")
         samples = torch.distributions.MultivariateNormal(means, covs).rsample(sample_shape=(num_samples,))
         return torch.distributions.Bernoulli(logits=samples).log_prob(obs).mean(0).sum(-1)
 
@@ -129,7 +200,9 @@ class BernoulliPredictions(EKFPredictions):
                               x: Union[Tensor, np.ndarray, pd.Series],
                               std: Optional[Union[Tensor, np.ndarray, pd.Series]] = None,
                               conf: float = .95) -> Union[Tensor, pd.DataFrame]:
+        x_index = None
         if hasattr(x, 'to_numpy'):
+            x_index = x.index if hasattr(x, 'index') else None
             x = x.to_numpy()
 
         if std is None:
@@ -145,25 +218,26 @@ class BernoulliPredictions(EKFPredictions):
                 'mean': expit(x),
                 'lower': expit(lower),
                 'upper': expit(upper)
-            }, index=x.index if hasattr(x, 'index') else None)
+            }, index=None if x_index is None else x_index)
 
 
-def main(num_groups: int = 6, num_timesteps: int = 200, bias: int = 0):
+def main(num_groups: int = 10, num_timesteps: int = 200, bias: int = 0):
     from torchcast.process import LocalLevel, LocalTrend
     from torchcast.utils import TimeSeriesDataset
     import pandas as pd
     from plotnine import geom_line, aes, facet_wrap
+    torch.manual_seed(1234)
 
-    measures = ['dim1']
-    probs = sigmoid(
+    measures = ['dim1', 'dim2']
+    logits = (
         torch.randn((num_groups, 1, len(measures)))
         + torch.cumsum(.05 * torch.randn((num_groups, num_timesteps, len(measures))), dim=1)
         + bias
     )
-    y = torch.distributions.Bernoulli(probs=probs).sample()
+    y = torch.distributions.Bernoulli(logits=logits).sample()
     dataset = TimeSeriesDataset(
         y,
-        probs,
+        sigmoid(logits),
         group_names=[f'group_{i}' for i in range(num_groups)],
         start_times=[pd.Timestamp('2023-01-01')] * num_groups,
         measures=[measures, [x.replace('dim', 'probs') for x in measures]],
@@ -174,6 +248,7 @@ def main(num_groups: int = 6, num_timesteps: int = 200, bias: int = 0):
         processes=[LocalLevel(id=f'trend_{m}', measure=m) for m in measures],
         measures=measures
     )
+
     bf.fit(dataset.tensors[0])
     preds = bf(dataset.tensors[0])
     df = (preds

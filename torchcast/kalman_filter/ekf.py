@@ -105,6 +105,7 @@ class EKFPredictions(Predictions):
              **kwargs) -> pd.DataFrame:
 
         if 'upper' not in df.columns and 'std' in df.columns:
+            df = df.copy()
             df[['mean', 'lower', 'upper']] = cls._adjust_measured_mean(df['mean'], df['std'])
 
         return super().plot(
