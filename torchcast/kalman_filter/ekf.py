@@ -36,7 +36,6 @@ class EKFStep(KalmanStep):
                 mean: Tensor,
                 cov: Tensor,
                 kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-
         orig_H = kwargs['H']
         h_dot_state = (orig_H @ mean.unsqueeze(-1)).squeeze(-1)
         kwargs['measured_mean'] = self._adjust_measurement(h_dot_state)
@@ -55,6 +54,7 @@ class EKFPredictions(Predictions):
     @classmethod
     def _adjust_measured_mean(cls,
                               x: Union[Tensor, np.ndarray, pd.Series],
+                              measure: str,
                               std: Optional[Union[Tensor, np.ndarray, pd.Series]] = None,
                               conf: float = .95) -> Union[Tensor, pd.DataFrame]:
         """
@@ -76,7 +76,7 @@ class EKFPredictions(Predictions):
             stds = torch.diagonal(self.covs, dim1=-1, dim2=-2).sqrt()
             out = []
             for i, m in enumerate(self.measures):
-                out.append(self._adjust_measured_mean(self.means[..., i], stds[..., i]))
+                out.append(self._adjust_measured_mean(self.means[..., i], std=stds[..., i], measure=m))
             return torch.stack(out, -1).numpy()
 
     def to_dataframe(self,
@@ -92,12 +92,18 @@ class EKFPredictions(Predictions):
             time_colname=time_colname,
             conf=None
         )
-        df[['mean', 'lower', 'upper']] = self._adjust_measured_mean(df['mean'], df.pop('std'), conf=conf)
-        return df
+        for m, _df in df.groupby('measure'):
+            df.loc[_df.index, ['mean', 'lower', 'upper']] = self._adjust_measured_mean(
+                _df['mean'],
+                std=_df['std'],
+                measure=m,
+                conf=conf
+            )
+        return df.drop(columns=['std'])
 
     @class_or_instancemethod
     def plot(cls,
-             df: pd.DataFrame,
+             df: Optional[pd.DataFrame] = None,
              group_colname: str = None,
              time_colname: str = None,
              max_num_groups: int = 1,
@@ -106,7 +112,13 @@ class EKFPredictions(Predictions):
 
         if 'upper' not in df.columns and 'std' in df.columns:
             df = df.copy()
-            df[['mean', 'lower', 'upper']] = cls._adjust_measured_mean(df['mean'], df['std'])
+            for m, _df in df.groupby('measure'):
+                df.loc[_df.index, ['mean', 'lower', 'upper']] = cls._adjust_measured_mean(
+                    _df['mean'],
+                    std=_df['std'],
+                    measure=m,
+                )
+            df = df.drop(columns=['std'])
 
         return super().plot(
             df=df,

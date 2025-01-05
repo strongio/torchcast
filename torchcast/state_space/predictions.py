@@ -459,7 +459,7 @@ class Predictions(nn.Module):
         else:
             raise ValueError("Expected `type` to be 'predictions' or 'components'.")
 
-        return pd.concat(out, sort=True)
+        return pd.concat(out).reset_index(drop=True)
 
     @torch.no_grad()
     def _components(self) -> Dict[Tuple[str, str, str], Tuple[Tensor, Tensor]]:
