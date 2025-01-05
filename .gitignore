@@ -101,10 +101,8 @@ ENV/
 
 .idea/*
 .coveragerc
-*.ipynb
 *.zip
 docs/_html/*
 *.csv
 *.pt
 *.gz
-docs/examples/lightning_logs/*
