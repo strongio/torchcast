@@ -4,8 +4,6 @@ from warnings import warn
 import torch
 from torch import Tensor, nn
 
-from torchcast.utils.features import fourier_tensor
-
 
 class ScriptSequential(nn.ModuleList):
     """

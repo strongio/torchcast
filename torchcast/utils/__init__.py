@@ -10,4 +10,3 @@ This module includes:
 from .features import add_season_features
 from .data import TimeSeriesDataset, TimeSeriesDataLoader, complete_times
 from .baseline import make_baseline
-from .training import SimpleTrainer, StateSpaceTrainer, SeasonalEmbeddingsTrainer
