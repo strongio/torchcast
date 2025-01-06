@@ -19,6 +19,7 @@ dependencies = [
     "torch>=1.12",
     "numpy>=1.4",
     "scipy>=1.10",
+    "tqdm>=4.59",
 ]
 dynamic = ["version"]
 
@@ -42,7 +43,6 @@ docs = [
     "plotnine>=0.8",
     "nbsphinx>=0.8.2",
     "ipykernel>=5.3.4",
-    "tqdm>=4.59",
     "ipywidgets>=7.6.3",
     "pandoc>=1.0.2",
     "matplotlib",
