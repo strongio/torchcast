@@ -54,7 +54,8 @@ html_theme_path = strong_sphinx_theme.html_theme_path()
 # further. For a list of options available for each theme, see the
 # documentation.
 html_theme_options = {
-    "project_url": "https://strong.io"
+    "project_url": "https://strong.io",
+    "globaltoc_depth": 4
 }
 
 # Add any paths that contain custom static files (such as style sheets) here,
