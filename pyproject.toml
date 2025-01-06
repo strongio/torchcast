@@ -25,7 +25,7 @@ dynamic = ["version"]
 [project.urls]
 Repository = "https://github.com/strongio/torchcast"
 "Bug Tracker" = "https://github.com/strongio/torchcast/issues"
-Documentation = "https://torchcast.readthedocs.io/en/latest/"
+Documentation = "https://docs.strong.io/torchcast/"
 
 [project.optional-dependencies]
 dev = [

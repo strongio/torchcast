@@ -11,7 +11,9 @@ import pandas as pd
 from functools import cached_property
 
 from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims
-from torchcast.utils import conf2bounds, TimeSeriesDataset, class_or_instancemethod
+from torchcast.utils import TimeSeriesDataset
+from torchcast.utils.stats import conf2bounds
+from torchcast.utils.misc import class_or_instancemethod
 
 if TYPE_CHECKING:
     from torchcast.state_space import StateSpaceModel

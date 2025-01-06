@@ -127,7 +127,7 @@ print("Percent Error: {:.1%}".format(df_pred.query("time>@SPLIT_DT")['percent_er
 # The `Predictions` class comes with a `plot` classmethod for getting simple plots of forecasted vs. actual:
 
 # %%
-print(pred.plot(df_pred.query("group=='Changping'"), split_dt=SPLIT_DT, time_colname='time', group_colname='group'))
+pred.plot(df_pred.query("group=='Changping'"), split_dt=SPLIT_DT, time_colname='time', group_colname='group')
 
 # %% [markdown]
 # Finally you can produce dataframes that decompose the predictions into the underlying `processes` that produced them:
