@@ -3,8 +3,6 @@ The :class:`.KalmanFilter` is a :class:`torch.nn.Module` which generates forecas
 algorithm.
 
 This class inherits most of its methods from :class:`torchcast.state_space.StateSpaceModel`.
-
-----------
 """
 from typing import Sequence, Dict, List, Iterable
 
@@ -18,8 +16,6 @@ from typing import Tuple, Optional
 import torch
 from torch import nn, Tensor
 from typing_extensions import Final
-
-from torchcast.utils.outliers import get_outlier_multi
 
 
 class KalmanStep(StateSpaceStep):
@@ -120,11 +116,6 @@ class KalmanFilter(StateSpaceModel):
     :param measures: A list of strings specifying the names of the dimensions of the time-series being measured.
     :param process_covariance: A module created with ``Covariance.from_processes(processes)``.
     :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
-    :param outlier_threshold: If specified, used as a threshold-for outlier under-weighting during the `update` step,
-     using mahalanobis distance; outliers will also be under-weighted when evaluating the ``log_prob()`` of the output
-     ``Predictions``.
-    :param outlier_burnin: If outlier_threshold is specified, this specifies the number of timesteps to wait before
-     starting to reject outliers.
     """
     ss_step_cls = KalmanStep
 

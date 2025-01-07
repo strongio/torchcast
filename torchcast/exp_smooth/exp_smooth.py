@@ -2,8 +2,6 @@
 The :class:`.ExpSmoother` is a :class:`torch.nn.Module` which generates forecasts using exponential smoothing.
 
 This class inherits most of its methods from :class:`torchcast.state_space.StateSpaceModel`.
-
-----------
 """
 from typing import Sequence, Optional, Tuple, List, Dict, Iterable
 

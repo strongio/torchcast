@@ -705,22 +705,3 @@ def complete_times(data: 'DataFrame',
     return df_cj.merge(data, how='left', on=group_colnames + [time_colname])
 
 
-def chunk_grouped_data(*tensors, group_ids: Sequence) -> Sequence[Tuple[Tensor]]:
-    """
-    much faster approach to chunking than something like ``[X[gid==group_ids] for gid in np.unique(group_ids)]``
-    """
-    group_ids = np.asanyarray(group_ids)
-
-    # torch.split requires we put groups into contiguous chunks:
-    sort_idx = np.argsort(group_ids)
-    group_ids = group_ids[sort_idx]
-    tensors = [x[sort_idx] for x in tensors]
-
-    # much faster approach to chunking than something like `[X[gid==group_ids] for gid in np.unique(group_ids)]`:
-    _, counts_per_group = np.unique(group_ids, return_counts=True)
-    counts_per_group = counts_per_group.tolist()
-
-    group_data = []
-    for chunk_tensors in zip(*(torch.split(x, counts_per_group) for x in tensors)):
-        group_data.append(chunk_tensors)
-    return group_data

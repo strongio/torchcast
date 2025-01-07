@@ -9,11 +9,10 @@ import numpy as np
 import pandas as pd
 
 from functools import cached_property
+from scipy import stats
 
-from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims
+from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims, class_or_instancemethod
 from torchcast.utils import TimeSeriesDataset
-from torchcast.utils.stats import conf2bounds
-from torchcast.utils.misc import class_or_instancemethod
 
 if TYPE_CHECKING:
     from torchcast.state_space import StateSpaceModel
@@ -641,3 +640,11 @@ class DatasetMetadata:
             group_colname=self.group_colname,
             time_colname=self.time_colname
         )
+
+
+def conf2bounds(mean, std, conf) -> tuple:
+    assert conf >= .50
+    multi = -stats.norm.ppf((1 - conf) / 2)
+    lower = mean - multi * std
+    upper = mean + multi * std
+    return lower, upper
