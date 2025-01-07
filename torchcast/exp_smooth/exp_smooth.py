@@ -2,8 +2,6 @@
 The :class:`.ExpSmoother` is a :class:`torch.nn.Module` which generates forecasts using exponential smoothing.
 
 This class inherits most of its methods from :class:`torchcast.state_space.StateSpaceModel`.
-
-----------
 """
 from typing import Sequence, Optional, Tuple, List, Dict, Iterable
 
@@ -13,7 +11,7 @@ from torch import Tensor
 from torchcast.exp_smooth.smoothing_matrix import SmoothingMatrix
 from torchcast.covariance import Covariance
 from torchcast.process import Process
-from torchcast.state_space import StateSpaceModel
+from torchcast.state_space import StateSpaceModel, Predictions
 from torchcast.state_space.ss_step import StateSpaceStep
 
 
@@ -140,3 +138,14 @@ class ExpSmoother(StateSpaceModel):
         predict_kwargs = {'F': Fs, 'cov1step': cov1steps}
         update_kwargs = {'H': Hs, 'K': Ks, 'R': Rs}
         return predict_kwargs, update_kwargs
+
+    def _generate_predictions(self,
+                              preds: Tuple[List[Tensor], List[Tensor]],
+                              updates: Optional[Tuple[List[Tensor], List[Tensor]]] = None,
+                              **kwargs) -> 'Predictions':
+        del kwargs['K']
+        return super()._generate_predictions(
+            preds=preds,
+            updates=updates,
+            **kwargs
+        )

@@ -1,3 +1,4 @@
+import functools
 from typing import Union, Any, Tuple, Sequence, List, Optional, Iterable
 
 import torch
@@ -123,9 +124,6 @@ def ragged_cat(tensors: Sequence[torch.Tensor],
                ragged_dim: int,
                cat_dim: int = 0,
                padding: Optional[float] = None) -> torch.Tensor:
-    if padding and not isinstance(padding, float):
-        raise ValueError(padding)
-
     max_dim_len = max(tensor.shape[ragged_dim] for tensor in tensors)
     if padding is None:
         padding = float('nan')
@@ -166,3 +164,39 @@ def repeat(x: Union[torch.Tensor, np.ndarray], times: int, dim: int) -> Union[to
         return np.tile(x, reps=reps)
     else:
         return x.repeat(*reps)
+
+
+def chunk_grouped_data(*tensors, group_ids: Sequence) -> Sequence[Tuple[torch.Tensor]]:
+    """
+    much faster approach to chunking than something like ``[X[gid==group_ids] for gid in np.unique(group_ids)]``
+    """
+    group_ids = np.asanyarray(group_ids)
+
+    # torch.split requires we put groups into contiguous chunks:
+    sort_idx = np.argsort(group_ids)
+    group_ids = group_ids[sort_idx]
+    tensors = [x[sort_idx] for x in tensors]
+
+    # much faster approach to chunking than something like `[X[gid==group_ids] for gid in np.unique(group_ids)]`:
+    _, counts_per_group = np.unique(group_ids, return_counts=True)
+    counts_per_group = counts_per_group.tolist()
+
+    group_data = []
+    for chunk_tensors in zip(*(torch.split(x, counts_per_group) for x in tensors)):
+        group_data.append(chunk_tensors)
+    return group_data
+
+
+class class_or_instancemethod:
+    def __init__(self, method):
+        self.method = method
+
+    def __get__(self, instance, owner):
+        @functools.wraps(self.method)
+        def wrapped_method(*args, **kwargs):
+            if instance is not None:
+                return self.method(instance, *args, **kwargs)
+            else:
+                return self.method(owner, *args, **kwargs)
+
+        return wrapped_method

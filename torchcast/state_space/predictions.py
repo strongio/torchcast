@@ -9,9 +9,10 @@ import numpy as np
 import pandas as pd
 
 from functools import cached_property
+from scipy import stats
 
-from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims
-from torchcast.utils import conf2bounds, TimeSeriesDataset
+from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims, class_or_instancemethod
+from torchcast.utils import TimeSeriesDataset
 
 if TYPE_CHECKING:
     from torchcast.state_space import StateSpaceModel
@@ -371,12 +372,19 @@ class Predictions(nn.Module):
                 conf = None
             else:
                 raise TypeError(msg)
+        if kwargs:
+            raise TypeError(f"Unexpected keyword arguments: {set(kwargs)}")
 
         named_tensors = {}
         if dataset is None:
             dataset = self.dataset_metadata.copy()
             if dataset.group_names is None:
                 dataset.group_names = [f"group_{i}" for i in range(self.num_groups)]
+            if dataset.start_offsets.dtype.name.startswith('datetime') and not dataset.dt_unit:
+                raise ValueError(
+                    "Unable to infer `dt_unit`, please call ``predictions.set_metadata(dt_unit=X)``, or pass `dataset` "
+                    "to ``predictions.to_dataframe()``"
+                )
         else:
             for measure_group, tensor in zip(dataset.measures, dataset.tensors):
                 for i, measure in enumerate(measure_group):
@@ -468,9 +476,9 @@ class Predictions(nn.Module):
 
         return out
 
-    @classmethod
+    @class_or_instancemethod
     def plot(cls,
-             df: pd.DataFrame,
+             df: Optional[pd.DataFrame] = None,
              group_colname: str = None,
              time_colname: str = None,
              max_num_groups: int = 1,
@@ -494,8 +502,12 @@ class Predictions(nn.Module):
         if isinstance(cls, Predictions):  # using it as an instance-method
             group_colname = group_colname or cls.dataset_metadata.group_colname
             time_colname = time_colname or cls.dataset_metadata.time_colname
+            if df is None:
+                df = cls.to_dataframe()
         elif not group_colname or not time_colname:
             raise TypeError("Please specify group_colname and time_colname")
+        elif df is None:
+            raise TypeError("Please specify a dataframe `df`")
 
         is_components = 'process' in df.columns
         if is_components and 'state_element' not in df.columns:
@@ -628,3 +640,11 @@ class DatasetMetadata:
             group_colname=self.group_colname,
             time_colname=self.time_colname
         )
+
+
+def conf2bounds(mean, std, conf) -> tuple:
+    assert conf >= .50
+    multi = -stats.norm.ppf((1 - conf) / 2)
+    lower = mean - multi * std
+    upper = mean + multi * std
+    return lower, upper

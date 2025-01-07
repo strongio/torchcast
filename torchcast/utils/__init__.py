@@ -1,13 +1,18 @@
 """
-The data-utils in this module are useful for converting time-series data from a Pandas DataFrame into a PyTorch
-:class:`torch.utils.data.Dataset` and/or :class:`torch.utils.data.DataLoader`. The most common pattern is using the
-``from_dataframe()`` classmethod.
+This module includes:
 
-Additionally, utility functions are provided for handling missing data and adding calendar-features (i.e.
-weekly/daily/yearly season dummy-features that can be passed to any neural-network).
+* Data-utils, such as those for converting time-series data from a Pandas DataFrame into a PyTorch
+  :class:`torch.utils.data.Dataset` and/or :class:`torch.utils.data.DataLoader`, as well as a function for handling
+  implicit missing data.
+* A function for adding calendar-features: i.e. weekly/daily/yearly season dummy-features for usage as predictors.
+* A function for creating a simple baseline model, against which to compare more sophisticated forecasting models.
+* Simple trainer classes for PyTorch models, with specialized subclasses for torchcast's model-classes, as well as a
+  special class for training neural networks to embed complex seasonal patterns into lower dimensional embeddings.
+
+---
 """
 
 from .features import add_season_features
 from .data import TimeSeriesDataset, TimeSeriesDataLoader, complete_times
-from .stats import conf2bounds
-from .outliers import get_outlier_multi
+from .baseline import make_baseline
+from .training import SimpleTrainer, StateSpaceTrainer, SeasonalEmbeddingsTrainer

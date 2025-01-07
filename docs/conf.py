@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.abspath('../torchcast'))
 # -- Project information -----------------------------------------------------
 
 project = 'torchcast'
-copyright = '2021, Strong Analytics'
+copyright = '2025, Strong Analytics'
 author = 'Jacob Dink'
 
 # -- General configuration ---------------------------------------------------
@@ -40,7 +40,7 @@ templates_path = ['_templates']
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store', '**.ipynb_checkpoints', '_html', '**.ipynb', 'conf.py']
+exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store', '**.ipynb_checkpoints', '_html', 'conf.py']
 
 # -- Options for HTML output -------------------------------------------------
 
@@ -54,7 +54,8 @@ html_theme_path = strong_sphinx_theme.html_theme_path()
 # further. For a list of options available for each theme, see the
 # documentation.
 html_theme_options = {
-    "project_url": "https://strong.io"
+    "project_url": "https://strong.io",
+    "globaltoc_depth": 4
 }
 
 # Add any paths that contain custom static files (such as style sheets) here,
