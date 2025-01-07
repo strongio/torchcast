@@ -5,7 +5,7 @@ torchcast
 
 1. An API designed around training and forecasting with *batches* of time-series, rather than training separate models for one time-series at a time.
 2. Robust support for *multivariate* time-series, where multiple correlated measures are being forecasted.
-3. Forecasting models that are hybrids: they are classic state-space models with the twist that every part is differentiable and can take advantage of PyTorch's flexibility. For `example <https://docs.strong.io/torchcast/examples/electricity.html#Training-our-Hybrid-Forecasting-Model>`_, we can use arbitrary PyTorch :class:`torch.nn.Modules` to learn seasonal variations across multiple groups, embedding complex seasonality into lower-dimensional space.
+3. Forecasting models that are hybrids: they are classic state-space models with the twist that every part is differentiable and can take advantage of PyTorch's flexibility. For `example <https://docs.strong.io/torchcast/examples/electricity.html#Training-our-Hybrid-Forecasting-Model>`_, we can use arbitrary PyTorch ``torch.nn.Modules`` to learn seasonal variations across multiple groups, embedding complex seasonality into lower-dimensional space.
 
 This repository is the work of `Strong <https://www.strong.io/>`_.
 
