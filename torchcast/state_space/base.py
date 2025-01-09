@@ -181,7 +181,7 @@ class StateSpaceModel(nn.Module):
         return self
 
     @torch.jit.ignore()
-    def set_initial_values(self, y: Tensor, ilinks: Optional[dict[str, callable]] = None, verbose: bool = True):
+    def set_initial_values(self, y: Tensor, ilinks: Optional[Dict[str, callable]] = None, verbose: bool = True):
         if 'initial_mean' not in self.state_dict():
             return
 
