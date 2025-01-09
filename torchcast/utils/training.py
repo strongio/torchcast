@@ -1,6 +1,6 @@
 """
 These are simple training classes for PyTorch models, with specialized subclasses for torchcast's model-classes (i.e.,
-when the data are too big for the :func:`torchcast.state_space.StateSpaceModel.fit()` method). Additionaly, there is a
+when the data are too big for the ``StateSpaceModel.fit()`` method). Additionally, there is a
 special class for training neural networks to embed complex seasonal patterns into lower dimensional embeddings.
 
 While the classes in this module are helpful for quick development, they are not necessarily meant to replace more
@@ -18,7 +18,7 @@ from typing import Generator, Union, Type, Sequence, Tuple, Dict, Optional
 
 from tqdm.auto import tqdm
 
-from torchcast.process import LinearModel
+from torchcast.internals.utils import chunk_grouped_data
 from torchcast.state_space import Predictions
 from torchcast.utils import TimeSeriesDataset
 from torchcast.utils.features import fourier_model_mat
@@ -88,7 +88,18 @@ class BaseTrainer:
 
 class SimpleTrainer(BaseTrainer):
     """
-    A simple trainer for a standard nn.Module (not a state-space model).
+    A simple trainer for a standard nn.Module (not a state-space model). Note: this is meant to be helpful for quick
+    development, it's not meant to replace better tools (e.g. PyTorch Lightning) in more complex settings.
+
+    Usage:
+
+    .. code-block:: python
+
+        dataloader = DataLoader(my_data, batch_size=32)
+        trainer = SimpleTrainer(module=nn.Linear(10, 1))
+        for loss in trainer(dataloader):
+            # log the loss, early-stopping, etc.
+
     """
     _warned = False
 
@@ -123,23 +134,38 @@ class SimpleTrainer(BaseTrainer):
 
 class StateSpaceTrainer(BaseTrainer):
     """
-    TODO
+    A trainer for a :``StateSpaceModel``. This is for usage in contexts where the data are too large for
+    ``StateSpaceModel.fit()`` to be practical. Rather than the base DataLoader, this class takes a
+    :class:`torchcast.utils.TimeSeriesDataLoader`.
 
-    :param module: A :class:`torchcast.state_space.StateSpaceModel` instance (e.g. ``KalmanFilter`` or ``ExpSmoother``).
-    :param kwargs_getter: If a sequence of strings are passed, these map the ``tensors[1:]`` of each
-     :class:`torchcast.utils.TimeSeriesDataset` to the corresponding keyword arguments of the module's ``forward``
-     method. If left unspecified, will pass ``tensor[1]`` as ``X`` (if the batch has such a tensor). You can also pass
-     a callable that takes the :class:`torchcast.utils.TimeSeriesDataset` and returns a dictionary that will be passed
-     as forward-kwargs.
-    :param optimizer: An optimizer or a class to instantiate an optimizer
+    Usage:
+
+    .. code-block:: python
+
+        from torchcast.kalman_filter import KalmanFilter
+        from torchcast.utils import TimeSeriesDataLoader
+        from torchcast.process import LocalTrend
+
+        my_dl = TimeSeriesDataLoader.from_dataframe(my_df)
+        my_model = KalmanFilter(processes=[LocalTrend(id='trend')])
+        my_trainer = StateSpaceTrainer(module=my_model)
+        for loss in my_trainer(my_dl, forward_kwargs={'n_step' : 14*7*24, 'every_step' : False}):
+            # log the loss, early-stopping, etc.
+
+
+    :param module: A ``StateSpaceModel`` instance (e.g. ``KalmanFilter`` or ``ExpSmoother``).
+    :param dataset_to_kwargs: A callable that takes a :class:`torchcast.utils.TimeSeriesDataset` and returns a dictionary
+     of keyword-arguments to pass to each call of the module's ``forward`` method. If left unspecified and the batch
+     has a 2nd tensor, will pass ``tensor[1]`` as the ``X`` keyword.
+    :param optimizer: An optimizer (or a class to instantiate an optimizer). Default is :class:`torch.optim.Adam`.
     """
 
     def __init__(self,
                  module: nn.Module,
-                 kwargs_getter: Optional[Sequence[str]] = None,
+                 dataset_to_kwargs: Optional[Sequence[str]] = None,
                  optimizer: Union[Optimizer, Type[Optimizer]] = torch.optim.Adam):
 
-        self.kwargs_getter = kwargs_getter
+        self.dataset_to_kwargs = dataset_to_kwargs
         super().__init__(module=module, optimizer=optimizer)
 
     def get_loss(self, pred: Predictions, y: torch.Tensor) -> torch.Tensor:
@@ -149,22 +175,22 @@ class StateSpaceTrainer(BaseTrainer):
         batch = batch.to(self._device)
         y = batch.tensors[0]
 
-        if callable(self.kwargs_getter):
-            kwargs = self.kwargs_getter(batch)
+        if callable(self.dataset_to_kwargs):
+            kwargs = self.dataset_to_kwargs(batch)
         else:
-            if self.kwargs_getter is None:
-                self.kwargs_getter = ['X'] if len(batch.tensors) > 1 else []
+            if self.dataset_to_kwargs is None:
+                self.dataset_to_kwargs = ['X'] if len(batch.tensors) > 1 else []
 
             kwargs = {}
-            for i, (k, t) in enumerate(zip_longest(self.kwargs_getter, batch.tensors[1:])):
+            for i, (k, t) in enumerate(zip_longest(self.dataset_to_kwargs, batch.tensors[1:])):
                 if k is None:
                     raise RuntimeError(
-                        f"Found element-{i + 1} of the dataset.tensors, but `kwargs_getter` doesn't have enough "
-                        f"elements: {self.kwargs_getter}"
+                        f"Found element-{i + 1} of the dataset.tensors, but `dataset_to_kwargs` doesn't have enough "
+                        f"elements: {self.dataset_to_kwargs}"
                     )
                 if t is None:
                     raise RuntimeError(
-                        f"Found element-{i} of `kwargs_getter`, but `dataset.tensors` doesn't have enough "
+                        f"Found element-{i} of `dataset_to_kwargs`, but `dataset.tensors` doesn't have enough "
                         f"elements: {batch}"
                     )
                 kwargs[k] = t
@@ -173,7 +199,7 @@ class StateSpaceTrainer(BaseTrainer):
     def _get_closure(self, batch: TimeSeriesDataset, forward_kwargs: dict) -> callable:
 
         def closure():
-            # we call _batch_to_args from inside the closure in case `kwargs_getter` is callable & involves grad.
+            # we call _batch_to_args from inside the closure in case `dataset_to_kwargs` is callable & involves grad.
             # only scenario this would matter is if optimizer is LBFGS (or another custom optimizer that calls closure
             # multiple times per step), in which case grad from callable would be lost after the first step.
             y, kwargs = self._batch_to_args(batch)
@@ -192,10 +218,9 @@ class StateSpaceTrainer(BaseTrainer):
 
 class SeasonalEmbeddingsTrainer(BaseTrainer):
     """
-    This trainer is designed to train a :class:`torch.nn.Module` with
+    This trainer is designed to train a :class:`torch.nn.Module` to embed complex seasonal patterns (e.g. cycles on the
+    yearly, weekly, daily level) into a lower-dimensional space. See :doc:`../examples/electricity` for an example.
     """
-
-    # TODO: classmethod `from_dt_unit` or something that puts in decent defaults for hourly, daily, weekly data
 
     def __init__(self,
                  module: nn.Module,
@@ -205,7 +230,10 @@ class SeasonalEmbeddingsTrainer(BaseTrainer):
                  other: Sequence[Tuple[np.timedelta64, int]] = (),
                  loss_fn: callable = torch.nn.MSELoss(),
                  **kwargs):
+        # TODO: classmethod `from_dt_unit` that puts in decent defaults for hourly, daily, weekly data?
+
         super().__init__(module=module, **kwargs)
+
         self.weekly = weekly
         self.yearly = yearly
         self.daily = daily
@@ -247,13 +275,76 @@ class SeasonalEmbeddingsTrainer(BaseTrainer):
             self._warned = True
         return X, y
 
+    @staticmethod
+    def _l2_solve(y: torch.Tensor,
+                  X: torch.Tensor,
+                  prior_precision: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Given tensors y,X in the format expected by ``StateSpaceModel`` -- 3D arrays with groups*times*measures --
+        return the solutions to a linear-model for each group.
+
+        See :func:`~torchcast.process.LinearModel.solve_and_predict()`
+
+        :param y: A 3d tensor of time-series values.
+        :param X: A 3d tensor of predictors.
+        :param prior_precision: Optional. A penalty matrix.
+        :return: The solution.
+        """
+
+        # handling nans requires flattening + scatter_add:
+        num_groups, num_times, num_preds = X.shape
+        X = X.view(-1, X.shape[-1])
+        y = y.view(-1, y.shape[-1])
+        is_valid = ~torch.isnan(y).squeeze()
+        group_ids_broad = torch.repeat_interleave(torch.arange(num_groups, device=y.device), num_times)
+        X = X[is_valid]
+        y = y[is_valid]
+        group_ids_broad = group_ids_broad[is_valid]
+
+        # Xty:
+        Xty_els = X * y
+        Xty = (torch.zeros(num_groups, num_preds, dtype=y.dtype, device=y.device)
+               .scatter_add(0, group_ids_broad.unsqueeze(-1).expand_as(Xty_els), Xty_els))
+
+        # XtX:
+        XtX = torch.stack([Xg.t() @ Xg for Xg, in chunk_grouped_data(X, group_ids=group_ids_broad.cpu())])
+        XtXp = XtX
+        if prior_precision is not None:
+            if prior_precision.shape != (num_preds, num_preds):
+                raise ValueError(f"prior_precision must have shape ({num_preds}, {num_preds}), but got shape "
+                                 f"{prior_precision.shape} (did you remember bias?)")
+            XtXp = XtXp + prior_precision
+
+        return torch.linalg.solve(XtXp, Xty.unsqueeze(-1))
+
+    @classmethod
+    def _solve_and_predict(cls,
+                           y: torch.Tensor,
+                           X: torch.Tensor,
+                           add_bias: bool = True,
+                           prior_precision: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Given tensors y,X in the format expected by ``StateSpaceModel`` -- 3D arrays with groups*times*measures --
+        solve the linear-model for each group, then generate predictions from these.
+
+        :param y: A 3d tensor of time-series values.
+        :param X: A 3d tensor of predictors.
+        :param add_bias: Whether to add a bias-term.
+        :param prior_precision: Optional. A penalty matrix.
+        :return: A tensor with the same dimensions as ``y`` with the predictions.
+        """
+        if add_bias:
+            X = torch.cat([torch.ones_like(X[..., :1]), X], -1)
+        coefs = cls._l2_solve(y=y, X=X, prior_precision=prior_precision)
+        return (coefs.transpose(-1, -2) * X).sum(-1).unsqueeze(-1)
+
     def _get_closure(self, batch: TimeSeriesDataset, forward_kwargs: dict) -> callable:
         X, y = self._getXy(batch)
 
         def closure():
             self.optimizer.zero_grad()
             emb = self.module(X, **forward_kwargs)
-            outputs = LinearModel.solve_and_predict(y=y, X=emb)  # handles nans
+            outputs = self._solve_and_predict(y=y, X=emb)  # handles nans
             loss = self.get_loss(outputs, y)
             loss.backward()
             return loss
@@ -270,4 +361,4 @@ class SeasonalEmbeddingsTrainer(BaseTrainer):
         """
         X, y = self._getXy(batch)
         emb = self.module(X)
-        return LinearModel.solve_and_predict(y=y, X=emb)
+        return self._solve_and_predict(y=y, X=emb)

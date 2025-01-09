@@ -110,12 +110,7 @@ print(loss)
 # `Predictions` can easily be converted to Pandas `DataFrames` for ease of inspecting predictions, comparing them to actuals, and visualizing:
 
 # %%
-df_pred = pred.to_dataframe(dataset_all, conf=None)
-# bias-correction for log-transform (see https://otexts.com/fpp2/transformations.html#bias-adjustments)
-df_pred['mean'] += .5 * df_pred['std'] ** 2
-df_pred['lower'] = df_pred['mean'] - 1.96 * df_pred['std']
-df_pred['upper'] = df_pred['mean'] + 1.96 * df_pred['std']
-# inverse the log10:
+df_pred = pred.to_dataframe(dataset_all)
 df_pred[['actual','mean','upper','lower']] = 10 ** df_pred[['actual','mean','upper','lower']]
 df_pred
 
@@ -127,7 +122,7 @@ print("Percent Error: {:.1%}".format(df_pred.query("time>@SPLIT_DT")['percent_er
 # The `Predictions` class comes with a `plot` classmethod for getting simple plots of forecasted vs. actual:
 
 # %%
-print(pred.plot(df_pred.query("group=='Changping'"), split_dt=SPLIT_DT, time_colname='time', group_colname='group'))
+pred.plot(df_pred.query("group=='Changping'"), split_dt=SPLIT_DT, time_colname='time', group_colname='group')
 
 # %% [markdown]
 # Finally you can produce dataframes that decompose the predictions into the underlying `processes` that produced them:
@@ -137,3 +132,5 @@ pred.plot(
     pred.to_dataframe(dataset_all, type='components').query("group=='Changping'"), split_dt=SPLIT_DT,
     time_colname='time', group_colname='group'
 )
+
+# %%

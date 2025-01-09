@@ -9,12 +9,13 @@ import numpy as np
 import pandas as pd
 
 from functools import cached_property
+from scipy import stats
 
-from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims
-from torchcast.utils import conf2bounds, TimeSeriesDataset, class_or_instancemethod
+from torchcast.internals.utils import get_nan_groups, is_near_zero, transpose_last_dims, class_or_instancemethod
 
 if TYPE_CHECKING:
     from torchcast.state_space import StateSpaceModel
+    from torchcast.utils import TimeSeriesDataset
 
 
 class Predictions(nn.Module):
@@ -65,7 +66,7 @@ class Predictions(nn.Module):
         self._dataset_metadata = None
 
     def set_metadata(self,
-                     dataset: Optional[TimeSeriesDataset] = None,
+                     dataset: Optional['TimeSeriesDataset'] = None,
                      group_names: Optional[Sequence[str]] = None,
                      start_offsets: Optional[np.ndarray] = None,
                      group_colname: str = 'group',
@@ -345,7 +346,7 @@ class Predictions(nn.Module):
         return torch.distributions.MultivariateNormal(means, covs, validate_args=False).log_prob(obs)
 
     def to_dataframe(self,
-                     dataset: Optional[TimeSeriesDataset] = None,
+                     dataset: Optional['TimeSeriesDataset'] = None,
                      type: str = 'predictions',
                      group_colname: Optional[str] = None,
                      time_colname: Optional[str] = None,
@@ -363,6 +364,8 @@ class Predictions(nn.Module):
         :return: A pandas DataFrame with group, 'time', 'measure', 'mean', 'lower', 'upper'. For ``type='components'``
          additionally includes: 'process' and 'state_element'.
         """
+        from torchcast.utils import TimeSeriesDataset
+
         multi = kwargs.pop('multi', False)
         if multi is not False:
             msg = "`multi` is deprecated, please use `conf` instead."
@@ -639,3 +642,11 @@ class DatasetMetadata:
             group_colname=self.group_colname,
             time_colname=self.time_colname
         )
+
+
+def conf2bounds(mean, std, conf) -> tuple:
+    assert conf >= .50
+    multi = -stats.norm.ppf((1 - conf) / 2)
+    lower = mean - multi * std
+    upper = mean + multi * std
+    return lower, upper
