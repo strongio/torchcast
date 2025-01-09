@@ -361,7 +361,7 @@ class Predictions(nn.Module):
         :param time_colname: Column-name for 'time'
         :param conf: If set, specifies the confidence level for the 'lower' and 'upper' columns in the output. Default
          of 0.95 means these are 0.025 and 0.975. If ``None``, then will just include 'std' column instead.
-        :return: A pandas DataFrame with group, 'time', 'measure', 'mean', 'lower', 'upper'. For ``type='components'``
+        :return: A pandas DataFrame with 'group', 'time', 'measure', 'mean', 'lower', 'upper'. For ``type='components'``
          additionally includes: 'process' and 'state_element'.
         """
         from torchcast.utils import TimeSeriesDataset
@@ -462,7 +462,13 @@ class Predictions(nn.Module):
         else:
             raise ValueError("Expected `type` to be 'predictions' or 'components'.")
 
-        return pd.concat(out).reset_index(drop=True)
+        out = pd.concat(out).reset_index(drop=True)
+        _out_cols = [group_colname, time_colname, 'measure', 'mean', 'lower', 'upper']
+        if type.startswith('comp'):
+            _out_cols = _out_cols[0:3] + ['process', 'state_element'] + _out_cols[3:]
+        if 'actual' in out.columns:
+            _out_cols.append('actual')
+        return out[_out_cols]
 
     @torch.no_grad()
     def _components(self) -> Dict[Tuple[str, str, str], Tuple[Tensor, Tensor]]:
