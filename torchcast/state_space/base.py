@@ -7,7 +7,7 @@ import torch
 from torch import nn, Tensor
 from tqdm.auto import tqdm
 
-from torchcast.internals.utils import get_owned_kwargs, repeat
+from torchcast.internals.utils import get_owned_kwargs, repeat, identity
 from torchcast.covariance import Covariance
 from torchcast.state_space.predictions import Predictions
 from torchcast.state_space.ss_step import StateSpaceStep
@@ -39,8 +39,6 @@ class StateSpaceModel(nn.Module):
         if self.measure_covariance:
             self.measure_covariance.set_id('measure_covariance')
 
-        self.ss_step = self.ss_step_cls()
-
         # measures:
         self.measures = measures
         self.measure_to_idx = {m: i for i, m in enumerate(self.measures)}
@@ -57,6 +55,10 @@ class StateSpaceModel(nn.Module):
 
         # the initial mean
         self.initial_mean = torch.nn.Parameter(.1 * torch.randn(self.state_rank))
+
+    @property
+    def ss_step(self) -> StateSpaceStep:
+        return self.ss_step_cls()
 
     @property
     def dt_unit(self) -> Optional[np.timedelta64]:
@@ -179,12 +181,12 @@ class StateSpaceModel(nn.Module):
         return self
 
     @torch.jit.ignore()
-    def set_initial_values(self, y: Tensor, ilink: Optional[callable] = None, verbose: bool = True):
+    def set_initial_values(self, y: Tensor, ilinks: Optional[Dict[str, callable]] = None, verbose: bool = True):
         if 'initial_mean' not in self.state_dict():
             return
 
-        if ilink is None:
-            ilink = lambda x: x
+        if ilinks is None:
+            ilinks = {k: identity for k in self.measures}
 
         assert len(self.measures) == y.shape[-1]
 
@@ -202,7 +204,7 @@ class StateSpaceModel(nn.Module):
                 measure_idx = list(self.measures).index(process.measure)
                 with torch.no_grad():
                     t0 = y[..., measure_idx]
-                    init_mean = ilink(t0[~torch.isnan(t0) & ~torch.isinf(t0)].mean())
+                    init_mean = ilinks[process.measure](t0[~torch.isnan(t0) & ~torch.isinf(t0)].mean())
                     if verbose:
                         print(f"Initializing {pid}.position to {init_mean.item()}")
                     # TODO instead of [0], should actually get index of 'position->position'
