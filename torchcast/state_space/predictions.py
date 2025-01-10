@@ -463,7 +463,11 @@ class Predictions(nn.Module):
             raise ValueError("Expected `type` to be 'predictions' or 'components'.")
 
         out = pd.concat(out).reset_index(drop=True)
-        _out_cols = [group_colname, time_colname, 'measure', 'mean', 'lower', 'upper']
+        _out_cols = [group_colname, time_colname, 'measure', 'mean']
+        if conf is None:
+            _out_cols.append('std')
+        else:
+            _out_cols.extend(['lower', 'upper'])
         if type.startswith('comp'):
             _out_cols = _out_cols[0:3] + ['process', 'state_element'] + _out_cols[3:]
         if 'actual' in out.columns:
