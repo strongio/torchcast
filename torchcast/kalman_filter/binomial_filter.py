@@ -10,11 +10,11 @@ from torch.distributions import MultivariateNormal, Binomial
 
 from torchcast.covariance import Covariance
 from torchcast.covariance.util import mini_cov_mask
-from torchcast.internals.utils import identity
+from torchcast.internals.utils import identity, class_or_instancemethod
 from torchcast.kalman_filter import KalmanFilter
 from torchcast.kalman_filter.ekf import EKFStep, EKFPredictions
 from torchcast.process import Process
-from torchcast.utils import conf2bounds, class_or_instancemethod
+from torchcast.state_space.predictions import conf2bounds
 
 if TYPE_CHECKING:
     from pandas import DataFrame

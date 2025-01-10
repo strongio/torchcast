@@ -6,8 +6,9 @@ import torch
 from torch import Tensor
 
 from .kalman_filter import KalmanStep
+from ..internals.utils import class_or_instancemethod
 from ..state_space import Predictions
-from ..utils import TimeSeriesDataset, class_or_instancemethod
+from ..utils import TimeSeriesDataset
 
 
 class EKFStep(KalmanStep):
