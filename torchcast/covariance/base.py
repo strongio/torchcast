@@ -8,7 +8,7 @@ import torch
 from torch import Tensor, nn, jit
 
 from torchcast.process.utils import Identity
-from torchcast.covariance.util import num_off_diag
+from torchcast.covariance.util import num_off_diag, mini_cov_mask
 from torchcast.internals.utils import is_near_zero, validate_gt_shape
 from torchcast.process.base import Process
 
@@ -80,7 +80,7 @@ class Covariance(nn.Module):
             if 'init_diag_multi' not in kwargs:
                 kwargs['init_diag_multi'] = .01
             if 'method' in kwargs and kwargs['method'] == 'low_rank':
-                warn("``method='low_rank'`` not recommended for processes, consider 'low_rank+block_diag'")
+                warn("``method='low_rank'`` not recommended for processes")
         elif cov_type == 'initial':
             if (state_rank - len(no_cov_idx)) >= 10:
                 # by default, use low-rank parameterization for initial cov:
@@ -173,12 +173,7 @@ class Covariance(nn.Module):
         empty_idx = set(empty_idx)
         assert all(isinstance(x, int) for x in empty_idx)
         self.param_rank = self.rank - len(empty_idx)
-        mask = torch.zeros((self.rank, self.param_rank))
-        c = 0
-        for r in range(self.rank):
-            if r not in empty_idx:
-                mask[r, c] = 1.
-                c += 1
+        mask = mini_cov_mask(rank=self.rank, empty_idx=empty_idx)
         self.register_buffer('mask', mask)
 
         self._set_params(method, init_diag_multi)

@@ -7,7 +7,7 @@ from torch import Tensor
 
 from .kalman_filter import KalmanStep
 from ..state_space import Predictions
-from ..utils import TimeSeriesDataset
+from ..utils import TimeSeriesDataset, class_or_instancemethod
 
 
 class EKFStep(KalmanStep):
@@ -21,14 +21,14 @@ class EKFStep(KalmanStep):
      binomial) via a link function.
     """
 
-    def _adjust_h(self, mean: Tensor, H: Tensor) -> Tensor:
+    def _adjust_h(self, mean: Tensor, H: Tensor, kwargs: Dict[str, Tensor]) -> Tensor:
         return H
 
-    def _adjust_r(self, measured_mean: Tensor, R: Optional[Tensor]) -> Tensor:
+    def _adjust_r(self, measured_mean: Tensor, R: Optional[Tensor], kwargs: Dict[str, Tensor]) -> Tensor:
         assert R is not None
         return R
 
-    def _adjust_measurement(self, x: Tensor) -> Tensor:
+    def _adjust_measurement(self, x: Tensor, kwargs: Dict[str, Tensor]) -> Tensor:
         return x
 
     def _update(self,
@@ -36,14 +36,12 @@ class EKFStep(KalmanStep):
                 mean: Tensor,
                 cov: Tensor,
                 kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        if (kwargs['outlier_threshold'] != 0).any():
-            raise NotImplementedError("Outlier rejection is not yet supported for EKF")
-
         orig_H = kwargs['H']
         h_dot_state = (orig_H @ mean.unsqueeze(-1)).squeeze(-1)
-        kwargs['measured_mean'] = self._adjust_measurement(h_dot_state)
-        kwargs['H'] = self._adjust_h(mean, orig_H)
-        kwargs['R'] = self._adjust_r(kwargs['measured_mean'], kwargs.get('R', None))
+        aux_kwargs = {k: v for k, v in kwargs.items() if k not in ('H', 'R')}
+        kwargs['measured_mean'] = self._adjust_measurement(h_dot_state, kwargs)
+        kwargs['H'] = self._adjust_h(mean, orig_H, kwargs)
+        kwargs['R'] = self._adjust_r(kwargs['measured_mean'], kwargs.get('R', None), aux_kwargs)
 
         return super()._update(
             input=input,
@@ -57,6 +55,7 @@ class EKFPredictions(Predictions):
     @classmethod
     def _adjust_measured_mean(cls,
                               x: Union[Tensor, np.ndarray, pd.Series],
+                              measure: str,
                               std: Optional[Union[Tensor, np.ndarray, pd.Series]] = None,
                               conf: float = .95) -> Union[Tensor, pd.DataFrame]:
         """
@@ -78,7 +77,7 @@ class EKFPredictions(Predictions):
             stds = torch.diagonal(self.covs, dim1=-1, dim2=-2).sqrt()
             out = []
             for i, m in enumerate(self.measures):
-                out.append(self._adjust_measured_mean(self.means[..., i], stds[..., i]))
+                out.append(self._adjust_measured_mean(self.means[..., i], std=stds[..., i], measure=m))
             return torch.stack(out, -1).numpy()
 
     def to_dataframe(self,
@@ -94,12 +93,18 @@ class EKFPredictions(Predictions):
             time_colname=time_colname,
             conf=None
         )
-        df[['mean', 'lower', 'upper']] = self._adjust_measured_mean(df['mean'], df.pop('std'), conf=conf)
-        return df
+        for m, _df in df.groupby('measure'):
+            df.loc[_df.index, ['mean', 'lower', 'upper']] = self._adjust_measured_mean(
+                _df['mean'],
+                std=_df['std'],
+                measure=m,
+                conf=conf
+            )
+        return df.drop(columns=['std'])
 
-    @classmethod
+    @class_or_instancemethod
     def plot(cls,
-             df: pd.DataFrame,
+             df: Optional[pd.DataFrame] = None,
              group_colname: str = None,
              time_colname: str = None,
              max_num_groups: int = 1,
@@ -107,7 +112,14 @@ class EKFPredictions(Predictions):
              **kwargs) -> pd.DataFrame:
 
         if 'upper' not in df.columns and 'std' in df.columns:
-            df[['mean', 'lower', 'upper']] = cls._adjust_measured_mean(df['mean'], df['std'])
+            df = df.copy()
+            for m, _df in df.groupby('measure'):
+                df.loc[_df.index, ['mean', 'lower', 'upper']] = cls._adjust_measured_mean(
+                    _df['mean'],
+                    std=_df['std'],
+                    measure=m,
+                )
+            df = df.drop(columns=['std'])
 
         return super().plot(
             df=df,
