@@ -301,7 +301,10 @@ class StateSpaceModel(nn.Module):
         assert len(args) <= 1
         if len(args):
             input = args[0]
-            assert torch.is_floating_point(input)
+            if not torch.is_floating_point(input):
+                raise ValueError(f"Expected input to be a float tensor, got {input.dtype}")
+            if torch.isinf(input).any():
+                raise ValueError("Input contains infinite values.")
         else:
             input = None
 
