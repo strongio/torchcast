@@ -382,7 +382,7 @@ class Predictions(nn.Module):
             dataset = self.dataset_metadata.copy()
             if dataset.group_names is None:
                 dataset.group_names = [f"group_{i}" for i in range(self.num_groups)]
-            if dataset.start_offsets.dtype.name.startswith('datetime') and not dataset.dt_unit:
+            if dataset.start_offsets and dataset.start_offsets.dtype.name.startswith('date') and not dataset.dt_unit:
                 raise ValueError(
                     "Unable to infer `dt_unit`, please call ``predictions.set_metadata(dt_unit=X)``, or pass `dataset` "
                     "to ``predictions.to_dataframe()``"
