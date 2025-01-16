@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from torchcast.utils import TimeSeriesDataset
 
 
-class Predictions(nn.Module):
+class Predictions:
     """
     The output of the :class:`.StateSpaceModel` forward pass, containing the underlying state means and covariances, as
     well as the predicted observations and covariances.
@@ -32,7 +32,6 @@ class Predictions(nn.Module):
                  model: Union['StateSpaceModel', 'StateSpaceModelMetadata'],
                  update_means: Optional[Sequence[Tensor]] = None,
                  update_covs: Optional[Sequence[Tensor]] = None):
-        super().__init__()
 
         # predictions state:
         self._state_means = state_means
@@ -499,7 +498,7 @@ class Predictions(nn.Module):
              time_colname: str = None,
              max_num_groups: int = 1,
              split_dt: Optional[np.datetime64] = None,
-             **kwargs) -> pd.DataFrame:
+             **kwargs):
         """
         :param df: The output of :func:`Predictions.to_dataframe()`.
         :param group_colname: The name of the group-column.

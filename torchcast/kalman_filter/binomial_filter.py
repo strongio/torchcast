@@ -273,25 +273,12 @@ class BinomialFilter(KalmanFilter):
 class BinomialPredictions(EKFPredictions):
 
     def __init__(self,
-                 state_means: Sequence[Tensor],
-                 state_covs: Sequence[Tensor],
-                 R: Sequence[Tensor],
-                 H: Sequence[Tensor],
-                 model: Union['StateSpaceModel', 'StateSpaceModelMetadata'],
+                 *args,
                  binary_measures: Sequence[str],
                  num_obs: List[Tensor],
                  white_noise: Optional[Tensor] = None,
-                 update_means: Optional[Sequence[Tensor]] = None,
-                 update_covs: Optional[Sequence[Tensor]] = None):
-        super().__init__(
-            state_means=state_means,
-            state_covs=state_covs,
-            R=R,
-            H=H,
-            model=model,
-            update_means=update_means,
-            update_covs=update_covs
-        )
+                 **kwargs):
+        super().__init__(*args, **kwargs)
         self.num_obs = torch.stack(num_obs, 1)
         self.binary_measures = binary_measures
         self._white_noise = white_noise
