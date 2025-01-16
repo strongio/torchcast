@@ -21,23 +21,17 @@ class ExpSmoothStep(StateSpaceStep):
                    groups: Tensor,
                    val_idx: Optional[Tensor],
                    input: Tensor,
-                   kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Dict[str, Tensor]]:
-        # torchscript doesn't support super, see: https://github.com/pytorch/pytorch/issues/42885
-        new_kwargs = kwargs.copy()
-        if val_idx is None:
-            for k in ['H', 'R', 'K']:
-                new_kwargs[k] = kwargs[k][groups]
-            return input[groups], new_kwargs
-        else:
-            m1d = torch.meshgrid(groups, val_idx, indexing='ij')
-            m2d = torch.meshgrid(groups, val_idx, val_idx, indexing='ij')
-            masked_input = input[m1d[0], m1d[1]]
-            new_kwargs.update({
-                'H': kwargs['H'][m1d[0], m1d[1]],
-                'R': kwargs['R'][m2d[0], m2d[1], m2d[2]],
-                'K': kwargs['K'][m1d[0], m1d[1]],
-            })
-            return masked_input, new_kwargs
+                   kwargs: Dict[str, Tensor],
+                   kwargs_dims: Optional[Dict[str, int]] = None) -> Tuple[Tensor, Dict[str, Tensor]]:
+        assert kwargs_dims is None
+        kwargs_dims = {'H': 1, 'R': 2, 'K': 1}
+        return super()._mask_mats(
+            groups=groups,
+            val_idx=val_idx,
+            input=input,
+            kwargs=kwargs,
+            kwargs_dims=kwargs_dims
+        )
 
     def _update(self,
                 input: Tensor,

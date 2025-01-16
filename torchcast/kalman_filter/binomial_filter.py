@@ -25,6 +25,54 @@ class BinomialStep(EKFStep):
         super().__init__()
         self.binary_idx = binary_idx
 
+    def _update(self,
+                input: Tensor,
+                mean: Tensor,
+                cov: Tensor,
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+
+        binary_idx = kwargs.get('binary_idx', self.binary_idx)
+        if binary_idx is None:
+            binary_idx = list(range(input.shape[-1]))
+        if (input[:, binary_idx] < 0).any():
+            raise ValueError("BinomialFilter does not support negative inputs.")
+        if (input[:, binary_idx] > 1).any():
+            raise ValueError("BinomialFilter expects inputs that are proportions (0 <= p <= 1).")
+
+        return super()._update(
+            input=input,
+            mean=mean,
+            cov=cov,
+            kwargs=kwargs
+        )
+
+    def _mask_mats(self,
+                   groups: Tensor,
+                   val_idx: Optional[Tensor],
+                   input: Tensor,
+                   kwargs: Dict[str, Tensor],
+                   kwargs_dims: Optional[Dict[str, int]] = None) -> Tuple[Tensor, Dict[str, Tensor]]:
+        masked_input, new_kwargs = super()._mask_mats(
+            groups=groups,
+            val_idx=val_idx,
+            input=input,
+            kwargs=kwargs
+        )
+
+        if self.binary_idx is not None and val_idx is not None:
+            new_kwargs['binary_idx'] = torch.as_tensor(
+                [bidx for i, bidx in enumerate(self.binary_idx) if i in val_idx],
+                dtype=torch.int,
+                device=input.device
+            )
+        if 'num_obs' in kwargs:
+            new_kwargs['num_obs'] = kwargs['num_obs'][groups]
+            if val_idx is not None:
+                _keep_idx = [i for i, bidx in enumerate(self.binary_idx) if i in val_idx]
+                new_kwargs['num_obs'] = new_kwargs['num_obs'][_keep_idx]
+
+        return masked_input, new_kwargs
+
     def _adjust_h(self, mean: Tensor, H: Tensor, kwargs: Dict[str, Tensor]) -> Tensor:
         """
         >>> import sympy

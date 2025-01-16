@@ -72,5 +72,6 @@ class StateSpaceStep(torch.nn.Module):
                    groups: Tensor,
                    val_idx: Optional[Tensor],
                    input: Tensor,
-                   kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Dict[str, Tensor]]:
+                   kwargs: Dict[str, Tensor],
+                   kwargs_dims: Optional[Dict[str, int]] = None) -> Tuple[Tensor, Dict[str, Tensor]]:
         raise NotImplementedError
