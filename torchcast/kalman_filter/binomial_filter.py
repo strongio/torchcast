@@ -6,7 +6,7 @@ from scipy.special import expit, logit
 
 import torch
 from torch import Tensor
-from torch.distributions import MultivariateNormal, Binomial
+from torch.distributions import Binomial
 
 from torchcast.covariance import Covariance
 from torchcast.covariance.util import mini_cov_mask
@@ -61,15 +61,15 @@ class BinomialStep(EKFStep):
 
         if self.binary_idx is not None and val_idx is not None:
             new_kwargs['binary_idx'] = torch.as_tensor(
-                [bidx for i, bidx in enumerate(self.binary_idx) if i in val_idx],
+                [new_idx for new_idx, og_idx in enumerate(val_idx) if og_idx in self.binary_idx],
                 dtype=torch.int,
                 device=input.device
             )
         if 'num_obs' in kwargs:
             new_kwargs['num_obs'] = kwargs['num_obs'][groups]
             if val_idx is not None:
-                _keep_idx = [i for i, bidx in enumerate(self.binary_idx) if i in val_idx]
-                new_kwargs['num_obs'] = new_kwargs['num_obs'][_keep_idx]
+                _keep_idx = [i for i, bidx in enumerate(self.binary_idx) if bidx in val_idx]
+                new_kwargs['num_obs'] = new_kwargs['num_obs'][:, _keep_idx]
 
         return masked_input, new_kwargs
 
@@ -253,6 +253,22 @@ class BinomialFilter(KalmanFilter):
             raise NotImplementedError
         return predict_kwargs, update_kwargs
 
+    def fit(self,
+            *args,
+            mc_samples: int,
+            **kwargs):
+        """
+        :param mc_samples: Number of samples to draw for MC approximation to binomial likelihood.
+        :param kwargs: Additional keyword arguments, see `func:torchcast.kalman_filter.KalmanFilter.fit`.
+        """
+        device = next(iter(self.parameters())).device
+        kwargs['prediction_kwargs'] = kwargs.get('prediction_kwargs', {})
+        kwargs['prediction_kwargs']['white_noise'] = torch.randn(
+            (mc_samples, len(self.binary_measures)),
+            device=device
+        )
+        return super().fit(*args, **kwargs)
+
 
 class BinomialPredictions(EKFPredictions):
 
@@ -264,6 +280,7 @@ class BinomialPredictions(EKFPredictions):
                  model: Union['StateSpaceModel', 'StateSpaceModelMetadata'],
                  binary_measures: Sequence[str],
                  num_obs: List[Tensor],
+                 white_noise: Optional[Tensor] = None,
                  update_means: Optional[Sequence[Tensor]] = None,
                  update_covs: Optional[Sequence[Tensor]] = None):
         super().__init__(
@@ -277,16 +294,27 @@ class BinomialPredictions(EKFPredictions):
         )
         self.num_obs = torch.stack(num_obs, 1)
         self.binary_measures = binary_measures
+        self._white_noise = white_noise
+
+    @property
+    def white_noise(self) -> Tensor:
+        if self._white_noise is None:
+            # todo: explain more
+            raise RuntimeError("Cannot access `white_noise` attribute because it was not passed at init.")
+        return self._white_noise
 
     def _get_log_prob_kwargs(self, groups: Tensor, valid_idx: Tensor) -> dict:
+        white_noise = self.white_noise
         num_obs = self.num_obs.view(-1, len(self.binary_measures))[groups]
         if valid_idx is not None:
             valid_measures = [m for i, m in enumerate(self.measures) if i in valid_idx]
             valid_binary_idx = [i for i, m in enumerate(self.binary_measures) if m in valid_measures]
-            num_obs = num_obs[valid_binary_idx]
+            num_obs = num_obs[:, valid_binary_idx]
+            white_noise = white_noise[:, valid_binary_idx]
         return {
             'measures': [m for i, m in enumerate(self.measures) if valid_idx is None or i in valid_idx],
-            'num_obs': num_obs
+            'num_obs': num_obs,
+            'white_noise': white_noise
         }
 
     def _log_prob(self,
@@ -294,10 +322,8 @@ class BinomialPredictions(EKFPredictions):
                   means: Tensor,
                   covs: Tensor,
                   num_obs: Tensor,
-                  measures: Sequence[str]) -> Tensor:
-        num_samples = 600  # TODO: how to allow user to customize?
-        torch.manual_seed(0)  # TODO: this is a hack; instead need to sample white noise once per training session
-
+                  measures: Sequence[str],
+                  white_noise: Tensor) -> Tensor:
         group_idx = torch.arange(covs.shape[0], dtype=torch.int)
         binary_idx = torch.as_tensor([i for i, m in enumerate(measures) if m in self.binary_measures], dtype=torch.int)
         gauss_idx = torch.as_tensor([i for i in range(covs.shape[-1]) if i not in binary_idx], dtype=torch.int)
@@ -312,10 +338,12 @@ class BinomialPredictions(EKFPredictions):
 
         if len(binary_idx):
             binary_cidx = torch.meshgrid(group_idx, binary_idx, binary_idx, indexing='ij')
-            state_mvnorm = MultivariateNormal(means[..., binary_idx], covs[binary_cidx], validate_args=False)
-            mc = state_mvnorm.rsample(sample_shape=(num_samples,))
-            binom = Binomial(total_count=num_obs, logits=mc, validate_args=False)
-            binary_lp = binom.log_prob(obs[..., binary_idx]).mean(0).sum(-1)
+            chol = torch.linalg.cholesky(covs[binary_cidx])
+            corr_white_noise = chol.unsqueeze(0) @ white_noise.view(-1, 1, len(binary_idx), 1)
+            mc_samples = corr_white_noise.squeeze(-1) + means[..., binary_idx].unsqueeze(0)
+            binom = Binomial(total_count=num_obs.unsqueeze(0), logits=mc_samples, validate_args=False)
+            log_probs = binom.log_prob(obs[..., binary_idx])
+            binary_lp = log_probs.mean(0).sum(-1)
         else:
             binary_lp = 0
 
@@ -360,19 +388,26 @@ def main(num_groups: int = 10, num_timesteps: int = 200, bias: float = -1):
     from plotnine import geom_line, aes, ggtitle
     torch.manual_seed(1234)
 
-    measures = ['dim1', 'dim2']
+    measures = ['dim1', 'dim2', 'dim3']
+    binary_measures = ['dim1', 'dim3']
     latent = (
             torch.randn((num_groups, 1, len(measures)))
             + torch.cumsum(.05 * torch.randn((num_groups, num_timesteps, len(measures))), dim=1)
             + bias
     )
+    # num_groups=10, num_timesteps=200
+    # KF no missings: 10/s
+    # KF with missings: 3.5/s
+    # BF no missings: 4.5/s
+    # BF with missings: 2.5/s
+
     y = []
     for i, m in enumerate(measures):
-        if i:
-            y.append(torch.distributions.Normal(loc=latent[..., i], scale=.5).sample())
-            y[-1][torch.randn((num_groups, num_timesteps)) > .95] = float('nan')  # some random missings
+        if m in binary_measures:
+            y.append(torch.distributions.Binomial(logits=latent[..., i]).sample())
         else:
-            y.append(torch.distributions.Binomial(logits=latent[..., 0]).sample())
+            y.append(torch.distributions.Normal(loc=latent[..., i], scale=.5).sample())
+        y[-1][torch.randn((num_groups, num_timesteps)) > .95] = float('nan')  # some random missings
     y = torch.stack(y, dim=-1)
     # first tensor in dataset is observed
     # second tensor is ground truth
@@ -388,17 +423,17 @@ def main(num_groups: int = 10, num_timesteps: int = 200, bias: float = -1):
     bf = BinomialFilter(
         processes=[LocalTrend(id=f'trend_{m}', measure=m) for m in measures],
         measures=measures,
-        binary_measures=['dim1']
+        binary_measures=binary_measures
     )
 
-    bf.fit(dataset.tensors[0])
+    bf.fit(dataset.tensors[0], mc_samples=64)
     preds = bf(dataset.tensors[0])
     df_preds = preds.to_dataframe(dataset)
     df_latent = (dataset.to_dataframe()
                  .drop(columns=measures)
                  .melt(id_vars=['group', 'time'], var_name='measure', value_name='latent')
                  .assign(measure=lambda _df: _df['measure'].str.replace('latent', 'dim')))
-    _is_binary = df_latent['measure'] == measures[0]
+    _is_binary = df_latent['measure'].isin(binary_measures)
     df_latent.loc[_is_binary, 'latent'] = expit(df_latent.loc[_is_binary, 'latent'])
 
     df_plot = df_preds.merge(df_latent, how='left', on=['group', 'time', 'measure'])

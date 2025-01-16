@@ -264,6 +264,7 @@ class StateSpaceModel(nn.Module):
                 every_step: bool = True,
                 include_updates_in_output: bool = False,
                 simulate: Optional[int] = None,
+                prediction_kwargs: Optional[dict] = None,
                 **kwargs) -> Predictions:
         """
         Generate n-step-ahead predictions from the model.
@@ -291,6 +292,8 @@ class StateSpaceModel(nn.Module):
         :param include_updates_in_output: If False, only the ``n_step`` ahead predictions are included in the output.
          This means that we cannot use this output to generate the ``initial_state`` for subsequent forward-passes. Set
          to True to allow this -- False by default to reduce memory.
+        :param prediction_kwargs: A dictionary of kwargs to pass to initialize ``Predictions()``. Unused for base
+         class, but can be used by subclasses (e.g. ``BinomialFilter``).
         :param kwargs: Further arguments passed to the `processes`. For example, the :class:`.LinearModel` expects an
          ``X`` argument for predictors.
         :param simulate: If specified, will generate `simulate` samples from the model.
@@ -345,10 +348,12 @@ class StateSpaceModel(nn.Module):
             ),
             simulate=bool(simulate)
         )
+        prediction_kwargs = prediction_kwargs or {}
         preds = self._generate_predictions(
             preds=preds,
             updates=updates if include_updates_in_output else None,
             **design_mats,
+            **prediction_kwargs
         )
         return preds.set_metadata(
             start_offsets=start_offsets,
