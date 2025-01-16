@@ -336,13 +336,17 @@ class Predictions(nn.Module):
                     H=H_flat[mask1d]
                 )
                 gt_obs = obs_flat[mask1d]
-            lp_flat[gt_idx] = self._log_prob(gt_obs, gt_means_flat, gt_covs_flat)
+            _kwargs = self._get_log_prob_kwargs(gt_idx, valid_idx)
+            lp_flat[gt_idx] = self._log_prob(gt_obs, gt_means_flat, gt_covs_flat, **_kwargs)
 
         lp_flat = lp_flat * weights
 
         return lp_flat.view(obs.shape[0:2])
 
-    def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
+    def _get_log_prob_kwargs(self, groups: Tensor, valid_idx: Tensor) -> dict:
+        return {}
+
+    def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor, **kwargs) -> Tensor:
         return torch.distributions.MultivariateNormal(means, covs, validate_args=False).log_prob(obs)
 
     def to_dataframe(self,

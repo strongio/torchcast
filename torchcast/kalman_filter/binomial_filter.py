@@ -112,26 +112,31 @@ class BinomialStep(EKFStep):
         """
         # this assert should not fail, b/c all processes only support a single measure
         assert not ((H != 0).sum(-2) > 1).any(), "BinomialFilter does not support the provided measurement-matrix"
-        num_obs = kwargs['num_obs']
-        if (num_obs != 1).any():
-            raise NotImplementedError
         all_idx = list(range(H.shape[-1]))
-        binary_idx = list(all_idx if self.binary_idx is None else self.binary_idx)
+        binary_idx = kwargs.get('binary_idx', self.binary_idx)
+        if binary_idx is None:
+            binary_idx = all_idx
         h_dot_state = (H @ mean.unsqueeze(-1)).squeeze(-1)
         adjustment = torch.ones_like(h_dot_state)
-        numer = torch.exp(-h_dot_state[..., binary_idx])
-        denom = (torch.exp(-h_dot_state[..., binary_idx]) + 1) ** 2
+        binary_h_dot_state = h_dot_state[..., binary_idx].clamp(-10, 10)
+        numer = torch.exp(-binary_h_dot_state)
+        denom = (torch.exp(-binary_h_dot_state) + 1) ** 2
         adjustment[..., binary_idx] = numer / denom
         return H * adjustment.unsqueeze(-1)
 
     def _adjust_r(self, measured_mean: Tensor, R: Optional[Tensor], kwargs: dict[str, Tensor]) -> Tensor:
         all_idx = list(range(R.shape[-1]))
-        binary_idx = list(all_idx if self.binary_idx is None else self.binary_idx)
+        binary_idx = kwargs.get('binary_idx', self.binary_idx)
+        if binary_idx is None:
+            binary_idx = all_idx
         gaussian_idx = [idx for idx in all_idx if idx not in binary_idx]
 
+        # binomial variance:
         newR = torch.zeros_like(R)
-        # for binary measures, var==mean:
-        newR[..., binary_idx, binary_idx] = measured_mean[..., binary_idx] * (1 - measured_mean[..., binary_idx])
+        binary_measured_mean = measured_mean[..., binary_idx]
+        newR[..., binary_idx, binary_idx] = (
+                kwargs['num_obs'] * binary_measured_mean * (1 - binary_measured_mean)
+        )
 
         if gaussian_idx:
             # for gaussian measures, would be much more readable code if we just looped over the gaussian dims
@@ -147,12 +152,14 @@ class BinomialStep(EKFStep):
 
     def _adjust_measurement(self, x: Tensor, kwargs: dict[str, Tensor]) -> Tensor:
         all_idx = list(range(x.shape[-1]))
-        binary_idx = list(all_idx if self.binary_idx is None else self.binary_idx)
+        binary_idx = kwargs.get('binary_idx', self.binary_idx)
+        if binary_idx is None:
+            binary_idx = all_idx
         gaussian_idx = [idx for idx in all_idx if idx not in binary_idx]
 
         # again some awkwardness due to avoiding in-place on tensors with grad
         binary_out = torch.zeros_like(x)
-        binary_out[..., binary_idx] = torch.sigmoid(x[..., binary_idx])
+        binary_out[..., binary_idx] = torch.sigmoid(x[..., binary_idx].clamp(-5, 5))
         gaussian_out = torch.zeros_like(x)
         gaussian_out[..., gaussian_idx] = x[..., gaussian_idx]
         return binary_out + gaussian_out
@@ -169,6 +176,8 @@ class BinomialFilter(KalmanFilter):
 
         if isinstance(measures, str):
             raise ValueError(f"`measures` should be a list of strings not a string.")
+        if isinstance(binary_measures, str):
+            raise ValueError(f"`binary_measures` should be a list of strings not a string.")
         self.binary_measures = measures if binary_measures is None else binary_measures
         super().__init__(
             processes=processes,
@@ -238,7 +247,8 @@ class BinomialFilter(KalmanFilter):
             out_timesteps=out_timesteps
         )
         if isinstance(num_obs, int):
-            update_kwargs['num_obs'] = [torch.ones(num_groups) * num_obs for _ in range(out_timesteps)]
+            # todo: device
+            update_kwargs['num_obs'] = [torch.ones(num_groups, len(self.binary_measures)) * num_obs] * out_timesteps
         else:
             raise NotImplementedError
         return predict_kwargs, update_kwargs
@@ -253,7 +263,7 @@ class BinomialPredictions(EKFPredictions):
                  H: Sequence[Tensor],
                  model: Union['StateSpaceModel', 'StateSpaceModelMetadata'],
                  binary_measures: Sequence[str],
-                 num_obs: Union[int, Tensor],
+                 num_obs: List[Tensor],
                  update_means: Optional[Sequence[Tensor]] = None,
                  update_covs: Optional[Sequence[Tensor]] = None):
         super().__init__(
@@ -265,20 +275,32 @@ class BinomialPredictions(EKFPredictions):
             update_means=update_means,
             update_covs=update_covs
         )
-        self.num_obs = torch.stack(num_obs, -1)
+        self.num_obs = torch.stack(num_obs, 1)
         self.binary_measures = binary_measures
 
-    @property
-    def binary_idx(self) -> Sequence[int]:
-        return [idx for idx, m in enumerate(self.measures) if m in self.binary_measures]
+    def _get_log_prob_kwargs(self, groups: Tensor, valid_idx: Tensor) -> dict:
+        num_obs = self.num_obs.view(-1, len(self.binary_measures))[groups]
+        if valid_idx is not None:
+            valid_measures = [m for i, m in enumerate(self.measures) if i in valid_idx]
+            valid_binary_idx = [i for i, m in enumerate(self.binary_measures) if m in valid_measures]
+            num_obs = num_obs[valid_binary_idx]
+        return {
+            'measures': [m for i, m in enumerate(self.measures) if valid_idx is None or i in valid_idx],
+            'num_obs': num_obs
+        }
 
-    def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
+    def _log_prob(self,
+                  obs: Tensor,
+                  means: Tensor,
+                  covs: Tensor,
+                  num_obs: Tensor,
+                  measures: Sequence[str]) -> Tensor:
         num_samples = 600  # TODO: how to allow user to customize?
         torch.manual_seed(0)  # TODO: this is a hack; instead need to sample white noise once per training session
 
         group_idx = torch.arange(covs.shape[0], dtype=torch.int)
-        binary_idx = torch.as_tensor(self.binary_idx, dtype=torch.int)
-        gauss_idx = torch.as_tensor([i for i in range(covs.shape[-1]) if i not in self.binary_idx], dtype=torch.int)
+        binary_idx = torch.as_tensor([i for i, m in enumerate(measures) if m in self.binary_measures], dtype=torch.int)
+        gauss_idx = torch.as_tensor([i for i in range(covs.shape[-1]) if i not in binary_idx], dtype=torch.int)
         if len(gauss_idx):
             gauss_cidx = torch.meshgrid(group_idx, gauss_idx, gauss_idx, indexing='ij')
             # super of BinomialPredictions is NotImplemented; we use super of EKFPredictions
@@ -290,14 +312,10 @@ class BinomialPredictions(EKFPredictions):
 
         if len(binary_idx):
             binary_cidx = torch.meshgrid(group_idx, binary_idx, binary_idx, indexing='ij')
-            state_mvnorm = MultivariateNormal(means[..., self.binary_idx], covs[binary_cidx], validate_args=False)
+            state_mvnorm = MultivariateNormal(means[..., binary_idx], covs[binary_cidx], validate_args=False)
             mc = state_mvnorm.rsample(sample_shape=(num_samples,))
-            if len(self.num_obs.shape) == 2:
-                nobs = self.num_obs.view(-1).unsqueeze(-1)
-            else:
-                raise NotImplementedError
-            binom = Binomial(total_count=nobs, logits=mc, validate_args=False)
-            binary_lp = binom.log_prob(obs[..., self.binary_idx]).mean(0).sum(-1)
+            binom = Binomial(total_count=num_obs, logits=mc, validate_args=False)
+            binary_lp = binom.log_prob(obs[..., binary_idx]).mean(0).sum(-1)
         else:
             binary_lp = 0
 
@@ -352,6 +370,7 @@ def main(num_groups: int = 10, num_timesteps: int = 200, bias: float = -1):
     for i, m in enumerate(measures):
         if i:
             y.append(torch.distributions.Normal(loc=latent[..., i], scale=.5).sample())
+            y[-1][torch.randn((num_groups, num_timesteps)) > .95] = float('nan')  # some random missings
         else:
             y.append(torch.distributions.Binomial(logits=latent[..., 0]).sample())
     y = torch.stack(y, dim=-1)
