@@ -461,6 +461,7 @@ class StateSpaceModel(nn.Module):
             num_groups = meanu.shape[0]
             if stop_at_last_measured:
                 warn("Ignoring `stop_at_last_measured` since `input` is None.")
+            last_measured_per_group = torch.full((num_groups,), out_timesteps, dtype=torch.int, device=meanu.device)
         else:
             if len(input.shape) != 3:
                 raise ValueError(f"Expected len(input.shape) == 3 (group,time,measure)")
