@@ -368,19 +368,23 @@ class BinomialPredictions(EKFPredictions):
             return out
 
 
-def main(num_groups: int = 10, num_timesteps: int = 200, bias: float = -1):
-    from torchcast.process import LocalLevel, LocalTrend
+def main(num_groups: int = 50, num_timesteps: int = 200, bias: float = -1, prop_common: float = 1.):
+    from torchcast.process import LocalLevel
     from torchcast.utils import TimeSeriesDataset
     import pandas as pd
     from plotnine import geom_line, aes, ggtitle
     torch.manual_seed(1234)
 
-    measures = ['dim1', 'dim2', 'dim3']
-    binary_measures = ['dim1', 'dim3']
+    measures = ['dim1', 'dim2']
+    binary_measures = ['dim1']
+    latent_common = torch.cumsum(.05 * torch.randn((num_groups, num_timesteps, 1)), dim=1)
+    latent_ind = torch.cumsum(.05 * torch.randn((num_groups, num_timesteps, len(measures))), dim=1)
+    assert 0 <= prop_common <= 1
     latent = (
-            torch.randn((num_groups, 1, len(measures)))
-            + torch.cumsum(.05 * torch.randn((num_groups, num_timesteps, len(measures))), dim=1)
-            + bias
+            (1 - prop_common) * latent_ind  # per-measure trajectories
+            + prop_common * latent_common.expand(num_groups, num_timesteps, len(measures))  # cross-measure traj
+            + bias  # global bias
+            + torch.randn((num_groups, 1, len(measures)))  # group-level starting-points
     )
     # num_groups=10, num_timesteps=200
     # KF no missings: 10/s
@@ -392,9 +396,10 @@ def main(num_groups: int = 10, num_timesteps: int = 200, bias: float = -1):
     for i, m in enumerate(measures):
         if m in binary_measures:
             y.append(torch.distributions.Binomial(logits=latent[..., i]).sample())
+            y[-1][:, int(num_timesteps * .7):] = float('nan')
         else:
             y.append(torch.distributions.Normal(loc=latent[..., i], scale=.5).sample())
-        y[-1][torch.randn((num_groups, num_timesteps)) > .95] = float('nan')  # some random missings
+        y[-1][torch.randn((num_groups, num_timesteps)) > 1.5] = float('nan')  # some random missings
     y = torch.stack(y, dim=-1)
     # first tensor in dataset is observed
     # second tensor is ground truth
@@ -408,7 +413,7 @@ def main(num_groups: int = 10, num_timesteps: int = 200, bias: float = -1):
     )
 
     bf = BinomialFilter(
-        processes=[LocalTrend(id=f'trend_{m}', measure=m) for m in measures],
+        processes=[LocalLevel(id=f'level_{m}', measure=m) for m in measures],
         measures=measures,
         binary_measures=binary_measures
     )
