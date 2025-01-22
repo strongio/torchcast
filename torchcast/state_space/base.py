@@ -7,7 +7,7 @@ import torch
 from torch import nn, Tensor
 from tqdm.auto import tqdm
 
-from torchcast.internals.utils import get_owned_kwargs, repeat, identity
+from torchcast.internals.utils import get_owned_kwargs, repeat, identity, true1d_idx
 from torchcast.covariance import Covariance
 from torchcast.state_space.predictions import Predictions
 from torchcast.state_space.ss_step import StateSpaceStep
@@ -264,6 +264,7 @@ class StateSpaceModel(nn.Module):
                 every_step: bool = True,
                 include_updates_in_output: bool = False,
                 simulate: Optional[int] = None,
+                stop_at_last_measured: bool = False,
                 **kwargs) -> Predictions:
         """
         Generate n-step-ahead predictions from the model.
@@ -291,6 +292,15 @@ class StateSpaceModel(nn.Module):
         :param include_updates_in_output: If False, only the ``n_step`` ahead predictions are included in the output.
          This means that we cannot use this output to generate the ``initial_state`` for subsequent forward-passes. Set
          to True to allow this -- False by default to reduce memory.
+        :param stop_at_last_measured: If True, then predictions will not be generated after the last measured timestep.
+         Default False. The 'last measured timestep' is the last timestep where at least one measure is non-nan. Setting
+          to True can be useful in training when the series in a batch are highly variable in length. For example, if a
+         batch contains two series, one with length=1 and the other with length=999, then we can save the compute used
+         to generate predictions for 998 of the steps of series 1, since those predictions wouldn't be used in loss
+         calculations regardless. By constrast, at inference, we generally will want this argument set to False, since
+         we often want to generate forecasts past the last-measured timestep (indeed, this is the definition of a
+         forecast!).
+        :return: predictions (tuple of (means,covs)), updates (tuple of (means,covs)), R, H
         :param kwargs: Further arguments passed to the `processes`. For example, the :class:`.LinearModel` expects an
          ``X`` argument for predictors.
         :param simulate: If specified, will generate `simulate` samples from the model.
@@ -446,8 +456,8 @@ class StateSpaceModel(nn.Module):
          (the default) then this option has no effect.
         :param simulate: If True, will simulate state-trajectories and return a ``Predictions`` object with zero state
          covariance.
-        :param stop_at_last_measured: TODO
-        :return: predictions (tuple of (means,covs)), updates (tuple of (means,covs)), R, H
+        :param stop_at_last_measured: If True, then predictions will not be generated after the last measured timestep.
+         For more details, see :func:`StateSpaceModel.forward()`.
         """
         assert n_step > 0
 
@@ -479,7 +489,13 @@ class StateSpaceModel(nn.Module):
                 out_timesteps = len(inputs)
 
             if stop_at_last_measured:
-                raise NotImplementedError("todo")
+                # todo: duplicate code in ``TimeSeriesDataset.get_durations()``
+                any_measured_bool = ~np.isnan(input.numpy()).all(2)
+                last_measured_per_group = torch.as_tensor(
+                    [np.max(true1d_idx(any_measured_bool[g]).numpy(), initial=0) for g in range(num_groups)],
+                    dtype=torch.int,
+                    device=input.device
+                ) + 1
             else:
                 last_measured_per_group = torch.full((num_groups,), out_timesteps, dtype=torch.int, device=input.device)
 
