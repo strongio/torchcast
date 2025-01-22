@@ -269,7 +269,7 @@ class BinomialFilter(KalmanFilter):
             # todo: device
             update_kwargs['num_obs'] = [torch.ones(num_groups, len(self.binary_measures)) * num_obs] * out_timesteps
         else:
-            raise NotImplementedError
+            update_kwargs['num_obs'] = num_obs.unbind(1)
         return predict_kwargs, update_kwargs
 
     def fit(self,
