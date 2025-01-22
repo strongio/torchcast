@@ -265,6 +265,7 @@ class StateSpaceModel(nn.Module):
                 include_updates_in_output: bool = False,
                 simulate: Optional[int] = None,
                 stop_at_last_measured: bool = False,
+                prediction_kwargs: Optional[dict] = None,
                 **kwargs) -> Predictions:
         """
         Generate n-step-ahead predictions from the model.
@@ -300,7 +301,8 @@ class StateSpaceModel(nn.Module):
          calculations regardless. By constrast, at inference, we generally will want this argument set to False, since
          we often want to generate forecasts past the last-measured timestep (indeed, this is the definition of a
          forecast!).
-        :return: predictions (tuple of (means,covs)), updates (tuple of (means,covs)), R, H
+        :param prediction_kwargs: A dictionary of kwargs to pass to initialize ``Predictions()``. Unused for base
+         class, but can be used by subclasses (e.g. ``BinomialFilter``).
         :param kwargs: Further arguments passed to the `processes`. For example, the :class:`.LinearModel` expects an
          ``X`` argument for predictors.
         :param simulate: If specified, will generate `simulate` samples from the model.
@@ -353,15 +355,19 @@ class StateSpaceModel(nn.Module):
                 out_timesteps=out_timesteps or input.shape[1],
                 **kwargs
             ),
+            stop_at_last_measured=stop_at_last_measured,
             simulate=bool(simulate)
         )
+        prediction_kwargs = prediction_kwargs or {}
         preds = self._generate_predictions(
             preds=preds,
             updates=updates if include_updates_in_output else None,
             **design_mats,
+            **prediction_kwargs
         )
+        # todo: if no start_offsets, are they allowed to supply dt_unit?
         return preds.set_metadata(
-            start_offsets=start_offsets,
+            start_offsets=start_offsets if start_offsets is not None else np.zeros(preds.means.shape[0], dtype='int'),
             dt_unit=self.dt_unit
         )
 
