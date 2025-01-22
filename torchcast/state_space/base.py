@@ -355,8 +355,9 @@ class StateSpaceModel(nn.Module):
             **design_mats,
             **prediction_kwargs
         )
+        # todo: if no start_offsets, are they allowed to supply dt_unit?
         return preds.set_metadata(
-            start_offsets=start_offsets,
+            start_offsets=start_offsets if start_offsets is not None else np.zeros(preds.means.shape[0], dtype='int'),
             dt_unit=self.dt_unit
         )
 
