@@ -144,6 +144,9 @@ class StateSpaceModel(nn.Module):
         if loss_callback:
             warn("`loss_callback` is deprecated; use `get_loss` instead.", DeprecationWarning)
 
+        # see doc in ``forward()``: at training, no need to waste compute on unused predictions
+        kwargs['stop_at_last_measured'] = kwargs.get('stop_at_last_measured', True)
+
         def closure():
             optimizer.zero_grad()
             kwargs.update({k: v() for k, v in callable_kwargs.items()})
@@ -301,11 +304,11 @@ class StateSpaceModel(nn.Module):
          calculations regardless. By constrast, at inference, we generally will want this argument set to False, since
          we often want to generate forecasts past the last-measured timestep (indeed, this is the definition of a
          forecast!).
+        :param simulate: If specified, will generate `simulate` samples from the model.
         :param prediction_kwargs: A dictionary of kwargs to pass to initialize ``Predictions()``. Unused for base
          class, but can be used by subclasses (e.g. ``BinomialFilter``).
         :param kwargs: Further arguments passed to the `processes`. For example, the :class:`.LinearModel` expects an
          ``X`` argument for predictors.
-        :param simulate: If specified, will generate `simulate` samples from the model.
         :return: A :class:`.Predictions` object with :func:`Predictions.log_prob()` and
          :func:`Predictions.to_dataframe()` methods.
         """
