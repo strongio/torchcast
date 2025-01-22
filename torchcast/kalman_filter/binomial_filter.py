@@ -172,21 +172,40 @@ class BinomialFilter(KalmanFilter):
                  processes: Sequence[Process],
                  measures: Optional[Sequence[str]] = None,
                  binary_measures: Optional[Sequence[str]] = None,
-                 process_covariance: Optional[Covariance] = None):
+                 process_covariance: Optional[Covariance] = None,
+                 measure_covariance: Optional[Union[Covariance, dict]] = None):
 
         if isinstance(measures, str):
             raise ValueError(f"`measures` should be a list of strings not a string.")
         if isinstance(binary_measures, str):
             raise ValueError(f"`binary_measures` should be a list of strings not a string.")
         self.binary_measures = measures if binary_measures is None else binary_measures
+
+        mcov_empty_idx = [i for i, m in enumerate(measures) if m in self.binary_measures]
+        if measure_covariance is None:
+            measure_covariance = {}
+        if isinstance(measure_covariance, dict):
+            measure_covariance['id'] = 'measure_covariance'
+            measure_covariance['rank'] = len(measures)
+            measure_covariance['empty_idx'] = mcov_empty_idx
+
+        if isinstance(measure_covariance, Covariance):  # todo: we should be able to eliminate this mess
+            if set(measure_covariance.empty_idx) != set(mcov_empty_idx):
+                raise ValueError(
+                    f"Expected ``empty_idx`` to correspond to binary measures (i.e. {mcov_empty_idx}) but they did not "
+                    f"(i.e. got {measure_covariance.empty_idx}). To resolve this, you could instead supply for the "
+                    f"`measure_covariance` argument the keyword arguments for initializing a ``Covariance`` object "
+                    f"(rather than passing the ``Covariance`` itself), then {type(self).__name__} will figure out the "
+                    f"empty-idx for you."
+                )
+        else:
+            measure_covariance = Covariance(**measure_covariance)
+
         super().__init__(
             processes=processes,
             measures=measures,
             process_covariance=process_covariance,
-            measure_covariance=Covariance(
-                rank=len(measures),
-                empty_idx=[i for i, m in enumerate(measures) if m in self.binary_measures]
-            ),
+            measure_covariance=measure_covariance,
         )
 
     @property
