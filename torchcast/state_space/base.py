@@ -481,6 +481,9 @@ class StateSpaceModel(nn.Module):
             if stop_at_last_measured:
                 warn("Ignoring `stop_at_last_measured` since `input` is None.")
             last_measured_per_group = torch.full((num_groups,), out_timesteps, dtype=torch.int, device=meanu.device)
+
+            if covu.shape[0] == 1:
+                covu = repeat(covu, times=num_groups, dim=0)
         else:
             if len(input.shape) != 3:
                 raise ValueError(f"Expected len(input.shape) == 3 (group,time,measure)")
@@ -533,7 +536,7 @@ class StateSpaceModel(nn.Module):
 
             if simulate:
                 meanu = torch.distributions.MultivariateNormal(mean1step, cov1step, validate_args=False).sample()
-                covu = torch.eye(meanu.shape[-1]) * 1e-6
+                covu = torch.eye(meanu.shape[-1]).expand(num_groups, -1, -1) * 1e-6
             elif t < len(inputs):
                 update_kwargs_t = {k: v[t] for k, v in update_kwargs.items()}
                 # update_kwargs_t['outlier_threshold'] = torch.tensor(outlier_threshold if t > outlier_burnin else 0.)
