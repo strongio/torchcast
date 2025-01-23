@@ -538,12 +538,14 @@ class StateSpaceModel(nn.Module):
                 meanu = torch.distributions.MultivariateNormal(mean1step, cov1step, validate_args=False).sample()
                 covu = torch.eye(meanu.shape[-1]).expand(num_groups, -1, -1) * 1e-6
             elif t < len(inputs):
-                update_kwargs_t = {k: v[t] for k, v in update_kwargs.items()}
+                update_kwargs_t = {k: v[t][group_mask] for k, v in update_kwargs.items()}
                 # update_kwargs_t['outlier_threshold'] = torch.tensor(outlier_threshold if t > outlier_burnin else 0.)
-                meanu, covu = self.ss_step.update(
-                    inputs[t],
-                    mean1step,
-                    cov1step,
+                meanu = meanu.clone()
+                covu = covu.clone()
+                meanu[group_mask], covu[group_mask] = self.ss_step.update(
+                    inputs[t][group_mask],
+                    mean1step[group_mask],
+                    cov1step[group_mask],
                     update_kwargs_t,
                 )
             else:
