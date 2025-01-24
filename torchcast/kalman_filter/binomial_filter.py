@@ -311,25 +311,33 @@ class BinomialPredictions(EKFPredictions):
 
     def _get_log_prob_kwargs(self, groups: Tensor, valid_idx: Tensor) -> dict:
         white_noise = self.white_noise
-        num_obs = self.num_obs.view(-1, len(self.binary_measures))[groups]
+
+        num_obs = None
+        if self.binary_measures:
+            num_obs = self.num_obs.view(-1, len(self.binary_measures))[groups]
+
         if valid_idx is not None:
             valid_measures = [m for i, m in enumerate(self.measures) if i in valid_idx]
             valid_binary_idx = [i for i, m in enumerate(self.binary_measures) if m in valid_measures]
-            num_obs = num_obs[:, valid_binary_idx]
+            if num_obs is not None:
+                num_obs = num_obs[:, valid_binary_idx]
             white_noise = white_noise[:, valid_binary_idx]
-        return {
+        out = {
             'measures': [m for i, m in enumerate(self.measures) if valid_idx is None or i in valid_idx],
-            'num_obs': num_obs,
             'white_noise': white_noise
         }
+        if num_obs is not None:
+            out['num_obs'] = num_obs
+
+        return out
 
     def _log_prob(self,
                   obs: Tensor,
                   means: Tensor,
                   covs: Tensor,
-                  num_obs: Tensor,
                   measures: Sequence[str],
-                  white_noise: Tensor) -> Tensor:
+                  white_noise: Tensor,
+                  num_obs: Optional[Tensor] = None) -> Tensor:
         group_idx = torch.arange(covs.shape[0], dtype=torch.int)
         binary_idx = torch.as_tensor([i for i, m in enumerate(measures) if m in self.binary_measures], dtype=torch.int)
         gauss_idx = torch.as_tensor([i for i in range(covs.shape[-1]) if i not in binary_idx], dtype=torch.int)
@@ -343,6 +351,8 @@ class BinomialPredictions(EKFPredictions):
             gauss_lp = 0
 
         if len(binary_idx):
+            if num_obs is None:
+                raise RuntimeError("num_obs should be set because there are binary-measures")
             binary_cidx = torch.meshgrid(group_idx, binary_idx, binary_idx, indexing='ij')
             chol = torch.linalg.cholesky(covs[binary_cidx])
             corr_white_noise = chol.unsqueeze(0) @ white_noise.view(-1, 1, len(binary_idx), 1)
