@@ -144,7 +144,7 @@ class StateSpaceModel(nn.Module):
         if loss_callback:
             warn("`loss_callback` is deprecated; use `get_loss` instead.", DeprecationWarning)
 
-        # TODO: explain
+        # see `last_measured_per_group` in forward docstring
         # todo: duplicate code in ``TimeSeriesDataset.get_durations()``
         any_measured_bool = ~np.isnan(y.numpy()).all(2)
         kwargs['last_measured_per_group'] = torch.as_tensor(
@@ -302,14 +302,13 @@ class StateSpaceModel(nn.Module):
         :param include_updates_in_output: If False, only the ``n_step`` ahead predictions are included in the output.
          This means that we cannot use this output to generate the ``initial_state`` for subsequent forward-passes. Set
          to True to allow this -- False by default to reduce memory.
-        :param last_measured_per_group: TODO then predictions will not be generated after the last measured timestep.
-         Default False. The 'last measured timestep' is the last timestep where at least one measure is non-nan. Setting
-          to True can be useful in training when the series in a batch are highly variable in length. For example, if a
-         batch contains two series, one with length=1 and the other with length=999, then we can save the compute used
-         to generate predictions for 998 of the steps of series 1, since those predictions wouldn't be used in loss
-         calculations regardless. By constrast, at inference, we generally will want this argument set to False, since
-         we often want to generate forecasts past the last-measured timestep (indeed, this is the definition of a
-         forecast!).
+        :param last_measured_per_group: This provides a method to reduce unused computations in training. On each call
+         to forward in training, you can supply to this argument a tensor indicating the last measured timestep for
+         each group in the batch (this can be computed with ``last_measured_per_group=batch.get_durations()``, where
+         ``batch`` is a :class:`TimeSeriesDataset`). In this case, predictions will not be generated after the
+         specified timestep for each group; these can be discarded in training because, without any measurements, they
+         wouldn't have been used in loss calculations anyways. Naturally this should never be set for
+         inference/forecasting.
         :param simulate: If specified, will generate `simulate` samples from the model.
         :param prediction_kwargs: A dictionary of kwargs to pass to initialize ``Predictions()``. Unused for base
          class, but can be used by subclasses (e.g. ``BinomialFilter``).
@@ -460,7 +459,7 @@ class StateSpaceModel(nn.Module):
     ]:
         """
         :param input: A (group X time X measures) tensor. Optional if `initial_state` is specified.
-        :param kwargs_per_process: Keyword-arguments to the Processes TODO
+        :param kwargs_per_process: Keyword-arguments to the Processes (e.g. X=model_matrix for LinearModel).
         :param initial_state: A (mean, cov) tuple to use as the initial state.
         :param n_step: What is the horizon for predictions? Defaults to one-step-ahead (i.e. n_step=1).
         :param out_timesteps: The number of timesteps in the output. Might be longer than input if forecasting.
@@ -471,7 +470,7 @@ class StateSpaceModel(nn.Module):
          (the default) then this option has no effect.
         :param simulate: If True, will simulate state-trajectories and return a ``Predictions`` object with zero state
          covariance.
-        :param last_measured_per_group: TODO
+        :param last_measured_per_group: See forward().
         """
         assert n_step > 0
 
