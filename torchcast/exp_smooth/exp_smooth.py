@@ -10,6 +10,7 @@ from torch import Tensor
 
 from torchcast.exp_smooth.smoothing_matrix import SmoothingMatrix
 from torchcast.covariance import Covariance
+from torchcast.internals.utils import update_tensor
 from torchcast.process import Process
 from torchcast.state_space import StateSpaceModel, Predictions
 from torchcast.state_space.ss_step import StateSpaceStep
@@ -37,18 +38,27 @@ class ExpSmoothStep(StateSpaceStep):
                 input: Tensor,
                 mean: Tensor,
                 cov: Tensor,
-                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Optional[Tensor]]:
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         measured_mean = (kwargs['H'] @ mean.unsqueeze(-1)).squeeze(-1)
         resid = input - measured_mean
         new_mean = mean + (kwargs['K'] @ resid.unsqueeze(-1)).squeeze(-1)
-        return new_mean, None
+        # _update doesn't waste compute creating new_cov; in predict cov will be replaced by cov1step
+        # TODO: why not replace it here?
+        new_cov = torch.tensor(0.0, dtype=mean.dtype, device=mean.device)
+        return new_mean, new_cov
 
-    def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        F = kwargs['F']
-        new_mean = (F @ mean.unsqueeze(-1)).squeeze(-1)
+    def predict(self,
+                mean: Tensor,
+                cov: Tensor,
+                mask: Tensor,
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        F = kwargs['F'][mask]
+
+        new_mean = update_tensor(mean, new=(F @ mean[mask].unsqueeze(-1)).squeeze(-1), mask=mask)
         new_cov = kwargs['cov1step']
-        if cov is not None:
-            new_cov = new_cov + F @ cov @ F.permute(0, 2, 1)
+        if len(cov.shape):  # see note in _update() above
+            new_cov = update_tensor(new_cov.clone(), new=F @ cov[mask] @ F.permute(0, 2, 1), mask=mask)
+
         return new_mean, new_cov
 
 

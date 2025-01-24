@@ -6,6 +6,35 @@ import torch
 import numpy as np
 
 
+def update_tensor(orig: torch.Tensor, new: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """
+    In some cases we will want to save compute by only performing operations on a subset of a tensor, leaving the other
+    elements as-is. In this case we'd need:
+
+    .. code-block:: python
+
+        new = orig.clone()
+        new[mask] = some_op(orig[mask])
+
+    However, in other cases we don't want to mask. If the second case is common, we're going to waste compute with the
+    call to .clone().
+
+    This function is a convenience function that will handle the masking for you, but only if a non-trivial mask is
+    provided. If the mask is all True, it will return the new tensor as-is.
+
+    :param orig: The original tensor.
+    :param new: The new tensor. Should have the same shape as ``orig[mask]``.
+    :param mask: A boolean mask Tensor.
+    :return: If ``mask`` is all True, returns ``new`` (not a copy). Otherwise, returns a new tensor with the same shape
+     as ``orig`` where the elements in ``mask`` are replaced with the elements in ``new``.
+    """
+    if mask.all():
+        return new
+    else:
+        out = orig.clone()
+        out[mask] = new
+        return out
+
 def transpose_last_dims(x: torch.Tensor) -> torch.Tensor:
     args = list(range(len(x.shape)))
     args[-2], args[-1] = args[-1], args[-2]
