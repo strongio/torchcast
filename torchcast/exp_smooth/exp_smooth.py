@@ -42,7 +42,7 @@ class ExpSmoothStep(StateSpaceStep):
         measured_mean = (kwargs['H'] @ mean.unsqueeze(-1)).squeeze(-1)
         resid = input - measured_mean
         new_mean = mean + (kwargs['K'] @ resid.unsqueeze(-1)).squeeze(-1)
-        # _update doesn't waste compute creating new_cov; in predict cov will be replaced by cov1step
+        # _update doesn't waste compute creating new_cov; then in predict below, cov will be replaced by cov1step
         new_cov = torch.tensor(0.0, dtype=mean.dtype, device=mean.device)
         return new_mean, new_cov
 
@@ -54,8 +54,21 @@ class ExpSmoothStep(StateSpaceStep):
         F = kwargs['F'][mask]
 
         new_mean = update_tensor(mean, new=(F @ mean[mask].unsqueeze(-1)).squeeze(-1), mask=mask)
+
+        # new_cov will at least be cov1step (see note above in _update)
         new_cov = kwargs['cov1step']
-        if len(cov.shape):  # see note in _update() above
+
+        # fastpath: if the call to update returned the zero-dim tensor (see _update above) then we are done
+        if len(cov.shape):
+            # we'll hit this under two conditions:
+            # - this is a >1 step ahead forecast, so we didn't just call update(), but instead of a real cov from a
+            #   previous call to predict (and that cov will be at least `cov1step`)
+            # - we did just call update(), but some of the cov elements were excluded because `input` was nan. in that
+            #   case:
+            #   - the excluded elements will have cov!=0, which means the op below will cause uncertainty to increase,
+            #     which is what we want (for those group*measures, this is a >1 step ahead forecast).
+            #   - the included elements will have cov=0, which means the op below is just new_cov=new_cov, which means
+            #     we will use cov1step for those group*measures that were just updated -- which is again what we want.
             new_cov = update_tensor(
                 orig=new_cov,
                 new=new_cov[mask] + F @ cov[mask] @ F.permute(0, 2, 1),
