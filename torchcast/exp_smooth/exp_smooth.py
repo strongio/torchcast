@@ -51,6 +51,9 @@ class ExpSmoothStep(StateSpaceStep):
                 cov: Tensor,
                 mask: Tensor,
                 kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        if mask.all():
+            mask = slice(None)
+
         F = kwargs['F'][mask]
 
         new_mean = update_tensor(mean, new=(F @ mean[mask].unsqueeze(-1)).squeeze(-1), mask=mask)

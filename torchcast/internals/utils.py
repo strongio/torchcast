@@ -6,7 +6,7 @@ import torch
 import numpy as np
 
 
-def update_tensor(orig: torch.Tensor, new: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def update_tensor(orig: torch.Tensor, new: torch.Tensor, mask: Optional[Union[slice, torch.Tensor]]) -> torch.Tensor:
     """
     In some cases we will want to save compute by only performing operations on a subset of a tensor, leaving the other
     elements as-is. In this case we'd need:
@@ -28,12 +28,15 @@ def update_tensor(orig: torch.Tensor, new: torch.Tensor, mask: torch.Tensor) -> 
     :return: If ``mask`` is all True, returns ``new`` (not a copy). Otherwise, returns a new tensor with the same shape
      as ``orig`` where the elements in ``mask`` are replaced with the elements in ``new``.
     """
-    if mask.all():
+    if isinstance(mask, slice) and not mask.start and not mask.stop and not mask.step:
+        mask = None
+    if mask is None or mask.all():
         return new
     else:
         out = orig.clone()
         out[mask] = new
         return out
+
 
 def transpose_last_dims(x: torch.Tensor) -> torch.Tensor:
     args = list(range(len(x.shape)))

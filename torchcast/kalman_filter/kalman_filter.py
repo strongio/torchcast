@@ -31,6 +31,8 @@ class KalmanStep(StateSpaceStep):
                 cov: Tensor,
                 mask: Tensor,
                 kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        if mask.all():
+            mask = slice(None)
         F = kwargs['F'][mask]
         Q = kwargs['Q'][mask]
 
