@@ -109,10 +109,10 @@ class ExpSmoother(StateSpaceModel):
 
     @torch.jit.ignore
     def initial_covariance(self, inputs: dict, num_groups: int, num_times: int, _ignore_input: bool = False) -> Tensor:
-        # this is a dummy method since we just need the shape to be like what you'd get from calling Covariance()(),
-        # but don't actually want learnable parameter b/c unused otherwise
+        # initial covariance is always zero. this will be replaced by the 1-step-ahead covariance in the first call to
+        # predict
         ms = self._get_measure_scaling()
-        return torch.eye(self.state_rank, dtype=ms.dtype, device=ms.device).expand(num_groups, num_times, -1, -1)
+        return torch.zeros((num_groups, num_times, self.state_rank, self.state_rank), dtype=ms.dtype, device=ms.device)
 
     @torch.jit.ignore
     def design_modules(self) -> Iterable[Tuple[str, torch.nn.Module]]:
