@@ -179,6 +179,12 @@ class BinomialFilter(KalmanFilter):
             raise ValueError(f"`measures` should be a list of strings not a string.")
         if isinstance(binary_measures, str):
             raise ValueError(f"`binary_measures` should be a list of strings not a string.")
+
+        if binary_measures is None:
+            binary_measures = list(measures)
+        unexpected = set(binary_measures) - set(measures)
+        if unexpected:
+            raise RuntimeError(f"Some `binary_measures` not in `measures`: {unexpected}")
         self.binary_measures = measures if binary_measures is None else binary_measures
 
         mcov_empty_idx = [i for i, m in enumerate(measures) if m in self.binary_measures]
