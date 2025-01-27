@@ -11,17 +11,19 @@ class StateSpaceStep(torch.nn.Module):
     Base-class for modules that handle predict/update within a state-space model.
     """
 
-    def forward(self,
-                input: Tensor,
+    def predict(self,
                 mean: Tensor,
                 cov: Tensor,
-                predict_kwargs: Dict[str, Tensor],
-                update_kwargs: Dict[str, Tensor],
-                ) -> Tuple[Tensor, Tensor]:
-        mean, cov = self.update(input, mean, cov, update_kwargs)
-        return self.predict(mean, cov, predict_kwargs)
-
-    def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+                mask: Tensor,
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        """
+        :param mean: The current mean tensor.
+        :param cov: The current covariance tensor.
+        :param mask: A boolean mask tensor. Only masked elements of mean/cov will be updated, and remaining elements
+         will be returned as-is.
+        :param kwargs: A dictionary of keyword arguments.
+        :return: A tuple of (new_mean, new_cov) tensors.
+        """
         raise NotImplementedError
 
     def _update(self,
@@ -61,8 +63,6 @@ class StateSpaceStep(torch.nn.Module):
                     kwargs=masked_kwargs
                 )
                 new_mean[groups] = m
-                if c is None:
-                    c = 0
                 new_cov[groups] = c
             return new_mean, new_cov
         else:
@@ -73,7 +73,9 @@ class StateSpaceStep(torch.nn.Module):
                    val_idx: Optional[Tensor],
                    input: Tensor,
                    kwargs: Dict[str, Tensor],
-                   kwargs_dims: Optional[Dict[str, int]]) -> Tuple[Tensor, Dict[str, Tensor]]:
+                   kwargs_dims: Optional[Dict[str, int]] = None) -> Tuple[Tensor, Dict[str, Tensor]]:
+        if kwargs_dims is None:
+            raise RuntimeError("_mask_mats should only ever be called from subclasses which pass `kwargs_dims`")
         new_kwargs = kwargs.copy()
         if val_idx is None:
             for k in kwargs_dims:

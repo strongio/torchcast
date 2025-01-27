@@ -10,6 +10,7 @@ from torch import Tensor
 
 from torchcast.exp_smooth.smoothing_matrix import SmoothingMatrix
 from torchcast.covariance import Covariance
+from torchcast.internals.utils import update_tensor
 from torchcast.process import Process
 from torchcast.state_space import StateSpaceModel, Predictions
 from torchcast.state_space.ss_step import StateSpaceStep
@@ -37,18 +38,46 @@ class ExpSmoothStep(StateSpaceStep):
                 input: Tensor,
                 mean: Tensor,
                 cov: Tensor,
-                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Optional[Tensor]]:
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         measured_mean = (kwargs['H'] @ mean.unsqueeze(-1)).squeeze(-1)
         resid = input - measured_mean
         new_mean = mean + (kwargs['K'] @ resid.unsqueeze(-1)).squeeze(-1)
-        return new_mean, None
+        # _update doesn't waste compute creating new_cov; then in predict below, cov will be replaced by cov1step
+        new_cov = torch.tensor(0.0, dtype=mean.dtype, device=mean.device)
+        return new_mean, new_cov
 
-    def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        F = kwargs['F']
-        new_mean = (F @ mean.unsqueeze(-1)).squeeze(-1)
+    def predict(self,
+                mean: Tensor,
+                cov: Tensor,
+                mask: Tensor,
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        if mask.all():
+            mask = slice(None)
+
+        F = kwargs['F'][mask]
+
+        new_mean = update_tensor(mean, new=(F @ mean[mask].unsqueeze(-1)).squeeze(-1), mask=mask)
+
+        # new_cov will at least be cov1step (see note above in _update)
         new_cov = kwargs['cov1step']
-        if cov is not None:
-            new_cov = new_cov + F @ cov @ F.permute(0, 2, 1)
+
+        # fastpath: if the call to update returned the zero-dim tensor (see _update above) then we are done
+        if len(cov.shape):
+            # we'll hit this under two conditions:
+            # - this is a >1 step ahead forecast, so we didn't just call update(), but instead of a real cov from a
+            #   previous call to predict (and that cov will be at least `cov1step`)
+            # - we did just call update(), but some of the cov elements were excluded because `input` was nan. in that
+            #   case:
+            #   - the excluded elements will have cov!=0, which means the op below will cause uncertainty to increase,
+            #     which is what we want (for those group*measures, this is a >1 step ahead forecast).
+            #   - the included elements will have cov=0, which means the op below is just new_cov=new_cov, which means
+            #     we will use cov1step for those group*measures that were just updated -- which is again what we want.
+            new_cov = update_tensor(
+                orig=new_cov,
+                new=new_cov[mask] + F @ cov[mask] @ F.permute(0, 2, 1),
+                mask=mask
+            )
+
         return new_mean, new_cov
 
 
@@ -83,10 +112,10 @@ class ExpSmoother(StateSpaceModel):
 
     @torch.jit.ignore
     def initial_covariance(self, inputs: dict, num_groups: int, num_times: int, _ignore_input: bool = False) -> Tensor:
-        # this is a dummy method since we just need the shape to be like what you'd get from calling Covariance()(),
-        # but don't actually want learnable parameter b/c unused otherwise
+        # initial covariance is always zero. this will be replaced by the 1-step-ahead covariance in the first call to
+        # predict
         ms = self._get_measure_scaling()
-        return torch.eye(self.state_rank, dtype=ms.dtype, device=ms.device).expand(num_groups, num_times, -1, -1)
+        return torch.zeros((num_groups, num_times, self.state_rank, self.state_rank), dtype=ms.dtype, device=ms.device)
 
     @torch.jit.ignore
     def design_modules(self) -> Iterable[Tuple[str, torch.nn.Module]]:
