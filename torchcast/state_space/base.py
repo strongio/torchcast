@@ -23,6 +23,7 @@ class StateSpaceModel(nn.Module):
     :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
     """
     ss_step_cls: Type[StateSpaceStep]
+    _dt_unit = None
 
     def __init__(self,
                  processes: Sequence[Process],
@@ -60,8 +61,7 @@ class StateSpaceModel(nn.Module):
     def ss_step(self) -> StateSpaceStep:
         return self.ss_step_cls()
 
-    @property
-    def dt_unit(self) -> Optional[np.timedelta64]:
+    def _infer_dt_unit(self) -> Optional[np.timedelta64]:
         dt_unit_ns = None
         proc_with_dt = ''
         for p in self.processes.values():
@@ -77,6 +77,20 @@ class StateSpaceModel(nn.Module):
                     )
         if dt_unit_ns is not None:
             return np.timedelta64(dt_unit_ns, 'ns')  # todo: promote
+
+    @property
+    def dt_unit(self) -> Optional[np.timedelta64]:
+        if self._dt_unit is None:
+            return self._infer_dt_unit()
+        return self._dt_unit
+
+    @dt_unit.setter
+    def dt_unit(self, value: np.timedelta64):
+        inferred = self._infer_dt_unit()
+        if inferred is not None and inferred != value:
+            raise ValueError(f"Cannot set `dt_unit` to {value} when it is already inferred to be {inferred}")
+        else:
+            self._dt_unit = value
 
     @torch.jit.ignore()
     def fit(self,
