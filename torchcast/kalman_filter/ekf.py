@@ -112,7 +112,7 @@ class EKFPredictions(Predictions):
              split_dt: Optional[np.datetime64] = None,
              **kwargs) -> pd.DataFrame:
 
-        if 'upper' not in df.columns and 'std' in df.columns:
+        if df is not None and 'upper' not in df.columns and 'std' in df.columns:
             df = df.copy()
             for m, _df in df.groupby('measure'):
                 df.loc[_df.index, ['mean', 'lower', 'upper']] = cls._adjust_measured_mean(
