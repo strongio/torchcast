@@ -139,8 +139,11 @@ class StateSpaceModel(nn.Module):
         y = args[0]
 
         if optimizer is None:
-            optimizer = torch.optim.LBFGS([p for p in self.parameters() if p.requires_grad],
-                                          max_iter=10, line_search_fn='strong_wolfe', lr=.5)
+            optimizer = torch.optim.LBFGS(
+                [p for p in self.parameters() if p.requires_grad],
+                max_eval=8,
+                line_search_fn='strong_wolfe'
+            )
         if set_initial_values:
             self.set_initial_values(y, verbose=verbose > 1)
 
