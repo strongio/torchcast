@@ -390,6 +390,11 @@ class Predictions:
                     "Unable to infer `dt_unit`, please call ``predictions.set_metadata(dt_unit=X)``, or pass `dataset` "
                     "to ``predictions.to_dataframe()``"
                 )
+            if dataset.dt_unit and not dataset.start_offsets.dtype.name.startswith('date'):
+                raise ValueError(
+                    "Expected `start_offsets` to be a datetime64 array, but got a different dtype. If you don't have "
+                    "dates, then set `dt_unit=None`."
+                )
         else:
             for measure_group, tensor in zip(dataset.measures, dataset.tensors):
                 for i, measure in enumerate(measure_group):
@@ -449,7 +454,9 @@ class Predictions:
 
             # residuals:
             for i, measure in enumerate(self.measures):
-                orig_tensor = named_tensors.get(measure)
+                orig_tensor = named_tensors.get(measure, None)
+                if orig_tensor is None:
+                    continue
                 predictions = self.means[..., [i]]
                 if orig_tensor.shape[1] < predictions.shape[1]:
                     orig_aligned = predictions.data.clone()
