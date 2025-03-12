@@ -13,4 +13,4 @@
 from .base import Process
 from .regression import LinearModel
 from .local import LocalLevel, LocalTrend
-from .season import Season, TBATS
+from .season import Season
