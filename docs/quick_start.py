@@ -20,8 +20,8 @@ from torchcast.utils.data import TimeSeriesDataset
 
 import numpy as np
 
-np.random.seed(2021-1-21)
-torch.manual_seed(2021-1-21)
+np.random.seed(2024-3-14)
+torch.manual_seed(2021-3-14)
 
 # %% [markdown]
 # # Quick Start
