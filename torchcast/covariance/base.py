@@ -170,10 +170,10 @@ class Covariance(nn.Module):
         self.id = id
         self.rank = rank
 
-        empty_idx = set(empty_idx)
-        assert all(isinstance(x, int) for x in empty_idx)
-        self.param_rank = self.rank - len(empty_idx)
-        mask = mini_cov_mask(rank=self.rank, empty_idx=empty_idx)
+        self.empty_idx = set(empty_idx)
+        assert all(isinstance(x, int) for x in self.empty_idx)
+        self.param_rank = self.rank - len(self.empty_idx)
+        mask = mini_cov_mask(rank=self.rank, empty_idx=self.empty_idx)
         self.register_buffer('mask', mask)
 
         self._set_params(method, init_diag_multi)

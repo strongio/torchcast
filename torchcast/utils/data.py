@@ -244,6 +244,8 @@ class TimeSeriesDataset(TensorDataset):
         for measure_group in measure_groups:
             idx_groups.append([])
             for measure in measure_group:
+                if measure not in self.all_measures:
+                    raise ValueError(f"Measure '{measure}' not in dataset measures:\n{self.all_measures}")
                 idx_groups[-1].append(self.all_measures.index(measure))
 
         return type(self)(

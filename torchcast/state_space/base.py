@@ -7,7 +7,7 @@ import torch
 from torch import nn, Tensor
 from tqdm.auto import tqdm
 
-from torchcast.internals.utils import get_owned_kwargs, repeat, identity
+from torchcast.internals.utils import get_owned_kwargs, repeat, identity, true1d_idx
 from torchcast.covariance import Covariance
 from torchcast.state_space.predictions import Predictions
 from torchcast.state_space.ss_step import StateSpaceStep
@@ -23,6 +23,7 @@ class StateSpaceModel(nn.Module):
     :param measure_covariance: A module created with ``Covariance.from_measures(measures)``.
     """
     ss_step_cls: Type[StateSpaceStep]
+    _dt_unit = None
 
     def __init__(self,
                  processes: Sequence[Process],
@@ -60,8 +61,7 @@ class StateSpaceModel(nn.Module):
     def ss_step(self) -> StateSpaceStep:
         return self.ss_step_cls()
 
-    @property
-    def dt_unit(self) -> Optional[np.timedelta64]:
+    def _infer_dt_unit(self) -> Optional[np.timedelta64]:
         dt_unit_ns = None
         proc_with_dt = ''
         for p in self.processes.values():
@@ -77,6 +77,20 @@ class StateSpaceModel(nn.Module):
                     )
         if dt_unit_ns is not None:
             return np.timedelta64(dt_unit_ns, 'ns')  # todo: promote
+
+    @property
+    def dt_unit(self) -> Optional[np.timedelta64]:
+        if self._dt_unit is None:
+            return self._infer_dt_unit()
+        return self._dt_unit
+
+    @dt_unit.setter
+    def dt_unit(self, value: np.timedelta64):
+        inferred = self._infer_dt_unit()
+        if inferred is not None and inferred != value:
+            raise ValueError(f"Cannot set `dt_unit` to {value} when it is already inferred to be {inferred}")
+        else:
+            self._dt_unit = value
 
     @torch.jit.ignore()
     def fit(self,
@@ -125,8 +139,11 @@ class StateSpaceModel(nn.Module):
         y = args[0]
 
         if optimizer is None:
-            optimizer = torch.optim.LBFGS([p for p in self.parameters() if p.requires_grad],
-                                          max_iter=10, line_search_fn='strong_wolfe', lr=.5)
+            optimizer = torch.optim.LBFGS(
+                [p for p in self.parameters() if p.requires_grad],
+                max_eval=8,
+                line_search_fn='strong_wolfe'
+            )
         if set_initial_values:
             self.set_initial_values(y, verbose=verbose > 1)
 
@@ -143,6 +160,15 @@ class StateSpaceModel(nn.Module):
         callable_kwargs = callable_kwargs or {}
         if loss_callback:
             warn("`loss_callback` is deprecated; use `get_loss` instead.", DeprecationWarning)
+
+        # see `last_measured_per_group` in forward docstring
+        # todo: duplicate code in ``TimeSeriesDataset.get_durations()``
+        any_measured_bool = ~np.isnan(y.numpy()).all(2)
+        kwargs['last_measured_per_group'] = torch.as_tensor(
+            [np.max(true1d_idx(any_measured_bool[g]).numpy(), initial=0) for g in range(y.shape[0])],
+            dtype=torch.int,
+            device=y.device
+        ) + 1
 
         def closure():
             optimizer.zero_grad()
@@ -264,6 +290,8 @@ class StateSpaceModel(nn.Module):
                 every_step: bool = True,
                 include_updates_in_output: bool = False,
                 simulate: Optional[int] = None,
+                last_measured_per_group: Optional[Tensor] = None,
+                prediction_kwargs: Optional[dict] = None,
                 **kwargs) -> Predictions:
         """
         Generate n-step-ahead predictions from the model.
@@ -291,9 +319,18 @@ class StateSpaceModel(nn.Module):
         :param include_updates_in_output: If False, only the ``n_step`` ahead predictions are included in the output.
          This means that we cannot use this output to generate the ``initial_state`` for subsequent forward-passes. Set
          to True to allow this -- False by default to reduce memory.
+        :param last_measured_per_group: This provides a method to reduce unused computations in training. On each call
+         to forward in training, you can supply to this argument a tensor indicating the last measured timestep for
+         each group in the batch (this can be computed with ``last_measured_per_group=batch.get_durations()``, where
+         ``batch`` is a :class:`TimeSeriesDataset`). In this case, predictions will not be generated after the
+         specified timestep for each group; these can be discarded in training because, without any measurements, they
+         wouldn't have been used in loss calculations anyways. Naturally this should never be set for
+         inference/forecasting.
+        :param simulate: If specified, will generate `simulate` samples from the model.
+        :param prediction_kwargs: A dictionary of kwargs to pass to initialize ``Predictions()``. Unused for base
+         class, but can be used by subclasses (e.g. ``BinomialFilter``).
         :param kwargs: Further arguments passed to the `processes`. For example, the :class:`.LinearModel` expects an
          ``X`` argument for predictors.
-        :param simulate: If specified, will generate `simulate` samples from the model.
         :return: A :class:`.Predictions` object with :func:`Predictions.log_prob()` and
          :func:`Predictions.to_dataframe()` methods.
         """
@@ -301,7 +338,10 @@ class StateSpaceModel(nn.Module):
         assert len(args) <= 1
         if len(args):
             input = args[0]
-            assert torch.is_floating_point(input)
+            if not torch.is_floating_point(input):
+                raise ValueError(f"Expected input to be a float tensor, got {input.dtype}")
+            if torch.isinf(input).any():
+                raise ValueError("Input contains infinite values.")
         else:
             input = None
 
@@ -340,15 +380,19 @@ class StateSpaceModel(nn.Module):
                 out_timesteps=out_timesteps or input.shape[1],
                 **kwargs
             ),
+            last_measured_per_group=last_measured_per_group,
             simulate=bool(simulate)
         )
+        prediction_kwargs = prediction_kwargs or {}
         preds = self._generate_predictions(
             preds=preds,
             updates=updates if include_updates_in_output else None,
             **design_mats,
+            **prediction_kwargs
         )
+        # todo: if no start_offsets, are they allowed to supply dt_unit?
         return preds.set_metadata(
-            start_offsets=start_offsets,
+            start_offsets=start_offsets if start_offsets is not None else np.zeros(preds.means.shape[0], dtype='int'),
             dt_unit=self.dt_unit
         )
 
@@ -422,8 +466,9 @@ class StateSpaceModel(nn.Module):
                         initial_state: Tuple[Tensor, Tensor],
                         n_step: int = 1,
                         out_timesteps: Optional[int] = None,
+                        last_measured_per_group: Optional[Tensor] = None,
                         every_step: bool = True,
-                        simulate: bool = False
+                        simulate: bool = False,
                         ) -> Tuple[
         Tuple[List[Tensor], List[Tensor]],
         Tuple[List[Tensor], List[Tensor]],
@@ -431,7 +476,7 @@ class StateSpaceModel(nn.Module):
     ]:
         """
         :param input: A (group X time X measures) tensor. Optional if `initial_state` is specified.
-        :param kwargs_per_process: Keyword-arguments to the Processes TODO
+        :param kwargs_per_process: Keyword-arguments to the Processes (e.g. X=model_matrix for LinearModel).
         :param initial_state: A (mean, cov) tuple to use as the initial state.
         :param n_step: What is the horizon for predictions? Defaults to one-step-ahead (i.e. n_step=1).
         :param out_timesteps: The number of timesteps in the output. Might be longer than input if forecasting.
@@ -442,7 +487,7 @@ class StateSpaceModel(nn.Module):
          (the default) then this option has no effect.
         :param simulate: If True, will simulate state-trajectories and return a ``Predictions`` object with zero state
          covariance.
-        :return: predictions (tuple of (means,covs)), updates (tuple of (means,covs)), R, H
+        :param last_measured_per_group: See forward().
         """
         assert n_step > 0
 
@@ -454,6 +499,9 @@ class StateSpaceModel(nn.Module):
             inputs = []
 
             num_groups = meanu.shape[0]
+
+            if covu.shape[0] == 1:
+                covu = repeat(covu, times=num_groups, dim=0)
         else:
             if len(input.shape) != 3:
                 raise ValueError(f"Expected len(input.shape) == 3 (group,time,measure)")
@@ -475,6 +523,8 @@ class StateSpaceModel(nn.Module):
             num_groups=num_groups,
             out_timesteps=out_timesteps
         )
+        if last_measured_per_group is None:
+            last_measured_per_group = torch.full((num_groups,), out_timesteps, dtype=torch.int, device=meanu.device)
 
         # first loop through to do predict -> update
         meanus: List[Tensor] = []
@@ -485,17 +535,17 @@ class StateSpaceModel(nn.Module):
             mean1step, cov1step = self.ss_step.predict(
                 meanu,
                 covu,
-                {k: v[t] for k, v in predict_kwargs.items()}
+                mask=(t <= last_measured_per_group),
+                kwargs={k: v[t] for k, v in predict_kwargs.items()}
             )
             mean1s.append(mean1step)
             cov1s.append(cov1step)
 
             if simulate:
                 meanu = torch.distributions.MultivariateNormal(mean1step, cov1step, validate_args=False).sample()
-                covu = torch.eye(meanu.shape[-1]) * 1e-6
+                covu = torch.eye(meanu.shape[-1]).expand(num_groups, -1, -1) * 1e-6
             elif t < len(inputs):
                 update_kwargs_t = {k: v[t] for k, v in update_kwargs.items()}
-                # update_kwargs_t['outlier_threshold'] = torch.tensor(outlier_threshold if t > outlier_burnin else 0.)
                 meanu, covu = self.ss_step.update(
                     inputs[t],
                     mean1step,
@@ -522,18 +572,20 @@ class StateSpaceModel(nn.Module):
             if every_step or (t1 % n_step) == 0:
                 meanp, covp = mean1s[t1], cov1s[t1]  # already had to generate h=1 above
                 for h in range(1, n_step + 1):
-                    if tu + h >= out_timesteps:
+                    tu_h = tu + h
+                    if tu_h >= out_timesteps:
                         break
                     if h > 1:
                         meanp, covp = self.ss_step.predict(
                             meanp,
                             covp,
-                            {k: v[tu + h] for k, v in predict_kwargs.items()}
+                            mask=(tu_h <= last_measured_per_group),
+                            kwargs={k: v[tu_h] for k, v in predict_kwargs.items()},
                         )
-                    if tu + h not in meanps:
+                    if tu_h not in meanps:
                         # idx[tu + h] = tu
-                        meanps[tu + h] = meanp
-                        covps[tu + h] = covp
+                        meanps[tu_h] = meanp
+                        covps[tu_h] = covp
 
         preds = [meanps[t] for t in range(out_timesteps)], [covps[t] for t in range(out_timesteps)]
         updates = meanus, covus

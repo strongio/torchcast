@@ -1,3 +1,6 @@
+from platformdirs import user_cache_path
+
+
 def load_air_quality_data(dt_unit: str) -> 'DataFrame':
     """
 
@@ -22,9 +25,12 @@ def load_air_quality_data(dt_unit: str) -> 'DataFrame':
         from pandas import read_csv
     except ImportError:
         raise RuntimeError("Requires `pandas` package.")
+
+    cache_path = user_cache_path(appname='torchcast', ensure_exists=True)
+
     try:
         return read_csv(
-            f'/tmp/aq-{dt_unit}.csv',
+            cache_path / f'aq-{dt_unit}.csv',
             parse_dates=['date' if dt_unit == 'daily' else 'week']
         )
     except FileNotFoundError:
@@ -32,5 +38,5 @@ def load_air_quality_data(dt_unit: str) -> 'DataFrame':
         read_csv(
             f'https://raw.githubusercontent.com/strongio/torchcast/c675f04bb244a73155fbd98c110590bd735808bc/docs/examples/aq_{dt_unit}.csv',
             parse_dates=['date' if dt_unit == 'daily' else 'week']
-        ).to_csv(f'/tmp/aq-{dt_unit}.csv', index=False)
+        ).to_csv(cache_path / f'aq-{dt_unit}.csv', index=False)
     return load_air_quality_data(dt_unit)

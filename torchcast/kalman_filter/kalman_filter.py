@@ -7,6 +7,7 @@ This class inherits most of its methods from :class:`torchcast.state_space.State
 from typing import Sequence, Dict, List, Iterable
 
 from torchcast.covariance import Covariance
+from torchcast.internals.utils import update_tensor
 from torchcast.process import Process
 from torchcast.state_space.base import StateSpaceModel
 from torchcast.state_space.ss_step import StateSpaceStep
@@ -25,32 +26,34 @@ class KalmanStep(StateSpaceStep):
     """
     use_stable_cov_update: Final[bool] = True
 
-    def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        F = kwargs['F']
-        Q = kwargs['Q']
-        mean = (F @ mean.unsqueeze(-1)).squeeze(-1)
-        cov = F @ cov @ F.permute(0, 2, 1) + Q
-        return mean, cov
+    def predict(self,
+                mean: Tensor,
+                cov: Tensor,
+                mask: Tensor,
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        if mask.all():
+            mask = slice(None)
+        F = kwargs['F'][mask]
+        Q = kwargs['Q'][mask]
+
+        new_mean = update_tensor(mean, new=(F @ mean[mask].unsqueeze(-1)).squeeze(-1), mask=mask)
+        new_cov = update_tensor(cov, new=(F @ cov[mask] @ F.permute(0, 2, 1) + Q), mask=mask)
+
+        return new_mean, new_cov
 
     def _mask_mats(self,
                    groups: Tensor,
                    val_idx: Optional[Tensor],
                    input: Tensor,
-                   kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Dict[str, Tensor]]:
-        new_kwargs = kwargs.copy()
-        if val_idx is None:
-            for k in ['H', 'R']:
-                new_kwargs[k] = kwargs[k][groups]
-            return input[groups], new_kwargs
-        else:
-            m1d = torch.meshgrid(groups, val_idx, indexing='ij')
-            m2d = torch.meshgrid(groups, val_idx, val_idx, indexing='ij')
-            masked_input = input[m1d[0], m1d[1]]
-            new_kwargs.update({
-                'H': kwargs['H'][m1d[0], m1d[1]],
-                'R': kwargs['R'][m2d[0], m2d[1], m2d[2]]
-            })
-            return masked_input, new_kwargs
+                   kwargs: Dict[str, Tensor],
+                   kwargs_dims: Optional[Dict[str, int]] = None) -> Tuple[Tensor, Dict[str, Tensor]]:
+        return super()._mask_mats(
+            groups=groups,
+            val_idx=val_idx,
+            input=input,
+            kwargs=kwargs,
+            kwargs_dims={'H': 1, 'R': 2}
+        )
 
     def _update(self,
                 input: Tensor,

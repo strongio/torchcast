@@ -20,15 +20,15 @@ from torchcast.utils.data import TimeSeriesDataset
 
 import numpy as np
 
-np.random.seed(2021-1-21)
-torch.manual_seed(2021-1-21)
+np.random.seed(2024-3-14)
+torch.manual_seed(2021-3-14)
 
 # %% [markdown]
 # # Quick Start
 #
 # `torchcast` is a python package for time-series forecasting in PyTorch. Its focus is on training and forecasting with *batches* of time-serieses, rather than training separate models for one time-series at a time. In addition, it provides robust support for *multivariate* time-series, where multiple correlated measures are being forecasted.
 #
-# To briefly provide an overview of these features, we'll use a dataset from the [UCI Machine Learning Data Repository](https://archive.ics.uci.edu/ml/datasets/Beijing+Multi-Site+Air-Quality+Data). It includes data on air pollutants and weather from 12 sites.
+# To briefly provide an overview of these features, we'll use a dataset from the [UCI Machine Learning Data Repository](https://archive.ics.uci.edu/dataset/501/beijing+multi+site+air+quality+data). It includes data on air pollutants and weather from 12 sites.
 
 # %% {"tags": ["remove_cell"]}
 df_aq = load_air_quality_data('weekly')

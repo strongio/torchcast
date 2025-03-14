@@ -14,6 +14,7 @@ from torchcast.process.utils import SingleOutput, Multi, Bounded, ScriptSequenti
 
 
 class _Season:
+    # todo: this mixin is no longer needed, since there is only one Season class
 
     @staticmethod
     def _standardize_period(period: Union[str, np.timedelta64], dt_unit_ns: Optional[float]) -> float:
@@ -184,6 +185,3 @@ class Season(_Season, Process):
         groups = [i for i in range(num_groups)]
         times = [int(start_offsets[i].item()) for i in groups]
         return torch.stack(means, 1)[(groups, times)]
-
-
-TBATS = Season

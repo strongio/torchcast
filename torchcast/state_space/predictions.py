@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from torchcast.utils import TimeSeriesDataset
 
 
-class Predictions(nn.Module):
+class Predictions:
     """
     The output of the :class:`.StateSpaceModel` forward pass, containing the underlying state means and covariances, as
     well as the predicted observations and covariances.
@@ -32,7 +32,6 @@ class Predictions(nn.Module):
                  model: Union['StateSpaceModel', 'StateSpaceModelMetadata'],
                  update_means: Optional[Sequence[Tensor]] = None,
                  update_covs: Optional[Sequence[Tensor]] = None):
-        super().__init__()
 
         # predictions state:
         self._state_means = state_means
@@ -336,13 +335,17 @@ class Predictions(nn.Module):
                     H=H_flat[mask1d]
                 )
                 gt_obs = obs_flat[mask1d]
-            lp_flat[gt_idx] = self._log_prob(gt_obs, gt_means_flat, gt_covs_flat)
+            _kwargs = self._get_log_prob_kwargs(gt_idx, valid_idx)
+            lp_flat[gt_idx] = self._log_prob(gt_obs, gt_means_flat, gt_covs_flat, **_kwargs)
 
         lp_flat = lp_flat * weights
 
         return lp_flat.view(obs.shape[0:2])
 
-    def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
+    def _get_log_prob_kwargs(self, groups: Tensor, valid_idx: Tensor) -> dict:
+        return {}
+
+    def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor, **kwargs) -> Tensor:
         return torch.distributions.MultivariateNormal(means, covs, validate_args=False).log_prob(obs)
 
     def to_dataframe(self,
@@ -382,10 +385,15 @@ class Predictions(nn.Module):
             dataset = self.dataset_metadata.copy()
             if dataset.group_names is None:
                 dataset.group_names = [f"group_{i}" for i in range(self.num_groups)]
-            if dataset.start_offsets.dtype.name.startswith('datetime') and not dataset.dt_unit:
+            if dataset.start_offsets.dtype.name.startswith('date') and not dataset.dt_unit:
                 raise ValueError(
                     "Unable to infer `dt_unit`, please call ``predictions.set_metadata(dt_unit=X)``, or pass `dataset` "
                     "to ``predictions.to_dataframe()``"
+                )
+            if dataset.dt_unit and not dataset.start_offsets.dtype.name.startswith('date'):
+                raise ValueError(
+                    "Expected `start_offsets` to be a datetime64 array, but got a different dtype. If you don't have "
+                    "dates, then set `dt_unit=None`."
                 )
         else:
             for measure_group, tensor in zip(dataset.measures, dataset.tensors):
@@ -446,7 +454,9 @@ class Predictions(nn.Module):
 
             # residuals:
             for i, measure in enumerate(self.measures):
-                orig_tensor = named_tensors.get(measure)
+                orig_tensor = named_tensors.get(measure, None)
+                if orig_tensor is None:
+                    continue
                 predictions = self.means[..., [i]]
                 if orig_tensor.shape[1] < predictions.shape[1]:
                     orig_aligned = predictions.data.clone()
@@ -495,7 +505,7 @@ class Predictions(nn.Module):
              time_colname: str = None,
              max_num_groups: int = 1,
              split_dt: Optional[np.datetime64] = None,
-             **kwargs) -> pd.DataFrame:
+             **kwargs):
         """
         :param df: The output of :func:`Predictions.to_dataframe()`.
         :param group_colname: The name of the group-column.

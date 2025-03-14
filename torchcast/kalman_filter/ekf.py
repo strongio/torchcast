@@ -5,10 +5,10 @@ import pandas as pd
 import torch
 from torch import Tensor
 
-from .kalman_filter import KalmanStep
-from ..internals.utils import class_or_instancemethod
-from ..state_space import Predictions
-from ..utils import TimeSeriesDataset
+from torchcast.internals.utils import class_or_instancemethod
+from torchcast.state_space import Predictions
+from torchcast.utils import TimeSeriesDataset
+from torchcast.kalman_filter.kalman_filter import KalmanStep
 
 
 class EKFStep(KalmanStep):
@@ -70,7 +70,7 @@ class EKFPredictions(Predictions):
         """
         raise NotImplementedError
 
-    def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor) -> Tensor:
+    def _log_prob(self, obs: Tensor, means: Tensor, covs: Tensor, **kwargs) -> Tensor:
         raise NotImplementedError
 
     def __array__(self) -> np.ndarray:
@@ -112,7 +112,7 @@ class EKFPredictions(Predictions):
              split_dt: Optional[np.datetime64] = None,
              **kwargs) -> pd.DataFrame:
 
-        if 'upper' not in df.columns and 'std' in df.columns:
+        if df is not None and 'upper' not in df.columns and 'std' in df.columns:
             df = df.copy()
             for m, _df in df.groupby('measure'):
                 df.loc[_df.index, ['mean', 'lower', 'upper']] = cls._adjust_measured_mean(

@@ -11,17 +11,19 @@ class StateSpaceStep(torch.nn.Module):
     Base-class for modules that handle predict/update within a state-space model.
     """
 
-    def forward(self,
-                input: Tensor,
+    def predict(self,
                 mean: Tensor,
                 cov: Tensor,
-                predict_kwargs: Dict[str, Tensor],
-                update_kwargs: Dict[str, Tensor],
-                ) -> Tuple[Tensor, Tensor]:
-        mean, cov = self.update(input, mean, cov, update_kwargs)
-        return self.predict(mean, cov, predict_kwargs)
-
-    def predict(self, mean: Tensor, cov: Tensor, kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+                mask: Tensor,
+                kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        """
+        :param mean: The current mean tensor.
+        :param cov: The current covariance tensor.
+        :param mask: A boolean mask tensor. Only masked elements of mean/cov will be updated, and remaining elements
+         will be returned as-is.
+        :param kwargs: A dictionary of keyword arguments.
+        :return: A tuple of (new_mean, new_cov) tensors.
+        """
         raise NotImplementedError
 
     def _update(self,
@@ -61,8 +63,6 @@ class StateSpaceStep(torch.nn.Module):
                     kwargs=masked_kwargs
                 )
                 new_mean[groups] = m
-                if c is None:
-                    c = 0
                 new_cov[groups] = c
             return new_mean, new_cov
         else:
@@ -72,5 +72,26 @@ class StateSpaceStep(torch.nn.Module):
                    groups: Tensor,
                    val_idx: Optional[Tensor],
                    input: Tensor,
-                   kwargs: Dict[str, Tensor]) -> Tuple[Tensor, Dict[str, Tensor]]:
-        raise NotImplementedError
+                   kwargs: Dict[str, Tensor],
+                   kwargs_dims: Optional[Dict[str, int]] = None) -> Tuple[Tensor, Dict[str, Tensor]]:
+        if kwargs_dims is None:
+            raise RuntimeError("_mask_mats should only ever be called from subclasses which pass `kwargs_dims`")
+        new_kwargs = kwargs.copy()
+        if val_idx is None:
+            for k in kwargs_dims:
+                new_kwargs[k] = kwargs[k][groups]
+            return input[groups], new_kwargs
+        else:
+            m1d = torch.meshgrid(groups, val_idx, indexing='ij')  # todo: why not just [groups][val_idx]?
+            m2d = torch.meshgrid(groups, val_idx, val_idx, indexing='ij')
+            masked_input = input[m1d[0], m1d[1]]
+            for k, dim in kwargs_dims.items():
+                if dim == 0:
+                    new_kwargs[k] = kwargs[k][groups]
+                elif dim == 1:
+                    new_kwargs[k] = kwargs[k][m1d[0], m1d[1]]
+                elif dim == 2:
+                    new_kwargs[k] = kwargs[k][m2d[0], m2d[1], m2d[2]]
+                else:
+                    raise ValueError(f"Invalid dim ({dim}) for {k}")
+            return masked_input, new_kwargs
