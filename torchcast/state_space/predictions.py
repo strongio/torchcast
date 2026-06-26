@@ -486,7 +486,8 @@ class Predictions:
         if weights is None:
             weights = torch.ones(obs_flat.shape[0], dtype=self.state_means.dtype, device=self.state_means.device)
         else:
-            weights = weights.view(-1, measure_rank)
+            assert weights.shape == obs.shape[0:-1]
+            weights = weights.view(-1)
         state_means_flat = self.state_means.view(-1, state_rank)
         state_covs_flat = self.state_covs.view(-1, state_rank, state_rank)
         measure_covs_flat = self.measure_covs.view(-1, measure_rank, measure_rank)
