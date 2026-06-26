@@ -474,7 +474,7 @@ class BinomialPredictions(Predictions):
             if not self.observed_counts:  # multiply by total_count b/c `obs` are props, but Binomial expects counts:
                 _obs = _obs * num_obs
             mc_log_probs = binom.log_prob(_obs.unsqueeze(0))
-            binary_lp = torch.sum(torch.logsumexp(mc_log_probs, dim=0), -1) - log(mc_log_probs.shape[0])
+            binary_lp = torch.logsumexp(mc_log_probs.sum(-1), dim=0) - log(mc_log_probs.shape[0])
         else:
             binary_lp = 0
 
