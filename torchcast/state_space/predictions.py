@@ -128,6 +128,10 @@ class Predictions:
         if dataset is None:
             dataset = self.dataset_metadata.copy()
             if dataset.group_names is None:
+                warn(
+                    "This ``Predictions`` object doesn't have access to the group-names, consider calling "
+                    "``predictions.set_metadata()``."
+                )
                 dataset.group_names = [f"group_{i}" for i in range(self.num_groups)]
             if dataset.start_offsets.dtype.name.startswith('date') and not dataset.dt_unit:
                 raise ValueError(
