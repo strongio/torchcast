@@ -442,6 +442,7 @@ class BinomialPredictions(Predictions):
             raise TypeError(f"`_log_prob()` does not accept additional keyword arguments, got {set(kwargs)}")
 
         binary_idx = [i for i, m in enumerate(measurement_model.measures) if m in self.binary_measures]
+        binary_measures = [m for m in measurement_model.measures if m in self.binary_measures]
         gauss_idx = [i for i, m in enumerate(measurement_model.measures) if m not in self.binary_measures]
         gaussian_measures = [m for m in measurement_model.measures if m not in self.binary_measures]
         group_idx = torch.arange(obs.shape[0], dtype=torch.long)
@@ -464,7 +465,7 @@ class BinomialPredictions(Predictions):
             if num_obs is None:
                 raise RuntimeError("num_obs should be set because there are binary measures")
             mmean_samples = self._get_measured_mean_samples(
-                measurement_model=measurement_model.subset(measures=self.binary_measures),
+                measurement_model=measurement_model.subset(measures=binary_measures),
                 state_means=state_means,
                 state_covs=state_covs,
             )
