@@ -92,11 +92,12 @@ class BinomialFilter(KalmanFilter):
 
         mcov_empty_idx = [i for i, m in enumerate(measures) if m in binary_measures]
         if measure_covariance is None:
-            measure_covariance = {'init_diag_multi': DEFAULT_MCOV_MULTI}
+            measure_covariance = {}
         if isinstance(measure_covariance, dict):
             measure_covariance['id'] = 'measure_covariance'
             measure_covariance['rank'] = len(measures)
             measure_covariance['empty_idx'] = mcov_empty_idx
+        measure_covariance['init_diag_multi'] = measure_covariance.get('init_diag_multi', DEFAULT_MCOV_MULTI)
 
         if isinstance(measure_covariance, Covariance):  # todo: we should be able to eliminate this mess
             if set(measure_covariance.empty_idx) != set(mcov_empty_idx):
