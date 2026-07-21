@@ -41,7 +41,7 @@ df_aq
 # In `torchcast` we set up our data and model with the following:
 #
 # - The `groups` which define separate time-serieses. Here we have multiple sites. Groups are not necessarily simultanoues to each other (e.g. we could have time-series of product purchases with products having varying release-dates) and correlations across these groups are not modeled.
-# - The `measures` which define separate metrics we are measuring simultanously. Here we have the two kinds of particulate-matter (2.5 and 10).
+# - The `measures` which define separate metrics we are measuring simultaneously. Here we have the two kinds of particulate-matter (2.5 and 10).
 #
 # The `TimeSeriesDataset` is similar to PyTorch's native `TensorDataset`, with some useful metadata on the batch of time-serieses (the station names, the dates for each).
 #
