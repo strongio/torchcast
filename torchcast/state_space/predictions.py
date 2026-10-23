@@ -1466,7 +1466,8 @@ class Predictions:
         warning, if any of these are mixture measures).
 
         :return: A tuple of (1) a label for each combo: a tuple with the regime of each mixture measure ('standard' or
-         the component id), (2) a ``(num_groups, num_timesteps, num_combos)`` tensor of combo probabilities, (3) a
+         the component id; with latent classes, followed by the class's id), (2) a ``(num_groups,
+         num_timesteps, num_combos)`` tensor of combo probabilities, (3) a
          ``(num_groups, num_timesteps, num_combos, num_measures)`` tensor of means, and (4) a ``(num_groups,
          num_timesteps, num_combos, num_measures, num_measures)`` tensor of covariances.
         """
@@ -1486,6 +1487,8 @@ class Predictions:
         covs = [system_cov + torch.diag(extra_var[c]) for c in range(rm.num_combos)]
         batch_shape = self.state_means.shape[0:2]
         labels = [tuple('standard' if c is None else c.id for c in combo) for combo in rm.combos]
+        if rm.num_classes > 1:
+            labels = [(*label, rm.classes[k].id) for label, k in zip(labels, rm.combo_class)]
         return (
             labels,
             self.regime_probs,
