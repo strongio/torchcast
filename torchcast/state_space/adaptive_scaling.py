@@ -30,7 +30,51 @@ class AdaptiveScaler(nn.Module):
         """
         raise NotImplementedError
 
-    def forward(self, residuals: torch.Tensor, skip_mask: torch.Tensor) -> torch.Tensor:
+    def get_state(self, num_groups: int, like: torch.Tensor) -> Optional[dict[str, torch.Tensor]]:
+        """
+        The internal state (e.g. running statistics), so a later forward-pass can continue from it (see
+        :class:`.StateTuple`). Returns None if the scaler doesn't support this -- forward-passes continued from an
+        ``initial_state`` then start from a fresh state.
+
+        :param num_groups: The number of groups (for the state before any residuals have been seen).
+        :param like: A tensor whose dtype/device to use.
+        :return: A dict of ``(num_groups, ...)`` tensors (which aren't modified in place afterwards), or None.
+        """
+        return None
+
+    def set_state(self, state: dict[str, torch.Tensor]):
+        """
+        Restore a state returned by :func:`get_state` (after :func:`reset`).
+        """
+        raise NotImplementedError
+
+    @property
+    def has_process_multiplier(self) -> bool:
+        """
+        Whether the process-covariance gets its own multiplier (see :func:`process_multiplier`). If False, the
+        multiplier from :func:`forward` scales both the measure- and the process-covariance.
+        """
+        return False
+
+    def process_multiplier(self) -> torch.Tensor:
+        """
+        If :attr:`has_process_multiplier`: the multiplier for the process-covariance's standard-deviations, as of the
+        last call to :func:`forward`. A ``(num_groups, num_measures)`` tensor, applied to each measure's processes.
+        """
+        raise NotImplementedError
+
+    def forward(self,
+                residuals: torch.Tensor,
+                skip_mask: torch.Tensor,
+                weights: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        :param residuals: A ``(num_groups, num_measures)`` tensor of residuals.
+        :param skip_mask: A boolean tensor, same shape as ``residuals``, indicating residuals to skip (e.g. nans).
+        :param weights: Optional tensor, same shape as ``residuals``, with values in [0, 1] indicating how much each
+         residual should count. Only passed for models with mixture components, where it's the probability that the
+         observation came from the standard regime (as opposed to e.g. an outlier-regime that already explains it).
+        :return: A ``(num_groups, num_measures)`` tensor of multipliers for the standard-deviations.
+        """
         raise NotImplementedError
 
 
@@ -41,6 +85,15 @@ class EWMAdaptiveScaler(AdaptiveScaler):
     Tracks a running mean of squared residuals per group and measure, and returns ``running_std ** weight`` as a
     multiplier on the standard-deviations. The running mean starts at 1 (multiplier 1, i.e. no adjustment), so groups
     with no observations get no adjustment, and groups with few observations are shrunk towards no adjustment.
+
+    :param num_measures: The number of measures (with measure-variance).
+    :param eps: Lower bound for the running mean of squared residuals.
+    :param separate_process_weight: By default, the multiplier scales both the measure- and the process-covariance.
+     That suits series that differ in magnitude (e.g. untransformed), where everything about a group's process is
+     scaled up or down together. With ``True``, the process-covariance gets its own learned exponent
+     (``running_std ** process_weight``), so that e.g. a group whose observations are noisier doesn't automatically get
+     a faster-moving latent state too. A useful option for transformed (e.g. log-scaled) measures, where differences
+     in magnitude are already handled by the transform, and the scaling is about how noisy each group is.
     """
     # The value the running mean of squared residuals starts at. Instances created by older versions of torchcast
     # started at 0 (so groups with few/no observations were shrunk towards zero variance). This class-level default
@@ -50,7 +103,8 @@ class EWMAdaptiveScaler(AdaptiveScaler):
 
     def __init__(self,
                  num_measures: int,
-                 eps: float = 1e-3):
+                 eps: float = 1e-3,
+                 separate_process_weight: bool = False):
         super().__init__()
 
         # initial alpha:
@@ -64,6 +118,8 @@ class EWMAdaptiveScaler(AdaptiveScaler):
         # coef from log-std to multiplier:
         # initialize with small positive value
         self.weight = nn.Parameter(torch.randn(num_measures).abs() * .01)
+        if separate_process_weight:
+            self.process_weight = nn.Parameter(torch.randn(num_measures).abs() * .01)
 
         # prevent scaling from going to zero:
         self.eps = eps
@@ -113,16 +169,57 @@ class EWMAdaptiveScaler(AdaptiveScaler):
             warnings.warn("Consider calling adaptive scaler's `initialize()` method before use.")
             self._called_initialize = False  # only warn once
 
-    def forward(self, residuals: torch.Tensor, skip_mask: torch.Tensor) -> torch.Tensor:
+    def get_state(self, num_groups: int, like: torch.Tensor) -> dict[str, torch.Tensor]:
+        if self._running is None:
+            shape = (num_groups, self._taus.shape[0])
+            return {
+                'running': torch.full(shape, self._running_init, dtype=like.dtype, device=like.device),
+                'time': torch.zeros(shape, dtype=like.dtype, device=like.device),
+            }
+        return {'running': self._running, 'time': self._time}
+
+    def set_state(self, state: dict[str, torch.Tensor]):
+        self._running = state['running']
+        self._time = state['time']
+
+    def forward(self,
+                residuals: torch.Tensor,
+                skip_mask: torch.Tensor,
+                weights: Optional[torch.Tensor] = None) -> torch.Tensor:
         if self._running is None:
             self._running = torch.full_like(residuals, self._running_init)
             self._time = torch.zeros_like(residuals)
-        self._time += (~skip_mask).int()
+        # (not in-place: states returned by `get_state()` must stay as they were)
+        if weights is None:
+            self._time = self._time + (~skip_mask).int()
+        else:
+            # a partially-weighted observation only partially counts towards the elapsed time:
+            self._time = self._time + weights * (~skip_mask)
 
         sq_resids = residuals ** 2
         alpha = torch.zeros_like(sq_resids)
         alpha[~skip_mask] = self.alpha[~skip_mask]
+        if weights is not None:
+            # an observation with weight w moves the running average w-as-much. (note this is different from
+            # down-weighting the residual itself, which would imply the observation is small, rather than that it
+            # (partially) doesn't count.)
+            alpha = alpha * weights
         ewma = (1 - alpha) * self._running + alpha * sq_resids
         self._running = ewma.clamp(self.eps)
+        return self._multiplier(self.weight)
+
+    def _multiplier(self, weight: torch.Tensor) -> torch.Tensor:
         log_running_std = torch.log(self._running ** .5)
-        return torch.exp(torch.clamp(log_running_std * self.weight, max=8))
+        return torch.exp(torch.clamp(log_running_std * weight, max=8))
+
+    @property
+    def has_process_multiplier(self) -> bool:
+        # (getattr: instances pickled before `process_weight` existed don't have it)
+        return getattr(self, 'process_weight', None) is not None
+
+    def process_multiplier(self) -> torch.Tensor:
+        if not self.has_process_multiplier:
+            raise RuntimeError("This scaler was created without `separate_process_weight`.")
+        if self._running is None:
+            raise RuntimeError("`process_multiplier()` is only available after `forward()`.")
+        return self._multiplier(self.process_weight)
